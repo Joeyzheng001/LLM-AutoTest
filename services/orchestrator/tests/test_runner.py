@@ -1,0 +1,443 @@
+"""PipelineRunner 端到端测试：9 节点串联 + 断点续跑 + 重试降级。
+
+stub LLM 按节点返回预置 JSON；MockTransport 模拟 java-parser 与被测 REST 服务——
+不经真实 LLM/网络，验证驱动纪律（顺序、降级、续跑）。
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import httpx
+import pytest
+
+from orchestrator.artifacts import ArtifactStore
+from orchestrator.config import Settings
+from orchestrator.engine import Engine
+from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
+from orchestrator.llm.client import LlmResult
+from orchestrator.nodes.code_review import SupportsComplete
+from orchestrator.prompts_loader import PromptSpec
+from orchestrator.runner import PipelineRunner
+
+_SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
+_PROMPTS = Path(__file__).resolve().parents[3] / "prompts"
+_JOB = "job-runner-0000-4000-8000-000000000001"
+
+_REQ_ITEMS = {
+    "items": [
+        {
+            "id": "REQ-001",
+            "title": "用户查询",
+            "description": "按 ID 查询用户，返回 UserDTO",
+            "priority": "P1",
+        }
+    ]
+}
+
+_INTERFACES = [
+    {
+        "candidate_id": "CAND-001",
+        "protocol": "rest",
+        "signature": {"method": "GET", "path": "/api/v1/users", "summary": "查用户"},
+        "params": [{"name": "id", "type": "long", "required": True, "in": "query"}],
+    }
+]
+
+_REVIEW = {
+    "mappings": [
+        {
+            "requirement_id": "REQ-001",
+            "interface_id": "IF-REST-001",
+            "status": "implemented",
+            "evidence": {"note": "Controller 命中"},
+        }
+    ]
+}
+
+_CASES = [
+    {
+        "interface_id": "IF-REST-001",
+        "requirement_id": "REQ-001",
+        "category": "normal",
+        "title": "正常查询",
+        "expected": "返回 UserDTO",
+        "params": {"id": 1},
+    },
+    {
+        "interface_id": "IF-REST-001",
+        "requirement_id": "REQ-001",
+        "category": "exception",
+        "title": "非法 id",
+        "expected": "400",
+        "params": {"id": -1},
+    },
+]
+
+
+class StubLlm:
+    """按节点返回预置 JSON（覆盖 \\`json 围栏，验证解析容错）。"""
+
+    def __init__(self, scripts: dict[str, str] | None = None) -> None:
+        self.scripts = scripts
+        self.calls: list[str] = []
+
+    async def complete(
+        self, node: str, prompt: PromptSpec, user_content: str
+    ) -> LlmResult:
+        """返回该节点的预置输出。"""
+        _ = prompt, user_content
+        self.calls.append(node)
+        text = (self.scripts or {}).get(node, "")
+        text = "```json\n" + text + "\n```"
+        return LlmResult(text=text, tokens=10, call_id=f"LLM-stub-{len(self.calls)}")
+
+
+def _default_llm_scripts() -> dict[str, str]:
+    return {
+        "req_parse": json.dumps(_REQ_ITEMS, ensure_ascii=False),
+        "interface_reconstruct": json.dumps({"interfaces": _INTERFACES}, ensure_ascii=False),
+        "code_review": json.dumps(_REVIEW, ensure_ascii=False),
+        "testcase_generate": json.dumps({"cases": _CASES}, ensure_ascii=False),
+    }
+
+
+def _java_parser_transport() -> httpx.MockTransport:
+    """模拟 java-parser：scan/extract 均同步完成（completed 带完整契约产物）。"""
+
+    code_inventory = {
+        "schema_version": "1.0",
+        "job_id": _JOB,
+        "repositories": [
+            {
+                "name": "user-service",
+                "path": "/var/repos/user-service",
+                "branch": "main",
+                "is_fallback": False,
+                "status": "ok",
+                "file_count": 1,
+            },
+            {
+                "name": "order-center",
+                "path": "/var/repos/order-center",
+                "branch": "master",
+                "is_fallback": False,
+                "status": "ok",
+                "file_count": 1,
+            },
+        ],
+    }
+    candidates = [
+        {
+            "candidate_id": "CAND-001",
+            "protocol": "rest",
+            "signature": "GET /api/v1/users",
+            "code_location": {
+                "repo": "user-service",
+                "file": "UserController.java",
+                "start_line": 30,
+                "end_line": 45,
+            },
+            "is_fallback": False,
+            "confidence": 0.9,
+        }
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/scan-jobs":
+            return httpx.Response(202, json={"job_id": "jp-scan", "status": "queued"})
+        if request.url.path == "/api/v1/extract-jobs":
+            return httpx.Response(202, json={"job_id": "jp-ext", "status": "queued"})
+        if request.url.path == "/api/v1/scan-jobs/jp-scan":
+            return httpx.Response(
+                200,
+                json={"job_id": "jp-scan", "status": "completed", "code_inventory": code_inventory},
+            )
+        if request.url.path == "/api/v1/extract-jobs/jp-ext":
+            return httpx.Response(
+                200,
+                json={
+                    "job_id": "jp-ext",
+                    "status": "completed",
+                    "candidates": candidates,
+                    "warnings": [],
+                },
+            )
+        return httpx.Response(404, json={"code": "NOT_FOUND", "message": "路径未模拟"})
+
+    return httpx.MockTransport(handler)
+
+
+def _rest_service_transport(status: int = 200) -> httpx.MockTransport:
+    """模拟被测 REST 服务（/health 探活 + 业务端点固定状态码）。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(status, json={"ok": status < 300})
+
+    return httpx.MockTransport(handler)
+
+
+class _ScriptedRunner(PipelineRunner):
+    """注入 stub LLM 与 MockTransport 的 runner（测试构造便利）。"""
+
+    def __init__(self, settings: Settings, tmp: Path, llm: StubLlm, rest_status: int = 200) -> None:
+        orch = ArtifactStore(tmp, _SCHEMAS, "orchestrator")
+        te = ArtifactStore(tmp, _SCHEMAS, "test-executor")
+        engine = Engine(orch)
+        java = JavaParserClient(
+            base_url="http://java-parser:8081",
+            transport=_java_parser_transport(),
+            poll_interval_s=0.0,
+            max_wait_s=1.0,
+        )
+        self.llm = llm
+        self.rest_status = rest_status
+        super().__init__(settings, engine, orch, te, java)
+        # 测试注入：覆写传输层与 LLM（生产构造经 Settings）
+        self._test_rest_transport = httpx.AsyncClient(
+            transport=_rest_service_transport(rest_status)
+        )._transport
+
+    async def _invoke_node(  # type: ignore[no-untyped-def]
+        self, node_name, state, llm, prompts_dir, doc_path, repositories, rest_base_url
+    ):
+        """覆写：给 auto_execute/retest 注入 MockTransport。"""
+        from orchestrator.nodes import (
+            run_auto_execute,
+            run_code_review,
+            run_code_scan,
+            run_defect_list,
+            run_interface_reconstruct,
+            run_req_parse,
+            run_retest_regression,
+            run_test_report,
+            run_testcase_generate,
+        )
+
+        if node_name == "req_parse":
+            await run_req_parse(self._engine, state, self._orch_store, self.llm, _PROMPTS, doc_path)
+        elif node_name == "code_scan":
+            await run_code_scan(
+                self._engine, state, self._orch_store, self._java_client, repositories
+            )
+        elif node_name == "interface_reconstruct":
+            await run_interface_reconstruct(
+                self._engine, state, self._orch_store, self._java_client,
+                self.llm, _PROMPTS, repositories,
+            )
+        elif node_name == "code_review":
+            await run_code_review(self._engine, state, self._orch_store, self.llm, _PROMPTS)
+        elif node_name == "testcase_generate":
+            await run_testcase_generate(self._engine, state, self._te_store, self.llm, _PROMPTS)
+        elif node_name == "auto_execute":
+            await run_auto_execute(
+                self._engine, state, self._te_store, rest_base_url, self._test_rest_transport
+            )
+        elif node_name == "test_report":
+            await run_test_report(self._engine, state, self._orch_store)
+        elif node_name == "defect_list":
+            await run_defect_list(self._engine, state, self._te_store)
+        elif node_name == "retest_regression":
+            await run_retest_regression(
+                self._engine, state, self._te_store, rest_base_url, self._test_rest_transport
+            )
+
+
+def _settings(tmp: Path) -> Settings:
+    return Settings(
+        port=8000,
+        java_parser_url="http://java-parser:8081",
+        artifacts_root=str(tmp),
+        llm_base_url="http://llm:8000/v1",
+        llm_model_name="glm-5.3",
+        llm_api_key="",
+        llm_temperature=0.2,
+        llm_top_p=0.8,
+        llm_seed=None,
+        llm_timeout_s=10.0,
+        schemas_dir=str(_SCHEMAS),
+    )
+
+
+def _doc(tmp: Path) -> Path:
+    doc = tmp / "req.md"
+    doc.write_text("# 需求\\n\\n- REQ-001 用户查询：按 ID 查询用户\\n", encoding="utf-8")
+    return doc
+
+
+def _repos() -> list[RepositoryInput]:
+    # Schema 冻结 minItems=2（G3：≥2 个仓库）
+    return [
+        RepositoryInput(name="user-service", path="/var/repos/user-service", branch="main"),
+        RepositoryInput(name="order-center", path="/var/repos/order-center", branch="master"),
+    ]
+
+
+async def test_runner_full_pipeline_e2e(tmp_path: Path) -> None:
+    """全链 e2e：9 节点按序完成，全部产物落盘，CLI 汇总含完成数。"""
+    llm = StubLlm(_default_llm_scripts())
+    runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm, rest_status=200)
+
+    outcome = await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+
+    assert outcome.ok
+    assert outcome.completed == [
+        "req_parse", "code_scan", "interface_reconstruct", "code_review",
+        "testcase_generate", "auto_execute", "test_report", "defect_list",
+        "retest_regression",
+    ]
+    assert outcome.degraded == []
+    # 产物齐备（9 产物 + 留痕 + 脚本）
+    job_dir = tmp_path / _JOB
+    for filename in (
+        "requirement_items.json",
+        "code_inventory.json",
+        "interface_candidates.json",
+        "interfaces.json",
+        "review_mapping.json",
+        "testcases.json",
+        "execution.json",
+        "test_report.md",
+        "metrics.json",
+        "defects.json",
+        "regression_index.json",
+        # 注：stub LLM 不经 LlmClient，故无 llm_calls.jsonl 留痕（生产路径有）
+    ):
+        assert (job_dir / filename).is_file(), filename
+    # LLM 只在 4 个语义节点被调用
+    assert llm.calls == [
+        "req_parse", "interface_reconstruct", "code_review", "testcase_generate"
+    ]
+
+
+async def test_runner_resume_skips_completed(tmp_path: Path) -> None:
+    """断点续跑（F-ORCH-02）：产物在的节点跳过，产物缺的节点续跑。"""
+    llm = StubLlm(_default_llm_scripts())
+    runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
+    # 第一次跑完
+    await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+
+    # 模拟中断时点：删除后半产物（产物为唯一事实，open_job 判据自动回退状态）
+    job_dir = tmp_path / _JOB
+    for filename in (
+        "testcases.json",
+        "execution.json",
+        "test_report.md",
+        "metrics.json",
+        "defects.json",
+        "regression_index.json",
+    ):
+        (job_dir / filename).unlink()
+    # 脚本目录回退到未归档状态（首次 retest 已把脚本移入回归目录）
+    for script in sorted((job_dir / "scripts").rglob("test_TC_*.py")):
+        script.unlink()
+
+    llm2 = StubLlm(_default_llm_scripts())
+    runner.llm = llm2
+    outcome = await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+
+    # 产物在的前 4 节点跳过（LLM 只被 testcase_generate 调用）
+    assert llm2.calls == ["testcase_generate"]
+    assert outcome.ok
+    assert outcome.completed[:4] == [
+        "req_parse", "code_scan", "interface_reconstruct", "code_review"
+    ]
+    assert len(outcome.completed) == 9
+
+
+async def test_runner_degrade_after_retry(tmp_path: Path) -> None:
+    """重试耗尽 → 降级不中断（D1）：下游继续，outcome.degraded 记录原因。"""
+    # testcase_generate 的 LLM 输出非法（X-LLM-02 两次）→ 降级
+    scripts = _default_llm_scripts()
+    scripts["testcase_generate"] = "not-json"
+    llm = StubLlm(scripts)
+    runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
+
+    outcome = await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+
+    assert not outcome.degraded == []
+    degraded_names = [name for name, _reason in outcome.degraded]
+    assert "testcase_generate" in degraded_names
+    # D1：降级节点不阻塞下游
+    assert "auto_execute" in outcome.completed or "auto_execute" in degraded_names
+    # 降级原因含错误码
+    reason = dict(outcome.degraded)["testcase_generate"]
+    assert reason.startswith("X-LLM-02")
+
+
+async def test_runner_rest_down_environment_failures_flow(
+    tmp_path: Path,
+) -> None:
+    """被测服务 500：断言失败用例走完整闭环（缺陷清单 + 回归沉淀）。"""
+    llm = StubLlm(_default_llm_scripts())
+    runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm, rest_status=500)
+
+    outcome = await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+
+    assert outcome.ok
+    defects = json.loads((tmp_path / _JOB / "defects.json").read_text(encoding="utf-8"))
+    # 两条用例均断言失败 → 缺陷清单
+    assert len(defects["defects"]) == 2
+    # 复测仍 500 → retained
+    assert all(d["status"] == "retained" for d in defects["defects"])
+    # 回归索引空（无复测通过可沉淀）
+    index = json.loads((tmp_path / _JOB / "regression_index.json").read_text(encoding="utf-8"))
+    assert index["suites"] == []
+    # 报告存在且含分列章节
+    report = (tmp_path / _JOB / "test_report.md").read_text(encoding="utf-8")
+    assert "## 2. 真实执行明细" in report
+
+
+async def test_runner_supports_complete_protocol() -> None:
+    """StubLlm 满足节点 SupportsComplete 协议（静态契约核对）。"""
+    llm: SupportsComplete = StubLlm()
+    assert llm is not None
+
+
+async def test_runner_force_node_archives_old_artifacts(tmp_path: Path) -> None:
+    """force-node（设计 §1.2）：旧产物移入 archive/，节点重跑产出新产物。"""
+    llm = StubLlm(_default_llm_scripts())
+    runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
+    await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+    job_dir = tmp_path / _JOB
+    old_items = json.loads((job_dir / "requirement_items.json").read_text(encoding="utf-8"))
+
+    # 重跑 req_parse（LLM 输出多一条需求项，验证产物确实重产出）
+    scripts = _default_llm_scripts()
+    scripts["req_parse"] = json.dumps(
+        {"items": old_items["items"] + [
+            {"id": "REQ-002", "title": "新增需求", "description": "force-node 重跑",
+             "priority": "P2"}
+        ]},
+        ensure_ascii=False,
+    )
+    llm2 = StubLlm(scripts)
+    runner.llm = llm2
+    outcome = await runner.run(
+        _JOB, _doc(tmp_path), _repos(), "http://rest:9000", force_node="req_parse"
+    )
+
+    assert outcome.ok
+    # 旧产物已归档（留痕红线：禁止原地覆盖）
+    assert (job_dir / "archive" / "req_parse" / "requirement_items.json").is_file()
+    # 新产物是重跑结果（2 条需求项）
+    new_items = json.loads((job_dir / "requirement_items.json").read_text(encoding="utf-8"))
+    assert len(new_items["items"]) == 2
+    # force 节点被真实重跑（LLM 再次调用 req_parse）
+    assert llm2.calls == ["req_parse"]
+
+
+async def test_runner_force_node_rejects_unknown_node(tmp_path: Path) -> None:
+    """force-node 未知节点：X-ORCH-01 拒绝，不产生任何副作用。"""
+    from orchestrator.errors import PipelineError
+
+    llm = StubLlm(_default_llm_scripts())
+    runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
+    with pytest.raises(PipelineError) as exc_info:
+        await runner.run(
+            _JOB, _doc(tmp_path), _repos(), "http://rest:9000", force_node="not-a-node"
+        )
+    assert exc_info.value.code == "X-ORCH-01"
