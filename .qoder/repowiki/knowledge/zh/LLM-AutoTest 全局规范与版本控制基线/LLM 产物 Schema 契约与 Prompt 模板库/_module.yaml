@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: schemas_and_prompts
-title: 结构化 Schema 与 LLM Prompt 资产库
+title: LLM 产物 Schema 契约与 Prompt 模板库
 scope:
     - schemas/
     - prompts/
@@ -8,3 +8,4 @@ source_files: []
 depends_on: []
 related_to:
     - path: docs
+    - path: mumuspec

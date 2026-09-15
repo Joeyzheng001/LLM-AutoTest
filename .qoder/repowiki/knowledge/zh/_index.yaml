@@ -3,33 +3,46 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-09-15T03:31:06Z"
+exported_at: "2026-09-15T05:26:37Z"
 modules:
     "":
-        dir_name: LLM-AutoTest 根仓库规范与忽略配置
-        title: LLM-AutoTest 根仓库规范与忽略配置
+        dir_name: LLM-AutoTest 全局规范与版本控制基线
+        title: LLM-AutoTest 全局规范与版本控制基线
         scope:
             - .gitignore
             - .rules/
         source_files: []
         children:
             - docs
+            - mumuspec
             - schemas_and_prompts
         depends_on: []
         related_to: []
     docs:
-        dir_name: LLM-AutoTest 项目文档与规范基线
-        title: LLM-AutoTest 项目文档与规范基线
+        dir_name: LLM-AutoTest 项目基线文档与 Spec 模板集
+        title: LLM-AutoTest 项目基线文档与 Spec 模板集
         scope:
             - docs/
         source_files: []
         children: []
         depends_on: []
         related_to:
+            - path: mumuspec
+            - path: schemas_and_prompts
+    mumuspec:
+        dir_name: MumuSpec 需求规格文档套件
+        title: MumuSpec 需求规格文档套件
+        scope:
+            - MumuSpec/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: docs
             - path: schemas_and_prompts
     schemas_and_prompts:
-        dir_name: 结构化 Schema 与 LLM Prompt 资产库
-        title: 结构化 Schema 与 LLM Prompt 资产库
+        dir_name: LLM 产物 Schema 契约与 Prompt 模板库
+        title: LLM 产物 Schema 契约与 Prompt 模板库
         scope:
             - schemas/
             - prompts/
@@ -38,3 +51,4 @@ modules:
         depends_on: []
         related_to:
             - path: docs
+            - path: mumuspec

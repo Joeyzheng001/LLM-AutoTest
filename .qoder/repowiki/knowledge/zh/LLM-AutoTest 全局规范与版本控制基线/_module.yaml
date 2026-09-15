@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: ""
-title: LLM-AutoTest 根仓库规范与忽略配置
+title: LLM-AutoTest 全局规范与版本控制基线
 scope:
     - .gitignore
     - .rules/
