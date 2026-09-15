@@ -29,7 +29,7 @@ NODE_ARTIFACTS: dict[str, tuple[str, ...]] = {
     "code_review": ("review_mapping.json",),
     "testcase_generate": ("testcases.json",),
     "auto_execute": ("execution.json",),
-    "test_report": ("test_report.md",),
+    "test_report": ("test_report.md", "metrics.json"),
     "defect_list": ("defects.json",),
     "retest_regression": ("regression_index.json",),
 }

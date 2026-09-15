@@ -96,24 +96,30 @@ class ArtifactStore:
         return target
 
     def write_raw(self, job_id: str, relative_path: str, text: str) -> Path:
-        """写入非 Schema 产物（scripts/ 下脚本等）：原子落盘 + 路径限制。
+        """写入非 Schema 产物：原子落盘 + 白名单路径限制。
 
-        仅允许 scripts/ 前缀（防止写到产物区或目录逃逸）；调用方服务须为
-        test-executor（docs/12 产物布局：scripts/ 丙写，orchestrator 只读）。
+        白名单（docs/12 产物布局）：test-executor 可写 scripts/ 下相对路径；
+        orchestrator 可写 test_report.md（Markdown 报告，无 JSON Schema）。
 
         Raises:
             PipelineError: X-ORCH-01——路径不合规或写权不属于本服务。
         """
-        if self._service != "test-executor":
-            raise PipelineError(
-                code=X_ORCH_01,
-                message=f"write_raw 写权属于 test-executor（当前 {self._service}）",
-            )
         rel = Path(relative_path)
-        if rel.is_absolute() or ".." in rel.parts or rel.parts[0] != "scripts":
+        if self._service == "test-executor":
+            if rel.is_absolute() or ".." in rel.parts or rel.parts[0] != "scripts":
+                raise PipelineError(
+                    code=X_ORCH_01,
+                    message=f"write_raw 仅允许 scripts/ 下相对路径：{relative_path}",
+                )
+        elif self._service == "orchestrator" and relative_path == "test_report.md":
+            pass  # Markdown 报告（甲写，存在性由 is_node_completed 判定）
+        else:
             raise PipelineError(
                 code=X_ORCH_01,
-                message=f"write_raw 仅允许 scripts/ 下相对路径：{relative_path}",
+                message=(
+                    f"write_raw 无 {self._service} 写权路径：{relative_path}"
+                    "（test-executor→scripts/；orchestrator→test_report.md）"
+                ),
             )
         target = self.job_dir(job_id).joinpath(rel)
         target.parent.mkdir(parents=True, exist_ok=True)
