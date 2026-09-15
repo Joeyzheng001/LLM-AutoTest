@@ -13,6 +13,12 @@
     <property name="max" value="120"/>
   </module>
 
+  <!-- 禁止 System.out 打印（.rules/java-code-style：用 SLF4J） -->
+  <module name="RegexpSingleline">
+    <property name="format" value="System\.out\.print"/>
+    <property name="message" value="禁止 System.out 打印，使用 SLF4J 参数化日志"/>
+  </module>
+
   <module name="TreeWalker">
     <module name="UnusedImports"/>
     <module name="AvoidStarImport"/>
@@ -23,6 +29,5 @@
     <module name="ParameterName"/>
     <module name="LocalVariableName"/>
     <module name="EmptyCatchBlock"/>
-    <module name="SystemOutPrint"/>
   </module>
 </module>
