@@ -1,0 +1,133 @@
+{
+  "schema_version": "1.0",
+  "job_id": "job-demo-defect-0004",
+  "candidates": [
+    {
+      "protocol": "rest",
+      "signature": "GET /api/v1/orders/{id}",
+      "code_location": {
+        "repo": "order-center",
+        "file": "src/main/java/com/demo/order/OrderApplication.java",
+        "start_line": 31,
+        "end_line": 38
+      },
+      "snippet": "@GetMapping(\"/{id}\")\npublic Map<String, Object> getOrder(@PathVariable long id) {\n    Map<String, Object> order = store.get(id);\n    if (order == null) {\n        throw new IllegalArgumentException(\"订单不存在：\" + id);\n    }\n    return order;\n}",
+      "is_fallback": false,
+      "confidence": 0.9,
+      "candidate_id": "CAND-001"
+    },
+    {
+      "protocol": "rest",
+      "signature": "GET /api/v1/orders",
+      "code_location": {
+        "repo": "order-center",
+        "file": "src/main/java/com/demo/order/OrderApplication.java",
+        "start_line": 40,
+        "end_line": 45
+      },
+      "snippet": "@GetMapping\npublic List<Map<String, Object>> listOrders(@RequestParam(required = false) Long userId) {\n    return store.values().stream().filter(o -> userId == null || userId.equals(o.get(\"userId\"))).toList();\n}",
+      "is_fallback": false,
+      "confidence": 0.9,
+      "candidate_id": "CAND-002"
+    },
+    {
+      "protocol": "rest",
+      "signature": "POST /api/v1/orders",
+      "code_location": {
+        "repo": "order-center",
+        "file": "src/main/java/com/demo/order/OrderApplication.java",
+        "start_line": 47,
+        "end_line": 54
+      },
+      "snippet": "@PostMapping\npublic Map<String, Object> createOrder(@RequestBody Map<String, Object> order) {\n    long id = idGen.getAndIncrement();\n    order.put(\"id\", id);\n    order.put(\"status\", \"CREATED\");\n    store.put(id, order);\n    return order;\n}",
+      "is_fallback": false,
+      "confidence": 0.9,
+      "candidate_id": "CAND-003"
+    },
+    {
+      "protocol": "rest",
+      "signature": "GET /health",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/HealthController.java",
+        "start_line": 12,
+        "end_line": 15
+      },
+      "snippet": "@GetMapping(\"/health\")\npublic Map<String, String> health() {\n    return Map.of(\"status\", \"UP\");\n}",
+      "is_fallback": false,
+      "confidence": 0.9,
+      "candidate_id": "CAND-004"
+    },
+    {
+      "protocol": "rest",
+      "signature": "GET /api/v1/users/{id}",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/UserController.java",
+        "start_line": 28,
+        "end_line": 31
+      },
+      "snippet": "@GetMapping(\"/{id}\")\npublic User getUser(@PathVariable long id) {\n    return service.getUser(id);\n}",
+      "is_fallback": false,
+      "confidence": 0.9,
+      "candidate_id": "CAND-005"
+    },
+    {
+      "protocol": "rest",
+      "signature": "GET /api/v1/users",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/UserController.java",
+        "start_line": 33,
+        "end_line": 36
+      },
+      "snippet": "@GetMapping\npublic List<User> listUsers(@RequestParam(required = false) Integer minAge) {\n    return service.listUsers(minAge);\n}",
+      "is_fallback": false,
+      "confidence": 0.9,
+      "candidate_id": "CAND-006"
+    },
+    {
+      "protocol": "rest",
+      "signature": "POST /api/v1/users",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/UserController.java",
+        "start_line": 38,
+        "end_line": 42
+      },
+      "snippet": "@PostMapping\n@ResponseStatus(HttpStatus.CREATED)\npublic User createUser(@RequestBody User user) {\n    return service.createUser(user);\n}",
+      "is_fallback": false,
+      "confidence": 0.9,
+      "candidate_id": "CAND-007"
+    },
+    {
+      "protocol": "rest",
+      "signature": "PUT /api/v1/users/{id}",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/UserController.java",
+        "start_line": 44,
+        "end_line": 47
+      },
+      "snippet": "@PutMapping(\"/{id}\")\npublic User updateUser(@PathVariable long id, @RequestBody User user) {\n    return service.updateUser(id, user);\n}",
+      "is_fallback": false,
+      "confidence": 0.9,
+      "candidate_id": "CAND-008"
+    },
+    {
+      "protocol": "rest",
+      "signature": "DELETE /api/v1/users/{id}",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/UserController.java",
+        "start_line": 49,
+        "end_line": 53
+      },
+      "snippet": "@DeleteMapping(\"/{id}\")\n@ResponseStatus(HttpStatus.NO_CONTENT)\npublic void deleteUser(@PathVariable long id) {\n    service.deleteUser(id);\n}",
+      "is_fallback": false,
+      "confidence": 0.9,
+      "candidate_id": "CAND-009"
+    }
+  ],
+  "warnings": []
+}

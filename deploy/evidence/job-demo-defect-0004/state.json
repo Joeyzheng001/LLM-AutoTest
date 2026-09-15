@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0",
+  "job_id": "job-demo-defect-0004",
+  "created_at": "2026-09-15T08:17:30.177466+00:00",
+  "updated_at": "2026-09-15T08:18:15.857121+00:00",
+  "nodes": [
+    {
+      "name": "req_parse",
+      "status": "completed",
+      "updated_at": "2026-09-15T08:17:30.218951+00:00",
+      "attempts": 1
+    },
+    {
+      "name": "code_scan",
+      "status": "completed",
+      "updated_at": "2026-09-15T08:17:30.268542+00:00",
+      "attempts": 1
+    },
+    {
+      "name": "interface_reconstruct",
+      "status": "completed",
+      "updated_at": "2026-09-15T08:17:32.347836+00:00",
+      "attempts": 1
+    },
+    {
+      "name": "code_review",
+      "status": "completed",
+      "updated_at": "2026-09-15T08:17:32.388068+00:00",
+      "attempts": 1
+    },
+    {
+      "name": "testcase_generate",
+      "status": "completed",
+      "updated_at": "2026-09-15T08:17:32.438671+00:00",
+      "attempts": 1
+    },
+    {
+      "name": "auto_execute",
+      "status": "completed",
+      "updated_at": "2026-09-15T08:17:32.750154+00:00",
+      "attempts": 1
+    },
+    {
+      "name": "test_report",
+      "status": "completed",
+      "updated_at": "2026-09-15T08:17:32.751445+00:00",
+      "attempts": 1
+    },
+    {
+      "name": "defect_list",
+      "status": "completed",
+      "updated_at": "2026-09-15T08:17:32.752424+00:00",
+      "attempts": 1
+    },
+    {
+      "name": "retest_regression",
+      "status": "completed",
+      "updated_at": "2026-09-15T08:18:15.857117+00:00",
+      "attempts": 2
+    }
+  ],
+  "degraded": [],
+  "resumed": 1
+}

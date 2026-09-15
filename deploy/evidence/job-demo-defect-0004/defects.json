@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "job_id": "job-demo-defect-0004",
+  "defects": [
+    {
+      "id": "DEF-001",
+      "case_id": "TC-009",
+      "interface_id": "IF-REST-005",
+      "failure_reason": "HTTP 200 语义断言失败：age=29（期望 28）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_009.py",
+        "params": {
+          "id": 1
+        }
+      },
+      "status": "closed_suggested",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-15T08:17:32.571978+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-15T08:17:32.777310+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-15T08:17:32.777310+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-15T08:17:32.777310+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-15T08:18:15.855998+00:00"
+        },
+        {
+          "event": "retest_passed",
+          "timestamp": "2026-09-15T08:18:15.855998+00:00"
+        },
+        {
+          "event": "close_suggested",
+          "timestamp": "2026-09-15T08:18:15.855998+00:00"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "schema_version": "1.0",
+  "job_id": "job-demo-defect-0004",
+  "mappings": [
+    {
+      "requirement_id": "REQ-001",
+      "status": "implemented",
+      "confidence": 0.0,
+      "interface_id": "IF-REST-005",
+      "evidence": {
+        "code_location": {
+          "repo": "user-service",
+          "file": "src/main/java/com/demo/user/UserController.java",
+          "start_line": 28,
+          "end_line": 31
+        },
+        "note": "路径命中 /api/v1/users/{id}（静态候选 + 语义一致）"
+      }
+    },
+    {
+      "requirement_id": "REQ-002",
+      "status": "implemented",
+      "confidence": 0.0,
+      "interface_id": "IF-REST-006",
+      "evidence": {
+        "code_location": {
+          "repo": "user-service",
+          "file": "src/main/java/com/demo/user/UserController.java",
+          "start_line": 33,
+          "end_line": 36
+        },
+        "note": "路径命中 /api/v1/users（静态候选 + 语义一致）"
+      }
+    },
+    {
+      "requirement_id": "REQ-003",
+      "status": "implemented",
+      "confidence": 0.0,
+      "interface_id": "IF-REST-006",
+      "evidence": {
+        "code_location": {
+          "repo": "user-service",
+          "file": "src/main/java/com/demo/user/UserController.java",
+          "start_line": 33,
+          "end_line": 36
+        },
+        "note": "路径命中 /api/v1/users（静态候选 + 语义一致）"
+      }
+    },
+    {
+      "requirement_id": "REQ-004",
+      "status": "implemented",
+      "confidence": 0.0,
+      "interface_id": "IF-REST-005",
+      "evidence": {
+        "code_location": {
+          "repo": "user-service",
+          "file": "src/main/java/com/demo/user/UserController.java",
+          "start_line": 28,
+          "end_line": 31
+        },
+        "note": "路径命中 /api/v1/users/{id}（静态候选 + 语义一致）"
+      }
+    },
+    {
+      "requirement_id": "REQ-005",
+      "status": "implemented",
+      "confidence": 0.0,
+      "interface_id": "IF-REST-002",
+      "evidence": {
+        "code_location": {
+          "repo": "order-center",
+          "file": "src/main/java/com/demo/order/OrderApplication.java",
+          "start_line": 40,
+          "end_line": 45
+        },
+        "note": "路径命中 /api/v1/orders（静态候选 + 语义一致）"
+      }
+    }
+  ],
+  "risks": [],
+  "missing_features": []
+}

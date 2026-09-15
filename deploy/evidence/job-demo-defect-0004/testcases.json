@@ -1,0 +1,234 @@
+{
+  "schema_version": "1.0",
+  "job_id": "job-demo-defect-0004",
+  "cases": [
+    {
+      "id": "TC-001",
+      "interface_id": "IF-REST-001",
+      "category": "normal",
+      "title": "查询 /api/v1/orders/{id}——normal 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "params": {
+        "id": 1
+      },
+      "script_path": "scripts/test_TC_001.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-002",
+      "interface_id": "IF-REST-001",
+      "category": "boundary",
+      "title": "查询 /api/v1/orders/{id}——boundary 用例",
+      "expected": "status=400；不存在资源返回业务错误码",
+      "params": {
+        "id": 999999
+      },
+      "script_path": "scripts/test_TC_002.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-003",
+      "interface_id": "IF-REST-002",
+      "category": "normal",
+      "title": "查询 /api/v1/orders——normal 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "requirement_id": "REQ-005",
+      "params": {
+        "userId": 1
+      },
+      "script_path": "scripts/test_TC_003.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-004",
+      "interface_id": "IF-REST-002",
+      "category": "boundary",
+      "title": "查询 /api/v1/orders——boundary 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "requirement_id": "REQ-005",
+      "params": {
+        "userId": 999999
+      },
+      "script_path": "scripts/test_TC_004.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-005",
+      "interface_id": "IF-REST-003",
+      "category": "normal",
+      "title": "创建 /api/v1/orders——normal 用例",
+      "expected": "返回系统分配的编号（id>0）；2xx",
+      "params": {
+        "userId": 1,
+        "amount": 100.0
+      },
+      "script_path": "scripts/test_TC_005.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-006",
+      "interface_id": "IF-REST-003",
+      "category": "boundary",
+      "title": "创建 /api/v1/orders——boundary 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "params": {
+        "userId": 999999,
+        "amount": 999999.0
+      },
+      "script_path": "scripts/test_TC_006.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-007",
+      "interface_id": "IF-REST-004",
+      "category": "normal",
+      "title": "查询 /health——normal 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "script_path": "scripts/test_TC_007.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-008",
+      "interface_id": "IF-REST-004",
+      "category": "boundary",
+      "title": "查询 /health——boundary 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "script_path": "scripts/test_TC_008.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-009",
+      "interface_id": "IF-REST-005",
+      "category": "normal",
+      "title": "查询 /api/v1/users/{id}——normal 用例",
+      "expected": "id=1;name=alice;age=28；按 ID 查询返回完整用户",
+      "requirement_id": "REQ-001",
+      "params": {
+        "id": 1
+      },
+      "script_path": "scripts/test_TC_009.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-010",
+      "interface_id": "IF-REST-005",
+      "category": "boundary",
+      "title": "查询 /api/v1/users/{id}——boundary 用例",
+      "expected": "status=400；不存在资源返回业务错误码",
+      "requirement_id": "REQ-001",
+      "params": {
+        "id": 999999
+      },
+      "script_path": "scripts/test_TC_010.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-011",
+      "interface_id": "IF-REST-006",
+      "category": "normal",
+      "title": "查询 /api/v1/users——normal 用例",
+      "expected": "列表非空；minAge 过滤后年龄均不低于阈值",
+      "requirement_id": "REQ-002",
+      "params": {
+        "minAge": 30
+      },
+      "script_path": "scripts/test_TC_011.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-012",
+      "interface_id": "IF-REST-006",
+      "category": "boundary",
+      "title": "查询 /api/v1/users——boundary 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "requirement_id": "REQ-002",
+      "params": {
+        "minAge": 200
+      },
+      "script_path": "scripts/test_TC_012.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-013",
+      "interface_id": "IF-REST-007",
+      "category": "normal",
+      "title": "创建 /api/v1/users——normal 用例",
+      "expected": "返回系统分配的编号（id>0）；2xx",
+      "params": {
+        "name": "stub-value",
+        "email": "stub-value",
+        "age": 30
+      },
+      "script_path": "scripts/test_TC_013.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-014",
+      "interface_id": "IF-REST-007",
+      "category": "boundary",
+      "title": "创建 /api/v1/users——boundary 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "params": {
+        "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "email": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "age": 200
+      },
+      "script_path": "scripts/test_TC_014.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-015",
+      "interface_id": "IF-REST-008",
+      "category": "normal",
+      "title": "更新 /api/v1/users/{id}——normal 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "params": {
+        "id": 1,
+        "name": "stub-value",
+        "email": "stub-value",
+        "age": 30
+      },
+      "script_path": "scripts/test_TC_015.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-016",
+      "interface_id": "IF-REST-008",
+      "category": "boundary",
+      "title": "更新 /api/v1/users/{id}——boundary 用例",
+      "expected": "status=400；不存在资源返回业务错误码",
+      "params": {
+        "id": 999999,
+        "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "email": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "age": 200
+      },
+      "script_path": "scripts/test_TC_016.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-017",
+      "interface_id": "IF-REST-009",
+      "category": "normal",
+      "title": "删除 /api/v1/users/{id}——normal 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "params": {
+        "id": 1
+      },
+      "script_path": "scripts/test_TC_017.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-018",
+      "interface_id": "IF-REST-009",
+      "category": "boundary",
+      "title": "删除 /api/v1/users/{id}——boundary 用例",
+      "expected": "2xx 响应结构符合接口定义",
+      "params": {
+        "id": 999999
+      },
+      "script_path": "scripts/test_TC_018.py",
+      "loadable": true
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "job_id": "job-demo-defect-0004",
+  "suites": [
+    {
+      "protocol": "rest",
+      "scripts": [
+        {
+          "case_id": "TC-009",
+          "script_path": "scripts/regression/rest/test_TC_009.py",
+          "requirement_id": "REQ-001",
+          "interface_id": "IF-REST-005",
+          "archived_at": "2026-09-15T08:18:15.855998+00:00"
+        }
+      ]
+    }
+  ]
+}

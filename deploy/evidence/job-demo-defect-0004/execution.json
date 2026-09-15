@@ -1,0 +1,170 @@
+{
+  "schema_version": "1.0",
+  "job_id": "job-demo-defect-0004",
+  "results": [
+    {
+      "case_id": "TC-001",
+      "interface_id": "IF-REST-001",
+      "timestamp": "2026-09-15T08:17:32.459054+00:00",
+      "passed": false,
+      "failure_kind": "environment",
+      "failure_reason": "HTTP 404 路由不存在（接口未部署或服务地址不符，X-EXEC-01 同类）",
+      "timeout": false,
+      "duration_ms": 27
+    },
+    {
+      "case_id": "TC-002",
+      "interface_id": "IF-REST-001",
+      "timestamp": "2026-09-15T08:17:32.486801+00:00",
+      "passed": false,
+      "failure_kind": "environment",
+      "failure_reason": "HTTP 404 路由不存在（接口未部署或服务地址不符，X-EXEC-01 同类）",
+      "timeout": false,
+      "duration_ms": 12
+    },
+    {
+      "case_id": "TC-003",
+      "interface_id": "IF-REST-002",
+      "timestamp": "2026-09-15T08:17:32.500127+00:00",
+      "passed": false,
+      "failure_kind": "environment",
+      "failure_reason": "HTTP 404 路由不存在（接口未部署或服务地址不符，X-EXEC-01 同类）",
+      "timeout": false,
+      "duration_ms": 12
+    },
+    {
+      "case_id": "TC-004",
+      "interface_id": "IF-REST-002",
+      "timestamp": "2026-09-15T08:17:32.513031+00:00",
+      "passed": false,
+      "failure_kind": "environment",
+      "failure_reason": "HTTP 404 路由不存在（接口未部署或服务地址不符，X-EXEC-01 同类）",
+      "timeout": false,
+      "duration_ms": 11
+    },
+    {
+      "case_id": "TC-005",
+      "interface_id": "IF-REST-003",
+      "timestamp": "2026-09-15T08:17:32.525255+00:00",
+      "passed": false,
+      "failure_kind": "environment",
+      "failure_reason": "HTTP 404 路由不存在（接口未部署或服务地址不符，X-EXEC-01 同类）",
+      "timeout": false,
+      "duration_ms": 13
+    },
+    {
+      "case_id": "TC-006",
+      "interface_id": "IF-REST-003",
+      "timestamp": "2026-09-15T08:17:32.538937+00:00",
+      "passed": false,
+      "failure_kind": "environment",
+      "failure_reason": "HTTP 404 路由不存在（接口未部署或服务地址不符，X-EXEC-01 同类）",
+      "timeout": false,
+      "duration_ms": 11
+    },
+    {
+      "case_id": "TC-007",
+      "interface_id": "IF-REST-004",
+      "timestamp": "2026-09-15T08:17:32.550832+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 10
+    },
+    {
+      "case_id": "TC-008",
+      "interface_id": "IF-REST-004",
+      "timestamp": "2026-09-15T08:17:32.561836+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 9
+    },
+    {
+      "case_id": "TC-009",
+      "interface_id": "IF-REST-005",
+      "timestamp": "2026-09-15T08:17:32.571978+00:00",
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 11,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 200 语义断言失败：age=29（期望 28）"
+    },
+    {
+      "case_id": "TC-010",
+      "interface_id": "IF-REST-005",
+      "timestamp": "2026-09-15T08:17:32.583997+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 12
+    },
+    {
+      "case_id": "TC-011",
+      "interface_id": "IF-REST-006",
+      "timestamp": "2026-09-15T08:17:32.596509+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 12
+    },
+    {
+      "case_id": "TC-012",
+      "interface_id": "IF-REST-006",
+      "timestamp": "2026-09-15T08:17:32.609200+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 11
+    },
+    {
+      "case_id": "TC-013",
+      "interface_id": "IF-REST-007",
+      "timestamp": "2026-09-15T08:17:32.620750+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 25
+    },
+    {
+      "case_id": "TC-014",
+      "interface_id": "IF-REST-007",
+      "timestamp": "2026-09-15T08:17:32.646253+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 11
+    },
+    {
+      "case_id": "TC-015",
+      "interface_id": "IF-REST-008",
+      "timestamp": "2026-09-15T08:17:32.658289+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 11
+    },
+    {
+      "case_id": "TC-016",
+      "interface_id": "IF-REST-008",
+      "timestamp": "2026-09-15T08:17:32.670858+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 34
+    },
+    {
+      "case_id": "TC-017",
+      "interface_id": "IF-REST-009",
+      "timestamp": "2026-09-15T08:17:32.705634+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 22
+    },
+    {
+      "case_id": "TC-018",
+      "interface_id": "IF-REST-009",
+      "timestamp": "2026-09-15T08:17:32.729122+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 19
+    }
+  ],
+  "summary": {
+    "total": 18,
+    "passed": 11,
+    "failed_assertion": 1,
+    "failed_environment": 6
+  }
+}

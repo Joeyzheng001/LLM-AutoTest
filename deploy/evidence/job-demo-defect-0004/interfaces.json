@@ -1,0 +1,269 @@
+{
+  "schema_version": "1.0",
+  "job_id": "job-demo-defect-0004",
+  "interfaces": [
+    {
+      "id": "IF-REST-001",
+      "candidate_id": "CAND-001",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/v1/orders/{id}",
+        "summary": "查询 /api/v1/orders/{id}"
+      },
+      "code_location": {
+        "repo": "order-center",
+        "file": "src/main/java/com/demo/order/OrderApplication.java",
+        "start_line": 31,
+        "end_line": 38
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "id",
+          "type": "long",
+          "required": true,
+          "in": "path"
+        }
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-002",
+      "candidate_id": "CAND-002",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/v1/orders",
+        "summary": "查询 /api/v1/orders"
+      },
+      "code_location": {
+        "repo": "order-center",
+        "file": "src/main/java/com/demo/order/OrderApplication.java",
+        "start_line": 40,
+        "end_line": 45
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "userId",
+          "type": "long",
+          "required": false,
+          "in": "query"
+        }
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-003",
+      "candidate_id": "CAND-003",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/v1/orders",
+        "summary": "创建 /api/v1/orders"
+      },
+      "code_location": {
+        "repo": "order-center",
+        "file": "src/main/java/com/demo/order/OrderApplication.java",
+        "start_line": 47,
+        "end_line": 54
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "userId",
+          "type": "long",
+          "required": true,
+          "in": "body"
+        },
+        {
+          "name": "amount",
+          "type": "number",
+          "required": true,
+          "in": "body"
+        }
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-004",
+      "candidate_id": "CAND-004",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/health",
+        "summary": "查询 /health"
+      },
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/HealthController.java",
+        "start_line": 12,
+        "end_line": 15
+      },
+      "is_fallback": false,
+      "params": [],
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-005",
+      "candidate_id": "CAND-005",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/v1/users/{id}",
+        "summary": "查询 /api/v1/users/{id}"
+      },
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/UserController.java",
+        "start_line": 28,
+        "end_line": 31
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "id",
+          "type": "long",
+          "required": true,
+          "in": "path"
+        }
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-006",
+      "candidate_id": "CAND-006",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/v1/users",
+        "summary": "查询 /api/v1/users"
+      },
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/UserController.java",
+        "start_line": 33,
+        "end_line": 36
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "minAge",
+          "type": "integer",
+          "required": false,
+          "in": "query"
+        }
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-007",
+      "candidate_id": "CAND-007",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/v1/users",
+        "summary": "创建 /api/v1/users"
+      },
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/UserController.java",
+        "start_line": 38,
+        "end_line": 42
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "in": "body"
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "required": true,
+          "in": "body"
+        },
+        {
+          "name": "age",
+          "type": "integer",
+          "required": true,
+          "in": "body"
+        }
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-008",
+      "candidate_id": "CAND-008",
+      "protocol": "rest",
+      "signature": {
+        "method": "PUT",
+        "path": "/api/v1/users/{id}",
+        "summary": "更新 /api/v1/users/{id}"
+      },
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/UserController.java",
+        "start_line": 44,
+        "end_line": 47
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "id",
+          "type": "long",
+          "required": true,
+          "in": "path"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "in": "body"
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "required": true,
+          "in": "body"
+        },
+        {
+          "name": "age",
+          "type": "integer",
+          "required": true,
+          "in": "body"
+        }
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-009",
+      "candidate_id": "CAND-009",
+      "protocol": "rest",
+      "signature": {
+        "method": "DELETE",
+        "path": "/api/v1/users/{id}",
+        "summary": "删除 /api/v1/users/{id}"
+      },
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/user/UserController.java",
+        "start_line": 49,
+        "end_line": 53
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "id",
+          "type": "long",
+          "required": true,
+          "in": "path"
+        }
+      ],
+      "confidence": 0.9
+    }
+  ]
+}

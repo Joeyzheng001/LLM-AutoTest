@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "job_id": "job-demo-defect-0004",
+  "repositories": [
+    {
+      "name": "user-service",
+      "path": "/Users/zz/code/LLM-AutoTest/deploy/demo-repos/user-service",
+      "branch": "main",
+      "is_fallback": false,
+      "status": "ok",
+      "file_count": 7,
+      "files": [
+        {
+          "module": "defects",
+          "repo": "user-service",
+          "path": "defects/UserService.DEF-001.java"
+        },
+        {
+          "module": "src",
+          "repo": "user-service",
+          "path": "src/main/java/com/demo/user/GlobalExceptionHandler.java"
+        },
+        {
+          "module": "src",
+          "repo": "user-service",
+          "path": "src/main/java/com/demo/user/HealthController.java"
+        },
+        {
+          "module": "src",
+          "repo": "user-service",
+          "path": "src/main/java/com/demo/user/User.java"
+        },
+        {
+          "module": "src",
+          "repo": "user-service",
+          "path": "src/main/java/com/demo/user/UserApplication.java"
+        },
+        {
+          "module": "src",
+          "repo": "user-service",
+          "path": "src/main/java/com/demo/user/UserController.java"
+        },
+        {
+          "module": "src",
+          "repo": "user-service",
+          "path": "src/main/java/com/demo/user/UserService.java"
+        }
+      ]
+    },
+    {
+      "name": "order-center",
+      "path": "/Users/zz/code/LLM-AutoTest/deploy/demo-repos/order-center",
+      "branch": "main",
+      "is_fallback": false,
+      "status": "ok",
+      "file_count": 1,
+      "files": [
+        {
+          "module": "src",
+          "repo": "order-center",
+          "path": "src/main/java/com/demo/order/OrderApplication.java"
+        }
+      ]
+    }
+  ]
+}
