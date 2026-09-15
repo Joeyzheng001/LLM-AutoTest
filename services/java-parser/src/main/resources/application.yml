@@ -5,3 +5,5 @@ server:
 parser:
   # 多仓库扫描并发度（受控可配置）
   scan-concurrency: 4
+  # 单仓库文件数截断上限（超出记 truncated，X-CODE-03 注明截断范围）
+  max-files-per-repo: 20000
