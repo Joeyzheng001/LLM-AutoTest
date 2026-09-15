@@ -66,16 +66,25 @@ def load_prompt(prompts_dir: Path, name: str) -> PromptSpec:
 def _parse_meta(
     text: str,
 ) -> tuple[str, str, str, tuple[str, ...], dict[str, float | int | None], str]:
-    """解析 `---` 包裹的元信息块；格式不合法时返回空 version 交由上层报错。"""
+    """解析 `---` 包裹的元信息块；格式不合法时返回空 version 交由上层报错。
+
+    容忍元信息块前的 HTML 注释与空行（模板约定：首行用途注释）。块后的正文原样保留。
+    """
     lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
+    # 跳过前导空行与 <!-- --> 注释行，定位元信息块首行
+    start = 0
+    while start < len(lines) and (
+        not lines[start].strip() or lines[start].lstrip().startswith("<!--")
+    ):
+        start += 1
+    if start >= len(lines) or lines[start].strip() != "---":
         return "", "", "", (), {}, text
 
-    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() == "---"), None)
     if end is None:
         return "", "", "", (), {}, text
 
-    meta_lines = lines[1:end]
+    meta_lines = lines[start + 1 : end]
     body = "\n".join(lines[end + 1 :]).strip()
 
     version, spec, owner = "", "", ""
