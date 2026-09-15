@@ -68,7 +68,7 @@ class JavaParserClient:
         self._transport = transport
 
     async def scan(self, job_id: str, repositories: list[RepositoryInput]) -> dict[str, Any]:
-        """创建扫描 job 并轮询至终态。
+        """创建扫描 job 并轮询至终态（POST /api/v1/scan-jobs）。
 
         Returns:
             completed 时的 ScanJob 响应（含 code_inventory）。
@@ -76,16 +76,43 @@ class JavaParserClient:
         Raises:
             PipelineError: failed 终态（透传契约 X-CODE-* 错误）；或 X-ORCH-03 通信失败。
         """
-        scan_job_id = await self._create_scan_job(job_id, repositories)
-        return await self._poll_scan_job(scan_job_id)
-
-    async def _create_scan_job(self, job_id: str, repositories: list[RepositoryInput]) -> str:
-        """POST /api/v1/scan-jobs：返回受理的 job_id。"""
         body = {
             "job_id": job_id,
             "repositories": [repo.to_dict() for repo in repositories],
         }
         response = await self._request("POST", "/api/v1/scan-jobs", json=body)
+        job_id_remote = self._parse_job_id(response)
+        return await self._poll("/api/v1/scan-jobs", job_id_remote)
+
+    async def extract(
+        self,
+        job_id: str,
+        repositories: list[RepositoryInput],
+        protocols: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """创建候选提取 job 并轮询至终态（POST /api/v1/extract-jobs，R-REV-02①）。
+
+        Args:
+            protocols: 要求识别的协议（默认全部；D2：gRPC 优先）。
+
+        Returns:
+            completed 时的 ExtractJob 响应（含 candidates + warnings）。
+
+        Raises:
+            PipelineError: 同 scan——透传契约错误或 X-ORCH-03。
+        """
+        body: dict[str, Any] = {
+            "job_id": job_id,
+            "repositories": [repo.to_dict() for repo in repositories],
+        }
+        if protocols:
+            body["protocols"] = protocols
+        response = await self._request("POST", "/api/v1/extract-jobs", json=body)
+        job_id_remote = self._parse_job_id(response)
+        return await self._poll("/api/v1/extract-jobs", job_id_remote)
+
+    def _parse_job_id(self, response: httpx.Response) -> str:
+        """从 202 受理响应提取 job_id（缺字段宁停不猜）。"""
         data = response.json()
         try:
             return str(data["job_id"])
@@ -95,11 +122,11 @@ class JavaParserClient:
                 message=f"java-parser 响应缺 job_id：{data}",
             ) from exc
 
-    async def _poll_scan_job(self, scan_job_id: str) -> dict[str, Any]:
-        """GET /api/v1/scan-jobs/{id} 轮询至 completed/failed。"""
+    async def _poll(self, base_path: str, job_id_remote: str) -> dict[str, Any]:
+        """GET {base_path}/{id} 轮询至 completed/failed（两套 job 共用）。"""
         waited = 0.0
         while True:
-            response = await self._request("GET", f"/api/v1/scan-jobs/{scan_job_id}")
+            response = await self._request("GET", f"{base_path}/{job_id_remote}")
             data: dict[str, Any] = response.json()
             status = str(data.get("status", ""))
             if status == "completed":
@@ -115,7 +142,7 @@ class JavaParserClient:
             if waited >= self._max_wait_s:
                 raise PipelineError(
                     code=X_ORCH_03,
-                    message=f"扫描 job 轮询超时（>{self._max_wait_s}s）：{scan_job_id}",
+                    message=f"job 轮询超时（>{self._max_wait_s}s）：{job_id_remote}",
                 )
             await asyncio.sleep(self._poll_interval_s)
             waited += self._poll_interval_s
