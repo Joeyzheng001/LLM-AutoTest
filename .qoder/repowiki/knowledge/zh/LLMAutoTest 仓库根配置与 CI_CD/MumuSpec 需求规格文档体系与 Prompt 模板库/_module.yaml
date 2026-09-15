@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: docs_and_specs
+title: MumuSpec 需求规格文档体系与 Prompt 模板库
+scope:
+    - MumuSpec/
+    - docs/
+    - prompts/
+source_files: []
+depends_on: []
+related_to:
+    - path: schemas
