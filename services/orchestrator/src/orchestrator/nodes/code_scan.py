@@ -1,0 +1,93 @@
+"""code_scan 节点：调 java-parser 扫描多仓库 → code_inventory.json 落盘（F-CODE-01~03）。
+
+仓库四态口径（X-CODE-01~03）：
+- error（X-CODE-01）→ 节点失败（客户端已透传契约错误码）；
+- empty（X-CODE-02）→ 正常态，流程继续，如实记入产物；
+- truncated（X-CODE-03）→ 正常态，截断范围记入 truncated_scope；
+- ok → 正常。
+全 error 兜底：java-parser 侧失败由 X-ORCH-03 表达。
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from orchestrator.artifacts import ArtifactStore
+from orchestrator.engine import Engine, JobState
+from orchestrator.errors import X_ORCH_01, PipelineError
+from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
+
+NODE_NAME = "code_scan"
+
+# code_scan 前置产物无（req_parse 之后第二节点，产物判据由 Engine 把关）
+
+
+async def run_code_scan(
+    engine: Engine,
+    state: JobState,
+    store: ArtifactStore,
+    client: JavaParserClient,
+    repositories: list[RepositoryInput],
+) -> Path:
+    """执行 code_scan 全流程：跳序检查 → 运行 → 远端扫描 → 校验落盘 → 置完成。
+
+    Raises:
+        PipelineError: X-CODE-01（仓库硬错误，透传乙段码）或 X-ORCH-03（通信失败）。
+    """
+    engine.check_runnable(state, NODE_NAME)
+    engine.mark_running(state, NODE_NAME)
+    try:
+        response = await client.scan(state.job_id, repositories)
+        inventory = _extract_inventory(response, state.job_id)
+        _check_repo_errors(inventory)
+        path = store.write(state.job_id, "code_inventory.json", inventory)
+        engine.mark_completed(state, NODE_NAME)
+        return path
+    except PipelineError as exc:
+        engine.mark_failed(state, NODE_NAME, exc)
+        raise
+
+
+def _extract_inventory(response: dict[str, Any], job_id: str) -> dict[str, Any]:
+    """从 ScanJob 响应提取 code_inventory，并钉死 job_id 归属（防串档）。
+
+    Raises:
+        PipelineError: X-ORCH-01——响应缺 code_inventory（契约不符，宁停不猜）。
+    """
+    inventory = response.get("code_inventory")
+    if not isinstance(inventory, dict):
+        raise PipelineError(
+            code=X_ORCH_01,
+            message="java-parser 响应缺 code_inventory 产物",
+            node_id=NODE_NAME,
+        )
+    # 归属校验：产物 job_id 必须与本流水线一致（防串档/串任务）
+    if inventory.get("job_id") not in (None, job_id):
+        raise PipelineError(
+            code=X_ORCH_01,
+            message=f"code_inventory 的 job_id 不匹配：{inventory.get('job_id')} != {job_id}",
+            node_id=NODE_NAME,
+        )
+    result = dict(inventory)
+    result["job_id"] = job_id
+    result.setdefault("schema_version", "1.0")
+    return result
+
+
+def _check_repo_errors(inventory: dict[str, Any]) -> None:
+    """仓库级硬错误检查：任一 status=error（X-CODE-01）即节点失败。
+
+    empty / truncated 为正常态（如实落盘，流程继续）。
+    """
+    failed_repos = [
+        repo.get("name", "<未命名>")
+        for repo in inventory.get("repositories", [])
+        if repo.get("status") == "error"
+    ]
+    if failed_repos:
+        raise PipelineError(
+            code="X-CODE-01",
+            message=f"仓库扫描硬错误（X-CODE-01）：{failed_repos}",
+            node_id=NODE_NAME,
+        )

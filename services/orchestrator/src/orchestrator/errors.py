@@ -11,6 +11,7 @@ X_LLM_02 = "X-LLM-02"  # LLM 输出未过 Schema 校验（不重试，人工介�
 X_LLM_03 = "X-LLM-03"  # Prompt 文件缺失/元信息不合规（配置错误，人工介入）
 X_ORCH_01 = "X-ORCH-01"  # 产物校验失败
 X_ORCH_02 = "X-ORCH-02"  # 断点续跑跳序请求
+X_ORCH_03 = "X-ORCH-03"  # java-parser 服务不可达/通信失败（docs/12 v1.1）
 
 
 @dataclass
