@@ -1,0 +1,31 @@
+// gRPC 契约物料（D2：非 REST 协议中至少 1 种——gRPC 优先）。
+// 现状：java-parser 静态识别未接入 gRPC（如实告警，不虚构候选）；
+// 流水线路径：接口候选为空 + X-EXEC-03 非 REST 协议 Mock 演示降级。
+syntax = "proto3";
+
+package demo.order.v1;
+
+option java_package = "com.demo.order.grpc.v1";
+
+service OrderQuery {
+  rpc GetOrder (GetOrderRequest) returns (Order);
+  rpc ListByUser (ListByUserRequest) returns (OrderList);
+}
+
+message GetOrderRequest {
+  int64 id = 1;
+}
+
+message ListByUserRequest {
+  int64 user_id = 1;
+}
+
+message Order {
+  int64 id = 1;
+  int64 user_id = 2;
+  string status = 3;
+}
+
+message OrderList {
+  repeated Order orders = 1;
+}

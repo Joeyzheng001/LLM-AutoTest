@@ -1,0 +1,14 @@
+[
+  {
+    "name": "user-service",
+    "path": "deploy/demo-repos/user-service",
+    "branch": "main",
+    "is_fallback": false
+  },
+  {
+    "name": "order-center",
+    "path": "deploy/demo-repos/order-center",
+    "branch": "main",
+    "is_fallback": false
+  }
+]

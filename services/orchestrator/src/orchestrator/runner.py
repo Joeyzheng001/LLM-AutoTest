@@ -251,13 +251,19 @@ def summarize_outcome(outcome: PipelineOutcome) -> str:
 def repository_inputs_from_config(
     repositories: list[dict[str, Any]],
 ) -> list[RepositoryInput]:
-    """任务配置（JSON/CLI 参数）→ RepositoryInput 列表。"""
+    """任务配置（JSON/CLI 参数）→ RepositoryInput 列表。
+
+    相对路径按当前工作目录解析为绝对路径（java-parser 侧按绝对路径定位仓库）。
+    """
     inputs: list[RepositoryInput] = []
     for repo in repositories:
+        path = Path(str(repo["path"]))
+        if not path.is_absolute():
+            path = Path.cwd() / path
         inputs.append(
             RepositoryInput(
                 name=str(repo["name"]),
-                path=str(repo["path"]),
+                path=str(path),
                 branch=str(repo.get("branch", "main")),
                 is_fallback=bool(repo.get("is_fallback", False)),
                 include_paths=tuple(repo.get("include_paths", ())),
