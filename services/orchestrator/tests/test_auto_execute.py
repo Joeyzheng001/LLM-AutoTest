@@ -429,3 +429,116 @@ async def test_auto_execute_path_param_substitution(
     assert not any("{id}" in p for p in seen_paths)
     payload = te_store.read_json(_JOB, "execution.json")
     assert payload["results"][0]["passed"] is True
+
+
+async def test_auto_execute_semantic_assertion(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """最小语义断言（docs/13 C-05）：expected「字段=值」等值对失配 → assertion 失败。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+
+    def user_service(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(200, json={"id": 1, "name": "alice", "age": 29})
+
+    _write_case(te_store, expected="id=1;age=28")  # 期望 28，实际 29 → 语义失配
+    await run_auto_execute(
+        engine, state, te_store, "http://mock:9000", httpx.MockTransport(user_service)
+    )
+    payload = te_store.read_json(_JOB, "execution.json")
+    failed = [r for r in payload["results"] if r["passed"] is False]
+    assert failed and failed[0]["failure_kind"] == "assertion"
+    assert "age=29" in failed[0]["failure_reason"]
+    assert "期望 28" in failed[0]["failure_reason"]
+
+
+async def test_auto_execute_semantic_assertion_passes_on_match(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """语义等值对全部命中 + 描述型 expected（无等值对）不受影响 → 通过。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+
+    def user_service(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(200, json={"id": 1, "name": "alice", "age": 28})
+
+    _write_case(te_store, expected="id=1;age=28；描述文字不影响判定")
+    await run_auto_execute(
+        engine, state, te_store, "http://mock:9000", httpx.MockTransport(user_service)
+    )
+    payload = te_store.read_json(_JOB, "execution.json")
+    assert all(r["passed"] is True for r in payload["results"])
+
+
+def _write_case(te_store: ArtifactStore, expected: str) -> None:
+    """写单用例前置（接口与用例，供语义断言测试复用）。"""
+    te_store.write(
+        _JOB,
+        "testcases.json",
+        {
+            "schema_version": "1.0",
+            "job_id": _JOB,
+            "cases": [
+                {
+                    "id": "TC-001",
+                    "interface_id": "IF-REST-001",
+                    "requirement_id": "REQ-001",
+                    "category": "normal",
+                    "title": "按 ID 查询",
+                    "expected": expected,
+                    "params": {"id": 1},
+                    "script_path": "scripts/test_TC_001.py",
+                    "loadable": True,
+                }
+            ],
+        },
+    )
+
+
+async def test_auto_execute_404_is_environment_not_defect(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """回归锁定：HTTP 404（路由不存在）归 environment，不进缺陷清单（R-EXEC-03/R-DEF-01）。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+
+    def routed_service(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(404, text="Not Found")
+
+    _write_case(te_store, expected="2xx 响应结构符合接口定义")
+    await run_auto_execute(
+        engine, state, te_store, "http://mock:9000", httpx.MockTransport(routed_service)
+    )
+    payload = te_store.read_json(_JOB, "execution.json")
+    result = payload["results"][0]
+    assert result["passed"] is False
+    assert result["failure_kind"] == "environment"
+    assert "404" in str(result["failure_reason"])
+
+
+async def test_auto_execute_expected_status_token(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """回归锁定：expected 含 status=400 token 时，非 2xx 预期状态码判通过（C-05 扩展）。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+
+    def biz_service(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(400, json={"error": "用户不存在"})
+
+    _write_case(te_store, expected="status=400；不存在资源返回业务错误码")
+    await run_auto_execute(
+        engine, state, te_store, "http://mock:9000", httpx.MockTransport(biz_service)
+    )
+    payload = te_store.read_json(_JOB, "execution.json")
+    result = payload["results"][0]
+    assert result["passed"] is True
+    assert result.get("failure_kind") is None

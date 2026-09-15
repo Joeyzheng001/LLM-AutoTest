@@ -36,6 +36,7 @@ from orchestrator.nodes.auto_execute import (
     InvokeRequest,
     MockDemoRunner,
     RestRunner,
+    _judge_assertion,
     probe_rest,
 )
 
@@ -112,13 +113,23 @@ async def run_retest_regression(
                 )
                 continue
 
-            # 复测重跑（R-DEF-02：重跑关联用例）
+            # 复测重跑（R-DEF-02：重跑关联用例；判定与 auto_execute 同源：2xx + 语义断言）
             runner = rest_runner if protocol == "rest" else demo_runner
             params = case.get("params") if isinstance(case.get("params"), dict) else {}
             response = await runner.invoke(
                 InvokeRequest(interface=interface, params=params)
             )
-            retest_passed = response.ok and response.status is not None and response.status < 300
+            # 复测重跑（R-DEF-02：重跑关联用例；判定与 auto_execute 同源：
+            # status token > 2xx + 语义等值对；404 归环境失败不判缺陷修复）
+            retest_passed = False
+            if response.ok and response.status is not None:
+                if response.status == 404:
+                    # 环境类（接口未部署）——复测不计通过也不计修复失败，环境待确认
+                    retest_passed = False
+                else:
+                    retest_passed, _failures = _judge_assertion(
+                        str(case.get("expected", "")), response.status, response.body
+                    )
 
             now = _now_iso()
             history: list[dict[str, Any]] = list(defect.get("history", []))

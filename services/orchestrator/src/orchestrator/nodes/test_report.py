@@ -104,7 +104,7 @@ def _render_markdown(
         f"# 测试报告（{job_id}）",
         "",
         "> 数值来源：`execution.json` 程序化汇总，未经 LLM（F-RPT-02）。",
-        "> 演示态断言口径：调用成功 + HTTP 2xx 判通过（语义断言待断言引擎完善）。",
+        "> 演示态断言口径：status token 等值 / HTTP 2xx + 「字段=值」语义等值对（docs/13 C-05）。",
         "",
         "## 1. 执行汇总",
         "",

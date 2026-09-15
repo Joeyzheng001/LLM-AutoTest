@@ -129,6 +129,79 @@ class RestRunner:
         )
 
 
+def _semantic_mismatches(expected: str, body: Any) -> list[str]:
+    """最小语义断言（演示态）：解析 expected 中的「字段=值」等值对并比对响应体。
+
+    约定（F-GEN 断言语义的最小实现，文档 docs/13 C-05）：
+    - expected 可含分号/逗号分隔的「字段=值」对（如 "id=1;age=28"）；
+    - 仅当响应体为对象且含该字段时比对；无等值对则不做语义检查（纯描述型 expected 不受影响）；
+    - 数值按数值比、其余按字符串比；不匹配返回原因清单；
+    - status 键由 _expected_status 单独处理（映射 HTTP 状态码，不比对响应体）。
+    """
+    if not isinstance(body, dict):
+        return []
+    mismatches: list[str] = []
+    for token in expected.replace("；", ";").replace("，", ",").split(";"):
+        token = token.strip()
+        if "=" not in token:
+            continue
+        key, _, raw_value = token.partition("=")
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if key == "status":
+            continue
+        if key not in body:
+            mismatches.append(f"字段 {key} 不在响应体中（期望 {raw_value}）")
+            continue
+        actual = body[key]
+        try:
+            if float(actual) != float(raw_value):
+                mismatches.append(f"{key}={actual}（期望 {raw_value}）")
+        except (TypeError, ValueError):
+            if str(actual) != raw_value:
+                mismatches.append(f"{key}={actual}（期望 {raw_value}）")
+    return mismatches
+
+
+def _expected_status(expected: str) -> int | None:
+    """解析 expected 中的 status=<n> token（预期 HTTP 状态码，C-05 扩展）。
+
+    boundary/exception 类用例允许非 2xx 的预期响应（如「不存在用户返回 400」）——
+    该 token 命中时按状态码等值判定，不再要求 2xx。解析失败返回 None（不影响
+    默认 2xx 判定，宁停不猜的反面：演示态保持宽松）。
+    """
+    for token in expected.replace("；", ";").replace("，", ",").split(";"):
+        token = token.strip()
+        if "=" not in token:
+            continue
+        key, _, raw_value = token.partition("=")
+        if key.strip() == "status":
+            try:
+                return int(raw_value.strip())
+            except ValueError:
+                return None
+    return None
+
+
+def _judge_assertion(expected: str, status: int, body: Any) -> tuple[bool, list[str]]:
+    """断言判定（auto_execute 与 retest 同源）：status token > 2xx + 语义等值对。
+
+    Returns:
+        (是否通过, 语义失配清单)。
+    """
+    allowed_status = _expected_status(expected)
+    if allowed_status is not None:
+        is_pass = status == allowed_status
+    else:
+        is_pass = 200 <= status < 300
+    if is_pass:
+        semantic_failures = _semantic_mismatches(expected, body)
+        is_pass = not semantic_failures
+    else:
+        semantic_failures = []
+    return is_pass, semantic_failures
+
+
 class MockDemoRunner:
     """Mock 演示执行器（X-EXEC-03 降级路径）：返回固定桩响应。
 
@@ -301,9 +374,27 @@ async def _execute_case(
         )
         return base
 
-    # 断言判定（演示态简化：调用成功 + HTTP 2xx；expected 语义断言待断言引擎完善）
+    # 断言判定（与 retest 同源）：status token > 2xx + 语义等值对（docs/13 C-05）
     status = response.status or 0
-    is_pass = 200 <= status < 300
+    # X-EXEC-01 同类：HTTP 404 = 路由不存在（接口未部署或指向了别的服务地址）——
+    # 归环境失败，不判缺陷（R-EXEC-03/R-DEF-01；业务级「资源不存在」由服务以
+    # 4xx 业务码表达，不与 404 混淆）
+    if status == 404:
+        base.update(
+            {
+                "passed": False,
+                "failure_kind": "environment",
+                "failure_reason": (
+                    "HTTP 404 路由不存在（接口未部署或服务地址不符，X-EXEC-01 同类）"
+                ),
+                "timeout": response.timed_out,
+                "duration_ms": response.duration_ms,
+            }
+        )
+        return base
+    is_pass, semantic_failures = _judge_assertion(
+        str(case.get("expected", "")), status, response.body
+    )
     entry: dict[str, Any] = {
         "passed": is_pass,
         "timeout": response.timed_out,
@@ -311,9 +402,13 @@ async def _execute_case(
     }
     if not is_pass:
         entry["failure_kind"] = "assertion"
-        entry["failure_reason"] = (
-            f"HTTP {status}（演示态简化断言：2xx 判通过；语义断言：{case.get('expected', '')}）"
-        )
+        if semantic_failures:
+            detail = ";".join(semantic_failures)
+            entry["failure_reason"] = f"HTTP {status} 语义断言失败：{detail}"
+        else:
+            entry["failure_reason"] = (
+                f"HTTP {status}（语义断言：{case.get('expected', '')}）"
+            )
     base.update(entry)
     return base
 
