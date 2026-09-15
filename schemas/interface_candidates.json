@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/interface_candidates",
+  "title": "接口候选清单（模块 3 REV 静态侧，主笔：乙；D1 载体，与契约 ExtractJob 一致）",
+  "type": "object",
+  "required": ["schema_version", "job_id", "candidates"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "job_id": { "type": "string", "pattern": "^job-" },
+    "candidates": {
+      "type": "array",
+      "description": "静态特征定位产物（R-REV-02①），供甲的 LLM 语义解析消费",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "protocol", "signature", "code_location", "is_fallback"],
+        "properties": {
+          "candidate_id": { "type": "string", "pattern": "^CAND-\\d{3}$" },
+          "protocol": { "type": "string", "enum": ["rest", "grpc", "graphql", "soap", "mq"] },
+          "signature": { "type": "string", "description": "静态可确定签名（HTTP 方法+路径 / service 方法）" },
+          "code_location": {
+            "type": "object",
+            "required": ["repo", "file", "start_line", "end_line"],
+            "properties": {
+              "repo": { "type": "string" },
+              "file": { "type": "string" },
+              "start_line": { "type": "integer", "minimum": 1 },
+              "end_line": { "type": "integer" }
+            }
+          },
+          "snippet": { "type": "string", "description": "接口定义源码片段（LLM 上下文）" },
+          "related_files": {
+            "type": "array",
+            "description": "R-REV-04②：Controller→Service→DTO 直接关联（静态调用链）",
+            "items": {
+              "type": "object",
+              "required": ["repo", "file", "role"],
+              "properties": {
+                "repo": { "type": "string" },
+                "file": { "type": "string" },
+                "role": { "type": "string", "enum": ["controller", "service", "dto", "proto", "wsdl", "listener", "other"] },
+                "start_line": { "type": "integer", "minimum": 1 },
+                "end_line": { "type": "integer" }
+              }
+            }
+          },
+          "is_fallback": { "type": "boolean" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "静态定位置信度" }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "X-REV-01 单文件解析失败（跳过+原因不中断）；X-REV-04 候选数 <5 提示换兜底",
+      "items": { "type": "string" }
+    }
+  }
+}

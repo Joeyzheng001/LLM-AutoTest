@@ -1,0 +1,74 @@
+{
+  "_fake": true,
+  "schema_version": "1.0",
+  "job_id": "job-3f2a1b8c-0000-4000-8000-000000000001",
+  "interfaces": [
+    {
+      "id": "IF-REST-001",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/v1/users/{id}",
+        "summary": "按 ID 查询用户"
+      },
+      "params": [
+        { "name": "id", "type": "integer", "required": true, "in": "path" }
+      ],
+      "returns": { "type": "UserDTO", "description": "用户信息" },
+      "candidate_id": "CAND-001",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/controller/UserController.java",
+        "start_line": 25,
+        "end_line": 38
+      },
+      "is_fallback": false,
+      "confidence": 0.92
+    },
+    {
+      "id": "IF-REST-002",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/v1/users",
+        "summary": "创建用户"
+      },
+      "params": [
+        { "name": "username", "type": "string", "required": true, "in": "body" },
+        { "name": "email", "type": "string", "required": true, "in": "body" },
+        { "name": "age", "type": "unknown", "required": false, "in": "body", "default": 0 }
+      ],
+      "returns": { "type": "UserDTO", "description": "创建后的用户" },
+      "candidate_id": "CAND-002",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/controller/UserController.java",
+        "start_line": 40,
+        "end_line": 55
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-GRPC-001",
+      "protocol": "grpc",
+      "signature": {
+        "service_method": "user.UserService/GetUser",
+        "summary": "gRPC 查询用户"
+      },
+      "params": [
+        { "name": "user_id", "type": "integer", "required": true }
+      ],
+      "returns": { "type": "UserReply", "description": "用户信息" },
+      "candidate_id": "CAND-003",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/proto/user_service.proto",
+        "start_line": 8,
+        "end_line": 24
+      },
+      "is_fallback": true,
+      "confidence": 0.88
+    }
+  ]
+}

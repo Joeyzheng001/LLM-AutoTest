@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/interfaces",
+  "title": "接口还原清单（模块 3 REV，LLM 补全后，主笔：甲；D2 载体）",
+  "type": "object",
+  "required": ["schema_version", "job_id", "interfaces"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "job_id": { "type": "string", "pattern": "^job-" },
+    "interfaces": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "protocol", "signature", "code_location", "is_fallback"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^IF-(REST|GRPC|GRAPHQL|SOAP|MQ)-\\d{3}$" },
+          "protocol": { "type": "string", "enum": ["rest", "grpc", "graphql", "soap", "mq"] },
+          "signature": {
+            "type": "object",
+            "description": "接口签名：REST 含 method+path；其他协议含 service/method",
+            "required": ["summary"],
+            "properties": {
+              "method": { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"] },
+              "path": { "type": "string", "description": "REST 路径，如 /api/v1/users" },
+              "service_method": { "type": "string", "description": "gRPC/SOAP/MQ 的服务方法名" },
+              "summary": { "type": "string", "minLength": 1 }
+            }
+          },
+          "params": {
+            "type": "array",
+            "description": "入参（LLM 补全；无法确定类型时标 unknown，X-REV-02）",
+            "items": {
+              "type": "object",
+              "required": ["name", "type", "required"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "type": { "type": "string", "description": "类型名或字面量 unknown" },
+                "required": { "type": "boolean" },
+                "in": { "type": "string", "enum": ["path", "query", "body", "header"], "description": "REST 参数位置" },
+                "default": { "description": "unknown 参数的边界默认值（X-REV-02）" }
+              }
+            }
+          },
+          "returns": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          },
+          "candidate_id": { "type": "string", "pattern": "^CAND-\\d{3}$", "description": "溯源到乙的静态候选" },
+          "code_location": {
+            "type": "object",
+            "required": ["repo", "file", "start_line", "end_line"],
+            "properties": {
+              "repo": { "type": "string" },
+              "file": { "type": "string" },
+              "start_line": { "type": "integer", "minimum": 1 },
+              "end_line": { "type": "integer" }
+            }
+          },
+          "is_fallback": { "type": "boolean", "description": "兜底仓库标记，全链路透传（D5 分列基础）" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  }
+}

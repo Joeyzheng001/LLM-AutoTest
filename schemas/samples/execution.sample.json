@@ -1,0 +1,62 @@
+{
+  "_fake": true,
+  "schema_version": "1.0",
+  "job_id": "job-3f2a1b8c-0000-4000-8000-000000000001",
+  "results": [
+    {
+      "case_id": "TC-001",
+      "interface_id": "IF-REST-001",
+      "passed": true,
+      "duration_ms": 120,
+      "timestamp": "2026-09-15T02:00:00Z"
+    },
+    {
+      "case_id": "TC-002",
+      "interface_id": "IF-REST-001",
+      "passed": false,
+      "failure_kind": "assertion",
+      "failure_reason": "断言失败：期望 status=200 实际=500",
+      "duration_ms": 130,
+      "timestamp": "2026-09-15T02:00:01Z"
+    },
+    {
+      "case_id": "TC-003",
+      "interface_id": "IF-REST-002",
+      "passed": false,
+      "failure_kind": "environment",
+      "failure_reason": "环境失败：连接被测服务超时（10s）",
+      "timeout": true,
+      "duration_ms": 10000,
+      "timestamp": "2026-09-15T02:00:02Z"
+    },
+    {
+      "case_id": "TC-004",
+      "interface_id": "IF-GRPC-001",
+      "passed": false,
+      "failure_kind": "assertion",
+      "failure_reason": "断言失败：user.username 期望 demo 实际 null（兜底仓库埋入缺陷）",
+      "duration_ms": 95,
+      "timestamp": "2026-09-15T02:00:03Z"
+    },
+    {
+      "case_id": "TC-005",
+      "interface_id": "IF-REST-002",
+      "passed": true,
+      "duration_ms": 150,
+      "timestamp": "2026-09-15T02:00:04Z"
+    }
+  ],
+  "summary": {
+    "total": 5,
+    "passed": 2,
+    "failed_assertion": 2,
+    "failed_environment": 1
+  },
+  "degraded_protocols": [
+    {
+      "protocol": "mq",
+      "mode": "脚本生成成功+Mock执行演示",
+      "reason": "MQ 异步消费轮询断言成本高，按 X-EXEC-03 降级"
+    }
+  ]
+}

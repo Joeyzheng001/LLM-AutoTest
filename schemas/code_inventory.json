@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/code_inventory",
+  "title": "源码扫描清单（模块 2 CODE，主笔：乙）",
+  "type": "object",
+  "required": ["schema_version", "job_id", "repositories"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "job_id": { "type": "string", "pattern": "^job-" },
+    "repositories": {
+      "type": "array",
+      "minItems": 2,
+      "description": "G3：≥2 个仓库（X-CODE-01~03 四态）",
+      "items": {
+        "type": "object",
+        "required": ["name", "path", "branch", "is_fallback", "status", "file_count"],
+        "properties": {
+          "name": { "type": "string" },
+          "path": { "type": "string", "description": "已检出正确分支的本地路径（07 遗留事项 #1）" },
+          "branch": { "type": "string" },
+          "is_fallback": { "type": "boolean" },
+          "status": {
+            "type": "string",
+            "enum": ["ok", "empty", "truncated", "error"],
+            "description": "empty=X-CODE-02 流程继续；truncated=X-CODE-03；error=X-CODE-01"
+          },
+          "file_count": { "type": "integer", "minimum": 0 },
+          "truncated_scope": { "type": "array", "items": { "type": "string" }, "description": "截断后实际扫描目录（X-CODE-03 注明范围）" },
+          "encoding_skipped": { "type": "array", "items": { "type": "string" }, "description": "异常编码跳过文件（R-CODE-03）" },
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" },
+              "details": { "type": "object" }
+            }
+          },
+          "files": {
+            "type": "array",
+            "description": "源码清单（仓库、模块、文件路径，F-CODE-03）",
+            "items": {
+              "type": "object",
+              "required": ["repo", "module", "path"],
+              "properties": {
+                "repo": { "type": "string" },
+                "module": { "type": "string", "description": "Maven 模块，无模块结构取顶层目录名" },
+                "path": { "type": "string", "description": "仓库内相对路径" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/requirement_items",
+  "title": "需求解析条目（模块 1 REQ，主笔：甲）",
+  "type": "object",
+  "required": ["schema_version", "job_id", "items"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "job_id": { "type": "string", "pattern": "^job-" },
+    "source_file": { "type": "string", "description": "来源文档路径与格式：docx/md/xlsx（F-REQ-01~03）" },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "description"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
+          "title": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "description": "功能点结构化描述" },
+          "priority": { "type": "string", "enum": ["P0", "P1", "P2"] },
+          "source_location": {
+            "type": "object",
+            "description": "文档内溯源（章节号/表格坐标）",
+            "properties": {
+              "section": { "type": "string" },
+              "line": { "type": "integer", "minimum": 1 }
+            }
+          },
+          "golden_match": {
+            "type": "object",
+            "description": "G2 比对结果：预置 golden 基准，非现场人工判断",
+            "required": ["matched"],
+            "properties": {
+              "matched": { "type": "boolean" },
+              "golden_id": { "type": "string", "pattern": "^REQ-\\d{3}$" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

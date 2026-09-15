@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/metrics",
+  "title": "自动化率度量（模块 10 MTR，主笔：甲；数值程序化汇总，不经 LLM）",
+  "type": "object",
+  "required": ["schema_version", "job_id", "automation_rate", "nodes"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "job_id": { "type": "string", "pattern": "^job-" },
+    "automation_rate": {
+      "type": "object",
+      "description": "F-MTR-03：无人工节点数/9；X-MTR-01：分母固定 9 不缩减",
+      "required": ["value", "numerator", "denominator"],
+      "properties": {
+        "value": { "type": ["number", "null"], "description": "X-MTR-02：数据不完整时为 null，不输出误导数值" },
+        "numerator": { "type": "integer", "minimum": 0 },
+        "denominator": { "const": 9 },
+        "data_complete": { "type": "boolean" }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "description": "9 节点逐个状态（R-MTR-01 固定口径）",
+      "minItems": 9,
+      "maxItems": 9,
+      "items": {
+        "type": "object",
+        "required": ["name", "status"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["req_parse", "code_scan", "interface_reconstruct", "code_review", "testcase_generate", "auto_execute", "test_report", "defect_list", "retest_regression"]
+          },
+          "status": { "type": "string", "enum": ["completed", "manual_intervention"] },
+          "degraded": { "type": "boolean", "description": "降级节点按人工介入计入（D1），此处注明降级原因" },
+          "degrade_reason": { "type": "string" },
+          "intervention_reason": { "type": "string" },
+          "automation_path": { "type": "string", "description": "可自动化路径建议（R-MTR-03 瓶颈分析）" }
+        }
+      }
+    },
+    "caveat": {
+      "type": "string",
+      "const": "项目口径 ≠ 生产口径：本自动化率基于本地缺陷记录等节点定义，不得直接外推为生产预期（R-MTR-04）"
+    },
+    "measured_at": { "type": "string", "format": "date-time", "description": "X-MTR-03：仅正式验收数值作为基线" }
+  }
+}

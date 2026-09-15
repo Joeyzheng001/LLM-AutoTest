@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/regression_index",
+  "title": "回归资产索引（模块 9 REG，主笔：丙）",
+  "type": "object",
+  "required": ["schema_version", "job_id", "suites"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "job_id": { "type": "string", "pattern": "^job-" },
+    "suites": {
+      "type": "array",
+      "description": "R-REG-02：按协议维度组织（REST 完整实现，其他协议最小可用级 X-REG-03）",
+      "items": {
+        "type": "object",
+        "required": ["protocol", "scripts"],
+        "properties": {
+          "protocol": { "type": "string", "enum": ["rest", "grpc", "graphql", "soap", "mq"] },
+          "scripts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["case_id", "script_path", "requirement_id", "interface_id", "archived_at"],
+              "properties": {
+                "case_id": { "type": "string", "pattern": "^TC-\\d{3}$" },
+                "script_path": { "type": "string", "description": "归档后路径（移动非复制，R-REG-01）" },
+                "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$", "description": "F-REG-02 溯源随档" },
+                "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
+                "archived_at": { "type": "string", "format": "date-time", "description": "UTC ISO-8601；R-REG-03 幂等：同用例重档更新此时间" },
+                "version": { "type": "integer", "minimum": 1, "description": "X-REG-01：覆盖归档时递增版本" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "drift_warnings": {
+      "type": "array",
+      "description": "X-REG-02：回归重跑结果与沉淀时不一致 → 标回归漂移，交人工判断不自动删除",
+      "items": {
+        "type": "object",
+        "required": ["case_id", "detail"],
+        "properties": {
+          "case_id": { "type": "string", "pattern": "^TC-\\d{3}$" },
+          "detail": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

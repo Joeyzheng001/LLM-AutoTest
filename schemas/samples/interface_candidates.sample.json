@@ -1,0 +1,61 @@
+{
+  "_fake": true,
+  "schema_version": "1.0",
+  "job_id": "job-3f2a1b8c-0000-4000-8000-000000000001",
+  "candidates": [
+    {
+      "candidate_id": "CAND-001",
+      "protocol": "rest",
+      "signature": "GET /api/v1/users/{id}",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/controller/UserController.java",
+        "start_line": 25,
+        "end_line": 38
+      },
+      "snippet": "@GetMapping(\"/users/{id}\")\npublic ResponseEntity<UserDTO> getUser(@PathVariable Long id) { ... }",
+      "related_files": [
+        { "repo": "user-service", "file": "src/main/java/com/demo/service/UserService.java", "role": "service", "start_line": 12, "end_line": 20 },
+        { "repo": "user-service", "file": "src/main/java/com/demo/dto/UserDTO.java", "role": "dto", "start_line": 1, "end_line": 30 }
+      ],
+      "is_fallback": false,
+      "confidence": 0.95
+    },
+    {
+      "candidate_id": "CAND-002",
+      "protocol": "rest",
+      "signature": "POST /api/v1/users",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/java/com/demo/controller/UserController.java",
+        "start_line": 40,
+        "end_line": 55
+      },
+      "snippet": "@PostMapping(\"/users\")\npublic ResponseEntity<UserDTO> createUser(@RequestBody CreateUserRequest req) { ... }",
+      "related_files": [
+        { "repo": "user-service", "file": "src/main/java/com/demo/service/UserService.java", "role": "service", "start_line": 22, "end_line": 35 },
+        { "repo": "user-service", "file": "src/main/java/com/demo/dto/UserDTO.java", "role": "dto", "start_line": 1, "end_line": 30 }
+      ],
+      "is_fallback": false,
+      "confidence": 0.93
+    },
+    {
+      "candidate_id": "CAND-003",
+      "protocol": "grpc",
+      "signature": "user.UserService/GetUser",
+      "code_location": {
+        "repo": "user-service",
+        "file": "src/main/proto/user_service.proto",
+        "start_line": 8,
+        "end_line": 24
+      },
+      "snippet": "service UserService { rpc GetUser (GetUserRequest) returns (UserReply); }",
+      "related_files": [
+        { "repo": "user-service", "file": "src/main/proto/user_service.proto", "role": "proto", "start_line": 1, "end_line": 60 }
+      ],
+      "is_fallback": true,
+      "confidence": 0.9
+    }
+  ],
+  "warnings": []
+}

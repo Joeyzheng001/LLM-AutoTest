@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/execution",
+  "title": "执行结果（模块 6 EXEC，主笔：丙；D5 载体，数值程序化汇总不经 LLM）",
+  "type": "object",
+  "required": ["schema_version", "job_id", "results", "summary"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "job_id": { "type": "string", "pattern": "^job-" },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["case_id", "interface_id", "passed", "timestamp"],
+        "properties": {
+          "case_id": { "type": "string", "pattern": "^TC-\\d{3}$" },
+          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
+          "passed": { "type": "boolean" },
+          "failure_kind": {
+            "type": ["string", "null"],
+            "enum": ["assertion", "environment", null],
+            "description": "R-EXEC-03 二态：断言失败进缺陷清单；环境失败隔离待环境确认（X-EXEC-01）"
+          },
+          "failure_reason": { "type": "string" },
+          "timeout": { "type": "boolean", "description": "X-EXEC-02 执行超时" },
+          "skipped_reason": { "type": "string", "enum": ["前置缺失"], "description": "X-EXEC-05：前置数据无法准备时跳过并记录" },
+          "duration_ms": { "type": "integer", "minimum": 0 },
+          "timestamp": { "type": "string", "format": "date-time", "description": "UTC ISO-8601" }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "程序化汇总（F-RPT-02 数据源；骨架 ExecutionSummary 已实现）",
+      "required": ["total", "passed", "failed_assertion", "failed_environment"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed_assertion": { "type": "integer", "minimum": 0 },
+        "failed_environment": { "type": "integer", "minimum": 0 },
+        "interrupted": { "type": "integer", "minimum": 0, "description": "X-EXEC-04：服务崩溃后剩余用例标中断" }
+      }
+    },
+    "degraded_protocols": {
+      "type": "array",
+      "description": "F-RPT-03 降级清单：降级协议显式记录（X-EXEC-03）",
+      "items": {
+        "type": "object",
+        "required": ["protocol", "mode"],
+        "properties": {
+          "protocol": { "type": "string", "enum": ["rest", "grpc", "graphql", "soap", "mq"] },
+          "mode": { "type": "string", "const": "脚本生成成功+Mock执行演示" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

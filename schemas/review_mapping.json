@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/review_mapping",
+  "title": "Code Review 三视图（模块 4 REVIEW，主笔：甲）",
+  "type": "object",
+  "required": ["schema_version", "job_id", "mappings", "risks", "missing_features"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "job_id": { "type": "string", "pattern": "^job-" },
+    "mappings": {
+      "type": "array",
+      "description": "视图一：需求-代码映射表（requirements × interfaces，F-REVW-01/02）",
+      "items": {
+        "type": "object",
+        "required": ["requirement_id", "status", "confidence"],
+        "properties": {
+          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
+          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
+          "status": { "type": "string", "enum": ["implemented", "partial", "missing", "undetermined"] },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "code_location": {
+                "type": "object",
+                "properties": {
+                  "repo": { "type": "string" },
+                  "file": { "type": "string" },
+                  "start_line": { "type": "integer", "minimum": 1 },
+                  "end_line": { "type": "integer" }
+                }
+              },
+              "note": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "description": "视图二：风险清单（partial 自动进入，R-REVW-04；程序化派生，R-REVW-02）",
+      "items": {
+        "type": "object",
+        "required": ["requirement_id", "description"],
+        "properties": {
+          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
+          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
+          "description": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "missing_features": {
+      "type": "array",
+      "description": "视图三：遗漏功能清单（提取 missing 条目，程序化派生保证一致）",
+      "items": {
+        "type": "object",
+        "required": ["requirement_id", "title"],
+        "properties": {
+          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
+          "title": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "review_log": {
+      "type": "array",
+      "description": "人工审核记录（F-REVW-06：通过/驳回 + 回流；E-REVIEW-03 闭环）",
+      "items": {
+        "type": "object",
+        "required": ["requirement_id", "decision", "timestamp"],
+        "properties": {
+          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
+          "decision": { "type": "string", "enum": ["approved", "rejected"] },
+          "reason": { "type": "string" },
+          "resubmitted": { "type": "boolean", "description": "驳回后是否已回流重新生成" },
+          "timestamp": { "type": "string", "format": "date-time", "description": "UTC ISO-8601" }
+        }
+      }
+    }
+  }
+}
