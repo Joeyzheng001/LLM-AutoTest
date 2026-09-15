@@ -93,6 +93,9 @@ class RestRunner:
                 body[name] = value
             elif position == "header":
                 headers[name] = str(value)
+            elif position == "path":
+                # 联调发现：path 参数须替换路径模板，否则字面 {id} 进 URL 真实服务必 404
+                path = path.replace("{" + name + "}", str(value))
             else:
                 query[name] = value
 

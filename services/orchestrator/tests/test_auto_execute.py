@@ -342,3 +342,90 @@ async def test_auto_execute_skip_order_guard(
         )
 
     assert err.value.code == X_ORCH_02
+
+
+async def test_auto_execute_path_param_substitution(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """回归锁定：path 参数须替换路径模板（联调发现——字面 {id} 进 URL 真实服务必 404）。"""
+    engine, te_store, orch_store = env
+    state = engine.open_job(_JOB)
+    seen_paths: list[str] = []
+
+    def path_service(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/api/v1/users/42":
+            return httpx.Response(200, json={"id": 42, "name": "u"})
+        return httpx.Response(404, json={"error": "not found"})
+
+    # 前置：testcases 含 path 参数用例，interface 声明 in: "path"
+    te_store.write(
+        _JOB,
+        "testcases.json",
+        {
+            "schema_version": "1.0",
+            "job_id": _JOB,
+            "cases": [
+                {
+                    "id": "TC-001",
+                    "interface_id": "IF-REST-001",
+                    "requirement_id": "REQ-001",
+                    "category": "normal",
+                    "title": "按 ID 查询",
+                    "expected": "返回用户",
+                    "params": {"id": 42},
+                    "script_path": "scripts/test_TC_001.py",
+                    "loadable": True,
+                }
+            ],
+            "scripts": [
+                {
+                    "case_id": "TC-001",
+                    "script_path": "scripts/test_TC_001.py",
+                    "loadable": True,
+                }
+            ],
+        },
+    )
+    orch_store.write(
+        _JOB,
+        "interfaces.json",
+        {
+            "schema_version": "1.0",
+            "job_id": _JOB,
+            "interfaces": [
+                {
+                    "id": "IF-REST-001",
+                    "candidate_id": "CAND-001",
+                    "protocol": "rest",
+                    "signature": {
+                        "method": "GET",
+                        "path": "/api/v1/users/{id}",
+                        "summary": "按 ID 查询用户",
+                    },
+                    "params": [
+                        {"name": "id", "type": "long", "required": True, "in": "path"}
+                    ],
+                    "code_location": {
+                        "repo": "user-service",
+                        "file": "UserController.java",
+                        "start_line": 28,
+                        "end_line": 31,
+                    },
+                    "is_fallback": False,
+                }
+            ],
+        },
+    )
+
+    await run_auto_execute(
+        engine, state, te_store, "http://mock:9000", httpx.MockTransport(path_service)
+    )
+
+    # 请求命中替换后的真实路径（非字面 {id}）
+    assert "/api/v1/users/42" in seen_paths
+    assert not any("{id}" in p for p in seen_paths)
+    payload = te_store.read_json(_JOB, "execution.json")
+    assert payload["results"][0]["passed"] is True
