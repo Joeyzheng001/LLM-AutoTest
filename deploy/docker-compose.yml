@@ -1,0 +1,61 @@
+# 编排唯一事实来源（docs/09 第十一章）
+# 使用：docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
+services:
+  java-parser:
+    build: ../services/java-parser
+    image: llm-autotest/java-parser:0.1.0
+    ports:
+      - "8081:8080"
+    volumes:
+      - artifacts:/data/llm-autotest
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  orchestrator:
+    build: ../services/orchestrator
+    image: llm-autotest/orchestrator:0.1.0
+    ports:
+      - "8000:8000"
+    environment:
+      JAVA_PARSER_URL: http://java-parser:8080
+    env_file:
+      - .env
+    volumes:
+      - artifacts:/data/llm-autotest
+    depends_on:
+      java-parser:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ../services/frontend
+    image: llm-autotest/frontend:0.1.0
+    ports:
+      - "8080:80"
+    depends_on:
+      - orchestrator
+    restart: unless-stopped
+
+  # 以下服务按 profile 暂缓启用：test-executor 待 M0 契约定稿（schemas/contracts/）；
+  # mock-services 待 F-EXEC-06 落地（多协议 Mock 环境）
+  test-executor:
+    profiles: ["exec"]
+    build: ../services/test-executor
+    image: llm-autotest/test-executor:0.1.0
+    volumes:
+      - artifacts:/data/llm-autotest
+
+  mock-services:
+    profiles: ["mock"]
+    image: busybox:1.36
+    command: sleep infinity
+
+volumes:
+  # 产物卷：容器内挂载点统一 /data/llm-autotest（docs/09 第十一章）；
+  # 宿主机路径与备份策略待 B 定稿（docs/08 待定项 #3）
+  artifacts:
+    driver: local

@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    name: Python (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [orchestrator, test-executor]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src
+      - run: uv run pytest -q
+        # 覆盖率门禁（≥70%）自 M1 起逐步启用（docs/09 第十章排期提示）
+
+  java:
+    name: Java (java-parser)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/java-parser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - run: mvn -B -ntp verify
+
+  frontend:
+    name: Frontend (frontend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: services/frontend/pnpm-lock.yaml
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+
+  docker:
+    name: Docker build (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        service: [orchestrator, java-parser, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t llm-autotest/${{ matrix.service }}:ci services/${{ matrix.service }}

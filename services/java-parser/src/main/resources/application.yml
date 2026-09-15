@@ -1,0 +1,7 @@
+# 服务配置（环境变量覆盖）
+server:
+  port: 8080
+
+parser:
+  # 多仓库扫描并发度（受控可配置）
+  scan-concurrency: 4

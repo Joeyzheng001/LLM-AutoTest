@@ -1,0 +1,32 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+# 注意：uv.lock 必须入库（docs/09 第一章：依赖锁定，CI uv sync --frozen 依赖锁文件）
+
+# Java
+target/
+*.class
+
+# Node
+node_modules/
+dist/
+
+# 环境与密钥（禁止提交，红线见 docs/09 第一章）
+.env
+.env.*
+!deploy/.env.example
+
+# 运行时产物（按任务 ID 分目录，运行时生成，不入库）
+/data/
+volumes/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

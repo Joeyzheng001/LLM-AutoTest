@@ -1,0 +1,368 @@
+# java-parser 服务契约 v0.1（草案，待 B+C 评审定稿）
+# 依据：docs/04 模块 2（CODE）/ 模块 3（REV）；docs/09 第七章（契约先行、错误结构统一、路径+分支输入）
+# 职责边界：java-parser 负责静态分析与候选提取（R-REV-02 第①步）；LLM 语义解析（第②步）在 orchestrator 侧调用 GLM-5.3
+openapi: 3.1.0
+info:
+  title: java-parser API
+  version: 0.1.0
+  description: |
+    Java 多仓库扫描与接口候选提取服务（模块 2 CODE + 模块 3 REV 的静态侧）。
+    长任务采用异步 job 模式：POST 创建 job → GET 轮询状态与结果。
+paths:
+  /health:
+    get:
+      operationId: health
+      summary: 健康检查（docker-compose 编排依赖）
+      responses:
+        "200":
+          description: 服务存活
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /api/v1/scan-jobs:
+    post:
+      operationId: createScanJob
+      summary: 创建多仓库扫描任务（F-CODE-01~03）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanRequest"
+      responses:
+        "202":
+          description: job 已受理
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobAccepted"
+        "400":
+          description: 请求非法（如 repositories 为空）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/scan-jobs/{jobId}:
+    get:
+      operationId: getScanJob
+      summary: 查询扫描任务状态与产物
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: job 当前状态（含完成后的 code_inventory）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanJob"
+        "404":
+          description: job 不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/extract-jobs:
+    post:
+      operationId: createExtractJob
+      summary: 创建接口候选提取任务（R-REV-02 静态特征定位）
+      description: |
+        基于 code_inventory 的源文件内容做静态特征定位（注解/proto/WSDL 等），
+        产出接口候选清单（含代码位置与关联文件上下文），供 orchestrator 侧 LLM 语义解析使用。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtractRequest"
+      responses:
+        "202":
+          description: job 已受理
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobAccepted"
+
+  /api/v1/extract-jobs/{jobId}:
+    get:
+      operationId: getExtractJob
+      summary: 查询候选提取任务状态与产物
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: job 当前状态（含完成后的候选清单）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractJob"
+        "404":
+          description: job 不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+        service:
+          type: string
+          const: java-parser
+
+    Error:
+      # docs/09 第七章：三栈统一错误结构
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: 稳定错误码（如 REPO_PATH_NOT_FOUND）
+        message:
+          type: string
+          description: 可理解错误信息，不得泄漏堆栈/路径细节
+        node_id:
+          type: string
+          description: 关联的流水线节点（可选）
+        details:
+          type: object
+          additionalProperties: true
+          description: 结构化补充（如无效路径列表）
+
+    JobAccepted:
+      type: object
+      required: [job_id, status]
+      properties:
+        job_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/JobStatus"
+
+    JobStatus:
+      type: string
+      enum: [queued, running, completed, failed]
+
+    RepositoryInput:
+      # 07 遗留事项 #1：路径 + 分支结构补全
+      type: object
+      required: [name, path, branch]
+      properties:
+        name:
+          type: string
+          description: 仓库显示名（真实/兜底分列标识）
+        path:
+          type: string
+          description: 已检出正确分支的本地路径（容器内可见）
+        branch:
+          type: string
+        is_fallback:
+          type: boolean
+          default: false
+          description: 兜底演示仓库标记（D5：结果单独标注、不计入 G3）
+        include_paths:
+          type: array
+          items:
+            type: string
+          description: 超大仓库截断时的核心模块目录（X-CODE-03）
+
+    ScanRequest:
+      type: object
+      required: [job_id, repositories]
+      properties:
+        job_id:
+          type: string
+          description: 由 orchestrator 生成的任务 ID（产物按任务 ID 归档）
+        repositories:
+          type: array
+          minItems: 2
+          description: 仓库列表（G3：≥2 个）
+          items:
+            $ref: "#/components/schemas/RepositoryInput"
+
+    RepoScanStatus:
+      type: string
+      enum: [ok, empty, truncated, error]
+      description: |
+        ok=正常；empty=无可分析内容（X-CODE-02，流程继续）；
+        truncated=超大仓库按 include_paths 截断（X-CODE-03）；
+        error=路径不存在等硬错误（X-CODE-01）
+
+    RepoInventory:
+      type: object
+      required: [name, path, branch, is_fallback, status, file_count]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        branch:
+          type: string
+        is_fallback:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/RepoScanStatus"
+        file_count:
+          type: integer
+          minimum: 0
+        truncated_scope:
+          type: array
+          items:
+            type: string
+          description: 截断后实际扫描的目录（X-CODE-03 注明截断范围）
+        encoding_skipped:
+          type: array
+          items:
+            type: string
+          description: 异常编码被跳过内容解析的文件（R-CODE-03 记录但跳过）
+        error:
+          $ref: "#/components/schemas/Error"
+        files:
+          type: array
+          description: 源码文件清单（仓库、模块、文件路径 —— F-CODE-03）
+          items:
+            $ref: "#/components/schemas/SourceFile"
+
+    SourceFile:
+      type: object
+      required: [repo, module, path]
+      properties:
+        repo:
+          type: string
+        module:
+          type: string
+          description: Maven 模块（无模块结构时取顶层目录名）
+        path:
+          type: string
+          description: 仓库内相对路径
+
+    ScanJob:
+      allOf:
+        - $ref: "#/components/schemas/JobAccepted"
+        - type: object
+          properties:
+            code_inventory:
+              type: object
+              description: code_inventory.json 产物（F-CODE-03；schema_version 由 schemas/ 正式定义）
+              required: [schema_version, repositories]
+              properties:
+                schema_version:
+                  type: string
+                job_id:
+                  type: string
+                repositories:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/RepoInventory"
+
+    ExtractRequest:
+      type: object
+      required: [job_id, repositories]
+      properties:
+        job_id:
+          type: string
+        repositories:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepositoryInput"
+        protocols:
+          type: array
+          description: 要求识别的协议（默认全部；D2：gRPC/SOAP/MQ 至少其一，gRPC 优先）
+          items:
+            type: string
+            enum: [rest, grpc, graphql, soap, mq]
+
+    CodeLocation:
+      # R-REV-03：仓库+文件+行号区间，供映射表与人工抽查
+      type: object
+      required: [repo, file, start_line, end_line]
+      properties:
+        repo:
+          type: string
+        file:
+          type: string
+        start_line:
+          type: integer
+          minimum: 1
+        end_line:
+          type: integer
+
+    RelatedFile:
+      # R-REV-04 ②：Controller → Service 签名 → DTO 的直接关联文件
+      type: object
+      required: [repo, file, role]
+      properties:
+        repo:
+          type: string
+        file:
+          type: string
+        start_line:
+          type: integer
+        end_line:
+          type: integer
+        role:
+          type: string
+          enum: [controller, service, dto, proto, wsdl, listener, other]
+
+    InterfaceCandidate:
+      type: object
+      required: [candidate_id, protocol, signature, code_location, is_fallback]
+      properties:
+        candidate_id:
+          type: string
+        protocol:
+          type: string
+          enum: [rest, grpc, graphql, soap, mq]
+        signature:
+          type: string
+          description: 静态可确定的接口签名（HTTP 方法+路径 / service 方法等）
+        code_location:
+          $ref: "#/components/schemas/CodeLocation"
+        snippet:
+          type: string
+          description: 接口定义源码片段（供 LLM 语义解析的上下文）
+        related_files:
+          type: array
+          items:
+            $ref: "#/components/schemas/RelatedFile"
+        is_fallback:
+          type: boolean
+          description: 所属仓库是否为兜底演示仓库（D5 分列标记随候选透传）
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: 静态定位置信度（X-REQ-04 置信度标记）
+
+    ExtractJob:
+      allOf:
+        - $ref: "#/components/schemas/JobAccepted"
+        - type: object
+          properties:
+            candidates:
+              type: array
+              items:
+                $ref: "#/components/schemas/InterfaceCandidate"
+            warnings:
+              type: array
+              items:
+                type: string
+              description: |
+                告警清单（如 X-REV-04：候选数低于底线时提示换用兜底仓库；
+                X-REV-01：单文件解析失败记录跳过+原因，不中断整体）

@@ -1,0 +1,44 @@
+[project]
+name = "test-executor"
+version = "0.1.0"
+description = "LLM-AutoTest 测试执行服务：pytest 脚本加载、无人值守执行、断言二态判定（模块 6 EXEC）"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.9",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/executor"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S", "RUF"]
+# 中文注释与 docstring 约定（docs/09 第二章）：保留全角标点
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
