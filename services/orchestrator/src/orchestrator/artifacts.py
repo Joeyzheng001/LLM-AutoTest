@@ -95,6 +95,33 @@ class ArtifactStore:
         tmp.replace(target)
         return target
 
+    def write_raw(self, job_id: str, relative_path: str, text: str) -> Path:
+        """写入非 Schema 产物（scripts/ 下脚本等）：原子落盘 + 路径限制。
+
+        仅允许 scripts/ 前缀（防止写到产物区或目录逃逸）；调用方服务须为
+        test-executor（docs/12 产物布局：scripts/ 丙写，orchestrator 只读）。
+
+        Raises:
+            PipelineError: X-ORCH-01——路径不合规或写权不属于本服务。
+        """
+        if self._service != "test-executor":
+            raise PipelineError(
+                code=X_ORCH_01,
+                message=f"write_raw 写权属于 test-executor（当前 {self._service}）",
+            )
+        rel = Path(relative_path)
+        if rel.is_absolute() or ".." in rel.parts or rel.parts[0] != "scripts":
+            raise PipelineError(
+                code=X_ORCH_01,
+                message=f"write_raw 仅允许 scripts/ 下相对路径：{relative_path}",
+            )
+        target = self.job_dir(job_id).joinpath(rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(target)
+        return target
+
     def validate(self, job_id: str, filename: str, payload: dict[str, Any]) -> list[str]:
         """按 schemas/<同名>.json 校验 payload；md 产物与未知文件名另行处理。"""
         _ = job_id  # 路径无关：校验只取决于文件名对应的 Schema

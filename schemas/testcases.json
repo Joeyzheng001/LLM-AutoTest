@@ -29,6 +29,11 @@
           "low_confidence": { "type": "boolean", "description": "X-GEN-03：unknown 参数用例低置信度注明" }
         }
       }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "生成质量告警（v1.1 新增可选字段：X-GEN-01 接口跳过 / X-GEN-02 参数一致性二次不过放弃）",
+      "items": { "type": "string" }
     }
   }
 }
