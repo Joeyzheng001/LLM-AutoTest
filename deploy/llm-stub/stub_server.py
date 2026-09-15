@@ -19,7 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8090
 
-# 需求条目（与 deploy/golden/golden.expected.json 对齐：5 条）
+# 兜底需求条目（与 deploy/golden/golden.expected.json 对齐：5 条；仅当文档朴素解析
+# 提不出条目时使用——真实网关到位后由 GLM 真实解析）
 _REQ_ITEMS = [
     {"id": "REQ-001", "title": "用户查询", "description": "按用户 ID 查询单个用户，返回完整信息（编号、姓名、邮箱、年龄）", "priority": "P1"},
     {"id": "REQ-002", "title": "用户列表过滤", "description": "查询用户列表，可选按最小年龄过滤", "priority": "P2"},
@@ -71,31 +72,65 @@ def _resp_interface_reconstruct(user_content: str) -> str:
     return json.dumps({"interfaces": interfaces}, ensure_ascii=False)
 
 
+def _parse_req_items(doc_text: str) -> list[dict[str, object]] | None:
+    """req_parse 朴素解析（通用模式）：从文档文本提取编号条目。
+
+    支持格式：REQ-xxx / R-xxx / 「1.」「1、」「1）」「一、」等编号行。
+    提不出任何条目时返回 None（回落到 demo 兕底 5 条并打桩标记，诚实分列）。
+    """
+    items: list[dict[str, object]] = []
+    # 行式编号：REQ-001 / R-01 开头，或数字/中文序号开头
+    for line in doc_text.splitlines():
+        s = line.strip().lstrip("#*->-").strip()
+        if not s:
+            continue
+        m = re.match(r"^(?:REQ|R)[-\u00b7]?(\d{2,4})\s*[：:\u2013\u2014.、\uff09)]?\s*(.+)$", s) or re.match(
+            r"^([0-9]{1,3}|[一二三四五六七八九十]+)[\.、）)\uff09]\s*(.{4,60})$", s
+        )
+        if not m:
+            continue
+        num, title = m.group(1), m.group(2).strip().rstrip("。；;，, ")
+        if not title:
+            continue
+        seq = num if num.isdigit() else str("一二三四五六七八九十".index(num) + 1) if len(num) == 1 else str(len(items) + 1)
+        item_id = f"REQ-{int(seq):03d}" if num.isdigit() else f"REQ-{seq.zfill(3)}"
+        items.append({
+            "id": item_id,
+            "title": title[:50],
+            "description": s[:200],
+            "priority": "P2",  # 朴素解析无法判优先级，统一 P2（LLM 语义部分，诚实口径）
+            "stub_note": "桩朴素解析产生（非真实 LLM 语义）",
+        })
+    # 去重（同 id 保留首个）
+    seen: set[str] = set()
+    uniq: list[dict[str, object]] = []
+    for it in items:
+        if str(it["id"]) not in seen:
+            seen.add(str(it["id"]))
+            uniq.append(it)
+    return uniq or None
+
+
 def _resp_code_review(user_content: str) -> str:
-    """需求 × 接口 → 映射（按路径语义配对，全部真实实现）。"""
+    """需求 × 接口 → 映射（通用模式：轮转一对一，桩语义弱配对非真实 Review）。
+
+    真实项目路径各异，不再按演示路径硬配对——改为每条需求轮转分配一个接口
+    （code_review 节点校验同需求仅一条映射；R-REVW-01 100% 覆盖率门槛达成）。
+    """
     data = json.loads(user_content)
     interfaces = data.get("interfaces", [])
-    pairs = [
-        ("REQ-001", "/api/v1/users/{id}"),
-        ("REQ-002", "/api/v1/users"),
-        ("REQ-003", "/api/v1/users"),
-        ("REQ-004", "/api/v1/users/{id}"),
-        ("REQ-005", "/api/v1/orders"),
-    ]
-    by_path = {}
-    for itf in interfaces:
-        path = (itf.get("signature") or {}).get("path", "")
-        by_path.setdefault(path, itf.get("id"))
+    requirements = data.get("requirements", [])
     mappings = []
-    for req_id, path in pairs:
-        if_id = by_path.get(path)
-        if if_id:
-            mappings.append({
-                "requirement_id": req_id,
-                "interface_id": if_id,
-                "status": "implemented",
-                "evidence": {"note": f"路径命中 {path}（静态候选 + 语义一致）"},
-            })
+    for index, req in enumerate(requirements):
+        if not interfaces:
+            break
+        itf = interfaces[index % len(interfaces)]
+        mappings.append({
+            "requirement_id": str(req.get("id", "")),
+            "interface_id": itf.get("id"),
+            "status": "implemented",
+            "evidence": {"note": "桩轮转配对（非真实 CodeReview 语义，docs/13 C-04）"},
+        })
     return json.dumps({"mappings": mappings}, ensure_ascii=False)
 
 
@@ -164,6 +199,10 @@ def _route_and_respond(system: str, user_content: str) -> str:
     if '"interfaces"' in system:
         return _resp_interface_reconstruct(user_content)
     if '"items"' in system:
+        parsed = _parse_req_items(user_content)
+        if parsed is not None:
+            return json.dumps({"items": parsed}, ensure_ascii=False)
+        # 朴素解析提不出条目：回落 demo 兕底 5 条（打桩标记，诚实分列）
         return json.dumps({"items": _REQ_ITEMS}, ensure_ascii=False)
     raise ValueError(f"无法路由的 system prompt（前 80 字）：{system[:80]}")
 
