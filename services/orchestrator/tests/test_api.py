@@ -1,0 +1,399 @@
+"""REST API 层测试（Web 并存入口，V2.1）：提交/状态/产物/复测/审核回流。
+
+FakeRunner 注入（create_app(runner=...)）：不经 LLM/java-parser，只产真实
+state.json + 少量产物——API 协议与留痕行为是测点，节点语义已有专项测试。
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+from fastapi import FastAPI
+
+from orchestrator.api import create_app
+from orchestrator.config import Settings
+from orchestrator.pipeline import NODE_ORDER, NodeStatus
+from orchestrator.runner import PipelineOutcome
+
+_DOC = "# 需求\n\n1. 查询用户\n2. 创建用户\n"
+
+
+class FakeRunner:
+    """测试替身：记录调用 + 用真实 Engine 产 state.json + 落两份产物。"""
+
+    def __init__(self, settings: Settings, engine: Any, orch_store: Any, te_store: Any) -> None:
+        self.settings = settings
+        self.engine = engine
+        self.orch_store = orch_store
+        self.te_store = te_store
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(
+        self,
+        job_id: str,
+        doc_path: Path,
+        repositories: list[Any],
+        rest_base_url: str,
+        force_node: str | None = None,
+    ) -> PipelineOutcome:
+        self.calls.append(
+            {
+                "job_id": job_id,
+                "doc_path": str(doc_path),
+                "repos": [(r.name, r.path) for r in repositories],
+                "rest_base_url": rest_base_url,
+                "force_node": force_node,
+            }
+        )
+        job_dir = self.orch_store.job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        # 产物先落盘（引擎产物判据：存在且过 Schema；双身份写权与流水线一致）
+        self.te_store.write(job_id, "testcases.json", self._payload("testcases", job_id))
+        self.te_store.write(job_id, "execution.json", self._payload("execution", job_id))
+        self.te_store.write(job_id, "defects.json", self._payload("defects", job_id))
+        self.te_store.write(
+            job_id, "regression_index.json", self._payload("regression_index", job_id)
+        )
+        self.orch_store.write(
+            job_id, "requirement_items.json", self._payload("requirement_items", job_id)
+        )
+        self.orch_store.write(
+            job_id, "code_inventory.json", self._payload("code_inventory", job_id)
+        )
+        self.orch_store.write(
+            job_id, "interface_candidates.json", self._payload("interface_candidates", job_id)
+        )
+        self.orch_store.write(job_id, "interfaces.json", self._payload("interfaces", job_id))
+        self.orch_store.write(
+            job_id, "review_mapping.json", self._payload("review_mapping", job_id)
+        )
+        self.orch_store.write(job_id, "metrics.json", self._payload("metrics", job_id))
+        job_dir.joinpath("test_report.md").write_text("# 测试报告（fake）\n", encoding="utf-8")
+        state_path = job_dir / "state.json"
+        if state_path.is_file():
+            state = self.engine.open_job(job_id)
+        else:
+            state = self.engine.init_job(job_id)
+        for name in NODE_ORDER:
+            if state.node(name).status is NodeStatus.COMPLETED:
+                continue
+            self.engine.mark_completed(state, name)
+        return PipelineOutcome(job_id=job_id, completed=list(NODE_ORDER), artifacts_dir=None)
+
+    @staticmethod
+    def _payload(kind: str, job_id: str) -> dict[str, Any]:
+        """各产物最小合法形状（过 Schema 校验）。"""
+        base = {"schema_version": "1.0", "job_id": job_id}
+        code_location = {"repo": "repo-a", "file": "A.java", "start_line": 1, "end_line": 2}
+        if kind == "requirement_items":
+            base["items"] = [{"id": "REQ-001", "title": "查询用户", "description": "按 ID 查询"}]
+        elif kind == "code_inventory":
+            base["repositories"] = [
+                {
+                    "name": "repo-a",
+                    "path": "/var/repos/repo-a",
+                    "branch": "main",
+                    "is_fallback": False,
+                    "status": "ok",
+                    "file_count": 1,
+                },
+                {
+                    "name": "repo-b",
+                    "path": "/var/repos/repo-b",
+                    "branch": "main",
+                    "is_fallback": False,
+                    "status": "ok",
+                    "file_count": 1,
+                },
+            ]
+        elif kind == "interface_candidates":
+            base["candidates"] = [
+                {
+                    "candidate_id": "CAND-001",
+                    "protocol": "rest",
+                    "signature": "GET /api/v1/users/{id}",
+                    "code_location": code_location,
+                    "is_fallback": False,
+                }
+            ]
+        elif kind == "interfaces":
+            base["interfaces"] = [
+                {
+                    "id": "IF-REST-001",
+                    "protocol": "rest",
+                    "signature": {
+                        "method": "GET",
+                        "path": "/api/v1/users/{id}",
+                        "summary": "按 ID 查询用户",
+                    },
+                    "code_location": code_location,
+                    "is_fallback": False,
+                }
+            ]
+        elif kind == "review_mapping":
+            base["mappings"] = [
+                {"requirement_id": "REQ-001", "status": "implemented", "confidence": 0.9}
+            ]
+            base["risks"] = []
+            base["missing_features"] = []
+        elif kind == "testcases":
+            base["cases"] = [
+                {
+                    "id": "TC-001",
+                    "interface_id": "IF-REST-001",
+                    "category": "normal",
+                    "title": "查询",
+                    "expected": "2xx",
+                    "script_path": "scripts/test_TC_001.py",
+                    "loadable": True,
+                }
+            ]
+        elif kind == "execution":
+            base["results"] = [
+                {"case_id": "TC-001", "interface_id": "IF-REST-001", "passed": True,
+                 "timestamp": "2026-09-15T00:00:00+00:00"}
+            ]
+            base["summary"] = {
+                "total": 1,
+                "passed": 1,
+                "failed_assertion": 0,
+                "failed_environment": 0,
+            }
+        elif kind == "metrics":
+            base["automation_rate"] = {"value": 1.0, "numerator": 9, "denominator": 9,
+                                        "data_complete": True}
+            base["nodes"] = [{"name": n, "status": "completed"} for n in NODE_ORDER]
+        elif kind == "defects":
+            base["defects"] = []
+        elif kind == "regression_index":
+            base["suites"] = []
+        return base
+
+
+@pytest.fixture()
+async def env(tmp_path: Path) -> tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path]:
+    """构建注入 FakeRunner 的 app + 异步客户端。"""
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    schemas = Path(__file__).resolve().parents[3] / "schemas"
+    settings = Settings(
+        port=8000,
+        java_parser_url="http://mock:8080",
+        artifacts_root=str(tmp_path / "artifacts"),
+        llm_base_url="http://mock:8090/v1",
+        llm_model_name="glm-5.3",
+        llm_api_key="",
+        llm_temperature=0.2,
+        llm_top_p=0.8,
+        llm_seed=None,
+        llm_timeout_s=5.0,
+        schemas_dir=str(schemas),
+    )
+    app = create_app(settings)
+    fake = FakeRunner(settings, app.state.engine, app.state.orch_store, app.state.te_store)
+    app.state.runner = fake
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    )
+    yield app, fake, client, repo_dir
+    await client.aclose()
+
+
+def _submit_body(repo_dir: Path, job_id: str | None = None, **overrides: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "job_id": job_id,
+        "doc_name": "requirements.md",
+        "doc_content_b64": base64.b64encode(_DOC.encode()).decode(),
+        "repos": [{"name": "repo-a", "path": str(repo_dir), "branch": "main"}],
+        "rest_url": "http://127.0.0.1:9000",
+    }
+    body.update(overrides)
+    return body
+
+
+async def _await_task(app: FastAPI, job_id: str) -> None:
+    """等后台任务收敛（FakeRunner 立即完成，yield 即可）。"""
+    task = app.state.job_tasks.get(job_id)
+    if task is not None:
+        await task
+
+
+async def test_submit_job_happy_path(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """提交 → 202；doc/job_input 落盘；FakeRunner 拿到正确入参。"""
+    app, fake, client, repo_dir = env
+    response = await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-0001"))
+    assert response.status_code == 202
+    assert response.json() == {"job_id": "job-api-0001", "status": "queued"}
+    await _await_task(app, "job-api-0001")
+    assert len(fake.calls) == 1
+    call = fake.calls[0]
+    assert call["job_id"] == "job-api-0001"
+    assert call["repos"] == [("repo-a", str(repo_dir))]
+    assert call["rest_base_url"] == "http://127.0.0.1:9000"
+    job_dir = Path(str(app.state.settings.artifacts_root)) / "job-api-0001"
+    assert (job_dir / "input" / "requirements.md").read_text(encoding="utf-8") == _DOC
+    saved = json.loads((job_dir / "job_input.json").read_text(encoding="utf-8"))
+    assert saved["rest_url"] == "http://127.0.0.1:9000"
+
+
+async def test_submit_job_validations(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """非法提交的四种拒绝路径：格式/相对路径/坏 base64/坏 rest_url。"""
+    _app, _fake, client, repo_dir = env
+    bad_doc = _submit_body(repo_dir, "v1")
+    bad_doc["doc_name"] = "requirements.pdf"
+    assert (await client.post("/api/v1/jobs", json=bad_doc)).status_code == 400
+    bad_rel = _submit_body(repo_dir, "v2")
+    bad_rel["repos"] = [{"name": "r", "path": "relative/path"}]
+    assert (await client.post("/api/v1/jobs", json=bad_rel)).status_code == 400
+    bad_b64 = _submit_body(repo_dir, "v3")
+    bad_b64["doc_content_b64"] = "!!not-base64!!"
+    assert (await client.post("/api/v1/jobs", json=bad_b64)).status_code == 400
+    bad_url = _submit_body(repo_dir, "v4")
+    bad_url["rest_url"] = "ftp://x"
+    assert (await client.post("/api/v1/jobs", json=bad_url)).status_code == 400
+
+
+async def test_job_status_and_artifacts(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """状态端点（9 节点 completed）+ 产物白名单读取 + 越权 404。"""
+    app, _fake, client, repo_dir = env
+    await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-0002"))
+    await _await_task(app, "job-api-0002")
+    status = (await client.get("/api/v1/jobs/job-api-0002")).json()
+    assert status["running"] is False
+    assert len(status["nodes"]) == 9
+    assert all(n["status"] == "completed" for n in status["nodes"])
+    assert "test_report.md" in status["artifacts"]
+    assert "job_input.json" not in status["artifacts"]  # 内部元数据不外露
+    report = await client.get("/api/v1/jobs/job-api-0002/report")
+    assert report.status_code == 200
+    assert report.headers["content-type"].startswith("text/markdown")
+    assert "# 测试报告" in report.text
+    leaked = await client.get("/api/v1/jobs/job-api-0002/artifacts/state.json")
+    assert leaked.status_code == 404
+    absent = await client.get("/api/v1/jobs/job-api-0002/artifacts/llm_calls.jsonl")
+    assert absent.status_code == 404  # 白名单内但尚未生成（FakeRunner 不产留痕）
+
+
+async def test_list_jobs(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """清单端点：按产物目录扫描 + completed/degraded 计数。"""
+    app, _fake, client, repo_dir = env
+    await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-0003"))
+    await _await_task(app, "job-api-0003")
+    jobs = (await client.get("/api/v1/jobs")).json()["jobs"]
+    assert [j["job_id"] for j in jobs] == ["job-api-0003"]
+    assert jobs[0]["completed"] == 9
+    assert jobs[0]["running"] is False
+
+
+async def test_retest_full_and_single(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """全量复测（force_node 队列化）与单条复测（同源核心，环境不可达如实告警）。"""
+    app, fake, client, repo_dir = env
+    # rest_url 用封闭端口（单条复测环境探测必失败——不受本机演示服务影响）
+    body = _submit_body(repo_dir, "job-api-0004")
+    body["rest_url"] = "http://127.0.0.1:1"
+    await client.post("/api/v1/jobs", json=body)
+    await _await_task(app, "job-api-0004")
+    full = await client.post("/api/v1/jobs/job-api-0004/retest", json={})
+    assert full.status_code == 200
+    assert full.json()["mode"] == "full"
+    await _await_task(app, "job-api-0004")
+    assert fake.calls[-1]["force_node"] == "retest_regression"
+    # 单条：缺陷存在但 rest 服务不可达（封闭端口）→ 跳过 + 告警（X-EXEC-01 同源口径）
+    job_dir = Path(str(app.state.settings.artifacts_root)) / "job-api-0004"
+    defects = json.loads((job_dir / "defects.json").read_text(encoding="utf-8"))
+    defects["defects"] = [
+        {
+            "id": "DEF-001",
+            "case_id": "TC-001",
+            "interface_id": "IF-REST-001",
+            "failure_reason": "HTTP 500",
+            "reproduce": {"script_path": "scripts/test_TC_001.py", "params": {}},
+            "status": "retained",
+            "history": [{"event": "discovered", "timestamp": "2026-09-15T00:00:00+00:00"}],
+            "is_fallback": False,
+        }
+    ]
+    (job_dir / "defects.json").write_text(json.dumps(defects), encoding="utf-8")
+    single = await client.post(
+        "/api/v1/jobs/job-api-0004/retest", json={"defect_id": "DEF-001"}
+    )
+    assert single.status_code == 200
+    payload = single.json()
+    assert payload["mode"] == "single"
+    assert payload["retested"] == []
+    assert any("复测环境不可达" in w for w in payload["warnings"])
+
+
+async def test_review_log_and_reject_rerun(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """审核留痕（F-REVW-06）：approved 仅记录；rejected 回流生成节点。"""
+    app, fake, client, repo_dir = env
+    await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-0005"))
+    await _await_task(app, "job-api-0005")
+    bad = await client.post(
+        "/api/v1/jobs/job-api-0005/review-log", json={"decision": "maybe"}
+    )
+    assert bad.status_code == 400
+    approved = await client.post(
+        "/api/v1/jobs/job-api-0005/review-log",
+        json={"decision": "approved", "reviewer": "reviewer-a", "note": "口径一致"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["rerun"] is None
+    rejected = await client.post(
+        "/api/v1/jobs/job-api-0005/review-log",
+        json={"decision": "rejected", "note": "参数语义有误"},
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["rerun"] == "testcase_generate"
+    await _await_task(app, "job-api-0005")
+    assert fake.calls[-1]["force_node"] == "testcase_generate"
+    log = (Path(str(app.state.settings.artifacts_root)) / "job-api-0005" / "review_log.jsonl")
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [e["decision"] for e in entries] == ["approved", "rejected"]
+
+
+async def test_unknown_job_404(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """不存在的 job：统一 404。"""
+    _app, _fake, client, _repo_dir = env
+    assert (await client.get("/api/v1/jobs/nope")).status_code == 404
+    assert (await client.get("/api/v1/jobs/nope/report")).status_code == 404
+    assert (await client.post("/api/v1/jobs/nope/retest", json={})).status_code == 404
+
+
+async def test_resume_false_wipes_job_dir(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """resume=false → 清空既有产物重跑（F-ORCH-02 反向口径）。"""
+    app, _fake, client, repo_dir = env
+    await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-0006"))
+    await _await_task(app, "job-api-0006")
+    job_dir = Path(str(app.state.settings.artifacts_root)) / "job-api-0006"
+    stale = job_dir / "stale-marker.txt"
+    stale.write_text("旧产物", encoding="utf-8")
+    body = _submit_body(repo_dir, "job-api-0006")
+    body["resume"] = False
+    await client.post("/api/v1/jobs", json=body)
+    await _await_task(app, "job-api-0006")
+    assert not stale.exists()
+    # P-11 回归：清空不得误删本次提交的输入文档（req_parse 依赖）
+    doc = next((job_dir / "input").glob("*.md"), None)
+    assert doc is not None and doc.read_text(encoding="utf-8") == _DOC

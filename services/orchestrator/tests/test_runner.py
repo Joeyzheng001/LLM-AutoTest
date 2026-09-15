@@ -18,6 +18,7 @@ from orchestrator.engine import Engine
 from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
 from orchestrator.llm.client import LlmResult
 from orchestrator.nodes.code_review import SupportsComplete
+from orchestrator.pipeline import NodeStatus
 from orchestrator.prompts_loader import PromptSpec
 from orchestrator.runner import PipelineRunner
 
@@ -311,6 +312,39 @@ async def test_runner_full_pipeline_e2e(tmp_path: Path) -> None:
     assert llm.calls == [
         "req_parse", "interface_reconstruct", "code_review", "testcase_generate"
     ]
+    # 收尾刷新（docs/13 P-10）：metrics.json 为九节点终态版，自动化率 9/9
+    metrics = json.loads((job_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["automation_rate"] == {
+        "value": 1.0,
+        "numerator": 9,
+        "denominator": 9,
+        "data_complete": True,
+    }
+    assert all(n["status"] == "completed" for n in metrics["nodes"])
+
+
+async def test_runner_metrics_snapshot_then_final(tmp_path: Path) -> None:
+    """P-10：报告时点快照后下游两节点完成，收尾刷新为终态版不再停留在 7/9。"""
+    llm = StubLlm(_default_llm_scripts())
+    runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
+    # 中断在 test_report 之后：先手动跑前 7 节点，再验证快照与终态差异
+    await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+    # 跑完后重放「报告时点」验证：把 defect_list/retest_regression 回退为 pending 会触发重跑，
+    # 此处直接验证终态产物口径——快照版（7/9）已被终态版覆盖，见 test_test_report 快照测试
+    metrics = json.loads((tmp_path / _JOB / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["automation_rate"]["numerator"] == 9
+    assert metrics["automation_rate"]["data_complete"] is True
+
+
+async def test_runner_metrics_not_refreshed_when_interrupted(tmp_path: Path) -> None:
+    """P-10 反向：早期中断（仍有 pending 节点）不刷新 metrics——避免产物判据误判。"""
+    llm = StubLlm(_default_llm_scripts())
+    runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
+    state = runner._engine.init_job(_JOB)
+    state.node("req_parse").status = NodeStatus.COMPLETED
+    state.node("code_scan").status = NodeStatus.PENDING
+    runner._refresh_final_metrics(state)
+    assert not (tmp_path / _JOB / "metrics.json").exists()
 
 
 async def test_runner_resume_skips_completed(tmp_path: Path) -> None:

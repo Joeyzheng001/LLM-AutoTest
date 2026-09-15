@@ -38,6 +38,7 @@ from orchestrator.nodes import (
     run_test_report,
     run_testcase_generate,
 )
+from orchestrator.nodes.test_report import build_final_metrics
 from orchestrator.pipeline import NODE_ORDER, NodeStatus
 
 logger = logging.getLogger(__name__)
@@ -117,8 +118,20 @@ class PipelineRunner:
                 node_name, state, llm, prompts_dir, doc_path, repositories, rest_base_url, outcome
             )
 
+        self._refresh_final_metrics(state)
         outcome.artifacts_dir = self._orch_store.job_dir(job_id)
         return outcome
+
+    def _refresh_final_metrics(self, state: JobState) -> None:
+        """收尾刷新 metrics.json 为九节点终态版（docs/13 P-10）。
+
+        仅当流水线已到达末尾节点（无 pending）时刷新——避免早期中断的 job
+        凭 metrics.json 被产物判据误判 test_report 已完成（X-ORCH 判据口径）。
+        """
+        if any(state.node(name).status is NodeStatus.PENDING for name in NODE_ORDER):
+            return
+        self._orch_store.write(state.job_id, "metrics.json", build_final_metrics(state))
+        logger.info("metrics.json 已刷新为终态版（job %s）", state.job_id)
 
     async def _run_node_with_retry(
         self,

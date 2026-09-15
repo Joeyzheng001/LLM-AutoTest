@@ -1,44 +1,27 @@
 <script setup lang="ts">
-// 应用外壳：左侧六页导航（07 方向）+ 顶栏；视图切换（无路由依赖，M1 接正式路由）。
+// 应用外壳：左侧六页导航（07 §3.1–3.6，V2.1 全量 Web 入口）+ 顶栏；视图切换（无路由依赖）。
+// 全部页面接 orchestrator REST API（数值来自后端，前端不计算）。
 import { computed, ref, type Component } from 'vue'
+import CodeReviewView from './views/CodeReviewView.vue'
+import DefectLoopView from './views/DefectLoopView.vue'
 import PipelineOverviewView from './views/PipelineOverviewView.vue'
-import PlaceholderView from './views/PlaceholderView.vue'
+import RegressionMetricsView from './views/RegressionMetricsView.vue'
 import TaskConfigView from './views/TaskConfigView.vue'
+import TestReportView from './views/TestReportView.vue'
 
 interface NavView {
   key: string
   label: string
   component: Component
-  props?: Record<string, string>
 }
 
 const views: NavView[] = [
   { key: 'config', label: '任务配置', component: TaskConfigView },
   { key: 'overview', label: '流水线总览', component: PipelineOverviewView },
-  {
-    key: 'review',
-    label: 'Code Review 三视图',
-    component: PlaceholderView,
-    props: { title: 'Code Review 三视图', spec: 'F-REVW-01~04' },
-  },
-  {
-    key: 'report',
-    label: '测试报告',
-    component: PlaceholderView,
-    props: { title: '测试报告', spec: 'F-RPT-01~03' },
-  },
-  {
-    key: 'defects',
-    label: '缺陷闭环',
-    component: PlaceholderView,
-    props: { title: '缺陷闭环', spec: 'F-DEF-01~04' },
-  },
-  {
-    key: 'regression',
-    label: '回归沉淀与度量',
-    component: PlaceholderView,
-    props: { title: '回归沉淀与度量', spec: 'F-REG-01~04 / F-MTR-01~03' },
-  },
+  { key: 'review', label: 'Code Review 三视图', component: CodeReviewView },
+  { key: 'report', label: '测试报告', component: TestReportView },
+  { key: 'defects', label: '缺陷闭环', component: DefectLoopView },
+  { key: 'regression', label: '回归沉淀与度量', component: RegressionMetricsView },
 ]
 
 const activeKey = ref('overview')
@@ -76,10 +59,10 @@ const active = computed(() => views.find((view) => view.key === activeKey.value)
     <div class="main">
       <header class="topbar">
         <span class="topbar-title">{{ active?.label }}</span>
-        <span class="topbar-badge mono">mock 数据</span>
+        <span class="topbar-badge mono">实时数据 · orchestrator :8000</span>
       </header>
       <main class="content">
-        <component :is="active?.component" v-bind="active?.props" />
+        <component :is="active?.component" />
       </main>
     </div>
   </div>

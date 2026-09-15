@@ -1,28 +1,129 @@
 <script setup lang="ts">
-// 流水线总览页（07 页 02 方向）：job 列表 + 9 节点状态 + 自动化率。
-// 红线：automationRate 等数值全部来自后端（mock 直供展示值）；降级/兜底如实分列（D1/D5）。
-import { computed, ref } from 'vue'
-import { mockJobs, type JobSummary, type NodeStatus } from '../mock/jobs'
+// 流水线总览页（07 页 02 · 真实数据）：job 列表（list_jobs）+ 9 节点状态（get_job_status，
+// 运行中每 3s 轮询，离开页面即停）+ 接口还原清单（interfaces.json，代码溯源 F-REV-04）+
+// 自动化率卡片（metrics.json 后端汇总，前端不计算）。
+import { computed, onUnmounted, ref, watch } from 'vue'
+import { getInterfaces, getJobStatus, getMetrics, listJobs } from '../api/client'
+import type { JobListItem, JobStatus, MetricsPayload, NodeState, InterfaceDef } from '../api/types'
+import { NODE_LABELS, STATUS_LABELS } from '../api/labels'
 
-const selectedId = ref(mockJobs[0]?.id ?? '')
-const selected = computed<JobSummary | undefined>(
-  () => mockJobs.find((job) => job.id === selectedId.value) ?? mockJobs[0],
+const POLL_INTERVAL_MS = 3000
+const LIST_REFRESH_MS = 10000
+
+const jobs = ref<JobListItem[]>([])
+const listError = ref('')
+const selectedId = ref('')
+
+const status = ref<JobStatus | null>(null)
+const statusError = ref('')
+const metrics = ref<MetricsPayload | null>(null)
+const interfaces = ref<InterfaceDef[]>([])
+
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+async function refreshList(keepSelection: boolean): Promise<void> {
+  listError.value = ''
+  try {
+    const result = await listJobs()
+    jobs.value = result.jobs
+    if (!keepSelection || !jobs.value.some((job) => job.job_id === selectedId.value)) {
+      selectedId.value = jobs.value[0]?.job_id ?? ''
+    }
+  } catch (err) {
+    listError.value = err instanceof Error ? err.message : 'job 清单加载失败'
+  }
+}
+
+async function refreshDetail(): Promise<void> {
+  if (!selectedId.value) {
+    status.value = null
+    metrics.value = null
+    interfaces.value = []
+    return
+  }
+  statusError.value = ''
+  try {
+    status.value = await getJobStatus(selectedId.value)
+  } catch (err) {
+    status.value = null
+    statusError.value = err instanceof Error ? err.message : 'job 状态加载失败'
+  }
+  // 派生产物独立加载：节点未跑到时如实提示，不阻塞状态展示
+  try {
+    metrics.value = await getMetrics(selectedId.value)
+  } catch {
+    metrics.value = null
+  }
+  try {
+    interfaces.value = (await getInterfaces(selectedId.value)).interfaces
+  } catch {
+    interfaces.value = []
+  }
+}
+
+function stopPolling(): void {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+let listTimer: ReturnType<typeof setInterval> | null = null
+
+function stopListRefresh(): void {
+  if (listTimer !== null) {
+    clearInterval(listTimer)
+    listTimer = null
+  }
+}
+
+function syncPolling(): void {
+  stopPolling()
+  // 仅运行中的 job 轮询；空闲 job 静态展示（轮询类逻辑离开/失效即停）
+  if (status.value?.running) {
+    pollTimer = setInterval(() => void refreshDetail(), POLL_INTERVAL_MS)
+  }
+}
+
+watch(selectedId, () => void refreshDetail())
+watch(
+  () => status.value?.running,
+  () => syncPolling(),
 )
+void refreshList(false)
+// 低频刷新清单：捕获新提交的 job（不影响选中，keepSelection=true）
+listTimer = setInterval(() => void refreshList(true), LIST_REFRESH_MS)
+onUnmounted(() => {
+  stopPolling()
+  stopListRefresh()
+})
 
-const STATUS_LABEL: Record<NodeStatus, string> = {
-  completed: '已完成',
-  running: '运行中',
-  manual_intervention: '人工介入',
-  pending: '待运行',
+/* 九节点按固定顺序渲染（R-MTR-01），state.nodes 顺序不假定 */
+interface OrderedNode {
+  label: string
+  node: NodeState | undefined
 }
 
-function formatRate(rate: number | null): string {
+const nodesInOrder = computed<OrderedNode[]>(() => {
+  const byName = new Map((status.value?.nodes ?? []).map((node) => [node.name, node]))
+  return Object.entries(NODE_LABELS).map(([name, label]) => ({ label, node: byName.get(name) }))
+})
+
+function formatRate(value: number | null): string {
   // 展示口径：后端已汇总的值仅做格式化（百分比），null = 数据不完整（X-MTR-02）
-  return rate === null ? '—' : `${Math.round(rate * 100)}%`
+  return value === null ? '—' : `${Math.round(value * 100)}%`
 }
 
-function formatTime(iso: string): string {
-  return iso.replace('T', ' ').replace('Z', ' UTC')
+function formatTime(iso: string | null): string {
+  return iso ? iso.replace('T', ' ').replace('Z', ' UTC').slice(0, 23) : '—'
+}
+
+function locationText(item: InterfaceDef): string {
+  const location = item.code_location
+  if (!location) return ''
+  const lines =
+    location.start_line != null ? `:${location.start_line}-${location.end_line ?? ''}` : ''
+  return `${location.repo}/${location.file}${lines}`
 }
 </script>
 
@@ -31,58 +132,103 @@ function formatTime(iso: string): string {
     <!-- 左：job 列表 -->
     <aside class="job-list">
       <header class="panel-title">任务列表</header>
+      <p v-if="listError" class="list-error" role="alert">{{ listError }}</p>
+      <p v-if="!jobs.length && !listError" class="list-error">暂无任务（先在「任务配置」页提交）</p>
       <button
-        v-for="job in mockJobs"
-        :key="job.id"
+        v-for="job in jobs"
+        :key="job.job_id"
         class="job-item"
-        :class="{ active: job.id === selected?.id }"
+        :class="{ active: job.job_id === selectedId }"
         type="button"
-        @click="selectedId = job.id"
+        @click="selectedId = job.job_id"
       >
-        <span class="job-title">{{ job.title }}</span>
-        <span class="mono job-id">{{ job.id.slice(0, 17) }}…</span>
-        <span v-if="job.hasFallbackRepo" class="tag tag-warning">含兜底仓库</span>
+        <span class="job-title mono">{{ job.job_id }}</span>
+        <span class="job-meta">
+          <span :class="job.running ? 'running-dot' : 'idle-dot'" aria-hidden="true" />
+          {{ job.running ? '运行中' : `${job.completed}/${9} 节点` }}
+          <template v-if="job.degraded"> · {{ job.degraded }} 降级</template>
+          <template v-if="job.has_report"> · 有报告</template>
+        </span>
       </button>
     </aside>
 
     <!-- 右：选中 job 详情 -->
-    <section v-if="selected" class="detail">
+    <section v-if="status" class="detail">
       <header class="detail-head">
-        <h2>{{ selected.title }}</h2>
-        <span class="mono detail-meta">{{ formatTime(selected.createdAt) }}</span>
+        <h2 class="mono">{{ status.job_id }}</h2>
+        <span class="mono detail-meta">{{ formatTime(status.updated_at) }}</span>
       </header>
 
-      <!-- 自动化率（数值来自后端） -->
+      <p v-if="statusError" class="state-error" role="alert">{{ statusError }}</p>
+
+      <!-- 自动化率（数值来自后端 metrics.json 程序化汇总） -->
       <div class="rate-row">
-        <div class="rate-block">
-          <span class="rate-value mono">{{ formatRate(selected.automationRate) }}</span>
-          <span class="rate-label">自动化率 · 分母固定 9</span>
+        <div v-if="metrics" class="rate-block">
+          <span class="rate-value mono">{{ formatRate(metrics.automation_rate.value) }}</span>
+          <span class="rate-label">
+            自动化率 ·
+            <span class="mono"
+              >{{ metrics.automation_rate.numerator }}/{{
+                metrics.automation_rate.denominator
+              }}</span
+            >
+            （分母固定 9）
+          </span>
         </div>
-        <div v-if="selected.automationRate === null" class="hint hint-warning">
+        <div v-else class="rate-block rate-pending">
+          <span class="rate-value mono">—</span>
+          <span class="rate-label">自动化率 · metrics 尚未生成（任务未完整跑完）</span>
+        </div>
+        <div v-if="metrics && metrics.automation_rate.value === null" class="hint hint-warning">
           数据不完整，不输出误导数值（X-MTR-02）
         </div>
       </div>
 
       <!-- 降级清单（D1：如实标注，分母不缩减） -->
-      <div v-for="record in selected.degraded" :key="record.node" class="hint hint-warning">
-        降级 · {{ record.node }}：{{ record.reason }}（按人工介入计入）
-      </div>
-      <!-- 兜底仓库分列提示（D5） -->
-      <div v-if="selected.hasFallbackRepo" class="hint hint-notice">
-        本任务含兜底演示仓库：结果单独分列，不计入 G3 真实仓库口径（D5）
+      <div v-for="record in status.degraded" :key="record.node" class="hint hint-warning">
+        降级 · {{ NODE_LABELS[record.node] ?? record.node }}：{{ record.reason }}（按人工介入计入）
       </div>
 
-      <!-- 9 节点流水线 -->
+      <!-- 9 节点流水线（R-MTR-01 固定口径） -->
       <div class="pipeline">
-        <div v-for="(node, index) in selected.nodes" :key="node.name" class="node-wrap">
-          <div class="node" :data-status="node.status">
+        <div v-for="(entry, index) in nodesInOrder" :key="index" class="node-wrap">
+          <div v-if="entry.node" class="node" :data-status="entry.node.status">
             <span class="node-index mono">{{ String(index + 1).padStart(2, '0') }}</span>
-            <span class="node-label">{{ node.label }}</span>
-            <span class="node-status">{{ STATUS_LABEL[node.status] }}</span>
+            <span class="node-label">{{ entry.label }}</span>
+            <span class="node-status">{{
+              STATUS_LABELS[entry.node.status] ?? entry.node.status
+            }}</span>
+            <span v-if="entry.node.error" class="node-error">{{ entry.node.error.message }}</span>
           </div>
-          <span v-if="index < selected.nodes.length - 1" class="connector" aria-hidden="true" />
         </div>
       </div>
+
+      <!-- 接口还原清单（F-REV-04 代码溯源；节点未跑到时如实提示） -->
+      <div class="interface-block">
+        <header class="block-title">
+          接口还原清单（{{ interfaces.length }} 个 · 代码位置溯源 F-REV-04）
+        </header>
+        <p v-if="!interfaces.length" class="state-line">
+          interfaces.json 尚未生成（需任务跑到接口还原节点之后）。
+        </p>
+        <ul v-else class="interface-list">
+          <li v-for="item in interfaces" :key="item.id" class="interface-item">
+            <span class="tag mono" :class="{ 'tag-warning': item.is_fallback }">
+              {{ item.protocol }}
+            </span>
+            <span class="mono interface-id">{{ item.id }}</span>
+            <span class="mono interface-sig"
+              >{{ item.signature.method }} {{ item.signature.path }}</span
+            >
+            <span class="mono interface-loc">{{ locationText(item) }}</span>
+            <span v-if="item.is_fallback" class="tag tag-warning">兜底</span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section v-else class="detail">
+      <p class="state-line">{{ statusError || '请选择任务查看详情。' }}</p>
     </section>
   </div>
 </template>
@@ -90,9 +236,16 @@ function formatTime(iso: string): string {
 <style scoped>
 .overview {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 300px 1fr;
   gap: var(--space-4);
   height: 100%;
+}
+
+@media (max-width: 960px) {
+  .overview {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
 }
 
 /* 左列 job 列表 */
@@ -109,6 +262,12 @@ function formatTime(iso: string): string {
   font-size: var(--text-sm);
   letter-spacing: 0.08em;
   padding: var(--space-2) var(--space-2) var(--space-3);
+}
+
+.list-error {
+  padding: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-3);
 }
 
 .job-item {
@@ -141,13 +300,42 @@ function formatTime(iso: string): string {
 }
 
 .job-title {
-  font-size: var(--text-md);
+  font-size: var(--text-xs);
   font-weight: 500;
+  word-break: break-all;
 }
 
-.job-id {
+.job-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   font-size: var(--text-xs);
   color: var(--text-3);
+}
+
+.running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: breathe-dot 1.8s ease-in-out infinite;
+}
+
+.idle-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+@keyframes breathe-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 6px 0 var(--accent-glow);
+  }
 }
 
 /* 右列详情 */
@@ -163,12 +351,15 @@ function formatTime(iso: string): string {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
   margin-bottom: var(--space-5);
 }
 
 .detail-head h2 {
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: 600;
+  word-break: break-all;
 }
 
 .detail-meta {
@@ -176,10 +367,23 @@ function formatTime(iso: string): string {
   font-size: var(--text-sm);
 }
 
+.state-line {
+  padding: var(--space-3);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.state-error {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--warning);
+}
+
 /* 自动化率 */
 .rate-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-4);
   margin-bottom: var(--space-4);
 }
@@ -191,6 +395,11 @@ function formatTime(iso: string): string {
   border-radius: var(--radius-md);
 }
 
+.rate-pending {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
 .rate-value {
   display: block;
   font-size: 32px;
@@ -199,12 +408,16 @@ function formatTime(iso: string): string {
   line-height: 1.2;
 }
 
+.rate-pending .rate-value {
+  color: var(--text-3);
+}
+
 .rate-label {
   font-size: var(--text-xs);
   color: var(--text-3);
 }
 
-/* 提示条（降级/兜底/数据不完整：如实分列） */
+/* 提示条 */
 .hint {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
@@ -218,12 +431,6 @@ function formatTime(iso: string): string {
   border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
 }
 
-.hint-notice {
-  background: var(--accent-dim);
-  color: var(--text-2);
-  border: 1px solid var(--border);
-}
-
 /* 9 节点流水线 */
 .pipeline {
   display: flex;
@@ -233,16 +440,8 @@ function formatTime(iso: string): string {
 }
 
 .node-wrap {
-  position: relative;
   display: flex;
   align-items: center;
-}
-
-.connector {
-  width: 20px;
-  height: 1px;
-  background: var(--border-strong);
-  margin: 0 var(--space-2);
 }
 
 .node {
@@ -250,6 +449,7 @@ function formatTime(iso: string): string {
   flex-direction: column;
   gap: 2px;
   min-width: 104px;
+  max-width: 132px;
   padding: var(--space-3);
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -270,6 +470,12 @@ function formatTime(iso: string): string {
 .node-status {
   font-size: var(--text-xs);
   color: var(--text-3);
+}
+
+.node-error {
+  font-size: 10px;
+  color: var(--warning);
+  word-break: break-all;
 }
 
 .node[data-status='completed'] {
@@ -308,5 +514,76 @@ function formatTime(iso: string): string {
   50% {
     box-shadow: 0 0 10px 0 var(--accent-glow);
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node[data-status='running'],
+  .running-dot {
+    animation: none;
+  }
+}
+
+/* 接口还原清单 */
+.interface-block {
+  margin-top: var(--space-5);
+}
+
+.block-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.interface-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.interface-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.tag {
+  display: inline-block;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+}
+
+.tag-warning {
+  background: var(--warning-dim);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+  color: var(--warning);
+}
+
+.interface-id {
+  color: var(--accent-strong);
+  font-size: var(--text-xs);
+}
+
+.interface-sig {
+  font-size: var(--text-xs);
+  color: var(--text-1);
+}
+
+.interface-loc {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  word-break: break-all;
 }
 </style>

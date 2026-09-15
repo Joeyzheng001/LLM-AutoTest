@@ -1,0 +1,197 @@
+/** REST API 类型（与 orchestrator api.py 契约对齐；数值全部来自后端，前端不计算）。 */
+
+export type NodeStatus = 'completed' | 'running' | 'manual_intervention' | 'pending'
+
+export interface NodeState {
+  name: string
+  status: NodeStatus
+  updated_at?: string
+  attempts?: number
+  error?: { code: string; message: string } | null
+}
+
+export interface DegradedRecord {
+  node: string
+  reason: string
+}
+
+export interface JobListItem {
+  job_id: string
+  updated_at: string | null
+  running: boolean
+  completed: number
+  degraded: number
+  has_report: boolean
+}
+
+export interface JobStatus {
+  job_id: string
+  running: boolean
+  updated_at: string | null
+  nodes: NodeState[]
+  degraded: DegradedRecord[]
+  artifacts: string[]
+}
+
+export interface JobSubmitResponse {
+  job_id: string
+  status: string
+}
+
+export interface RetestResponse {
+  job_id: string
+  mode: 'full' | 'single'
+  defect_id?: string
+  retested?: string[]
+  archived?: number
+  warnings?: string[]
+}
+
+export interface ReviewLogResponse {
+  job_id: string
+  timestamp: string
+  decision: 'approved' | 'rejected'
+  reviewer: string
+  note: string
+  rerun: string | null
+}
+
+export interface RepoConfig {
+  name: string
+  path: string
+  branch: string
+  is_fallback: boolean
+  include_paths?: string[]
+}
+
+export interface JobSubmitPayload {
+  job_id?: string
+  doc_name: string
+  doc_content_b64: string
+  repos: RepoConfig[]
+  rest_url: string
+  resume?: boolean
+}
+
+/* ---- 产物形状（只声明页面用到的字段；后端 Schema 为唯一事实源） ---- */
+
+export interface RequirementItem {
+  id: string
+  title: string
+  description: string
+  priority?: string
+  stub_note?: string
+}
+
+export interface CodeLocation {
+  repo: string
+  file: string
+  start_line?: number
+  end_line?: number
+}
+
+export interface InterfaceDef {
+  id: string
+  candidate_id?: string
+  protocol: string
+  signature: { method: string; path: string; summary?: string }
+  params?: Array<{ name: string; type?: string; required?: boolean; in?: string }>
+  code_location?: CodeLocation
+  is_fallback?: boolean
+}
+
+export interface InterfaceCandidate {
+  candidate_id: string
+  protocol: string
+  signature: string
+  code_location: CodeLocation
+  is_fallback?: boolean
+  confidence?: number
+}
+
+export interface ReviewMapping {
+  requirement_id: string
+  interface_id?: string | null
+  status: 'implemented' | 'partial' | 'missing' | 'undetermined'
+  confidence: number
+  evidence?: { code_location?: CodeLocation; note?: string }
+}
+
+export interface DerivedRisk {
+  requirement_id: string
+  description: string
+}
+
+export interface MissingFeature {
+  requirement_id: string
+  title: string
+}
+
+export interface ExecResult {
+  case_id: string
+  interface_id: string
+  passed: boolean
+  timeout?: boolean
+  duration_ms?: number
+  failure_kind?: 'assertion' | 'environment' | null
+  failure_reason?: string
+  skipped_reason?: string
+  timestamp?: string
+}
+
+export interface ExecSummary {
+  total: number
+  passed: number
+  failed_assertion: number
+  failed_environment: number
+  skipped?: number
+}
+
+export interface DefectEntry {
+  id: string
+  case_id: string
+  interface_id: string
+  failure_reason: string
+  reproduce?: { script_path?: string; params?: Record<string, unknown> }
+  status: 'discovered' | 'retesting' | 'passed' | 'closed_suggested' | 'retained'
+  based_on_new_version?: boolean
+  is_fallback?: boolean
+  history: Array<{ event: string; timestamp: string }>
+}
+
+export interface RegressionIndexPayload {
+  suites: RegressionSuite[]
+  drift_warnings?: Array<{ case_id: string; detail: string }>
+}
+
+export interface RegressionSuite {
+  protocol: string
+  scripts: Array<{
+    case_id: string
+    script_path: string
+    requirement_id: string
+    interface_id: string
+    archived_at: string
+    version?: number
+  }>
+}
+
+export interface MetricsPayload {
+  job_id: string
+  automation_rate: {
+    value: number | null
+    numerator: number
+    denominator: number
+    data_complete: boolean
+  }
+  nodes: Array<{
+    name: string
+    status: string
+    degraded?: boolean
+    degrade_reason?: string
+    intervention_reason?: string
+    automation_path?: string
+  }>
+  caveat?: string
+  measured_at?: string
+}

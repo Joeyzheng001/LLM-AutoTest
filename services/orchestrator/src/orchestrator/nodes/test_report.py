@@ -15,9 +15,9 @@
 - X-RPT-01：`execution.json` 缺失/损坏 → 节点失败，禁止产出空报告；
 - X-RPT-02：全量用例均环境失败（无可判读）→ 报告标注"无可判读结果"，
   通过率不输出（而非 0%）；通过率分母 = 可判读用例（环境失败/跳过不计入）；
-- X-MTR-01/02：自动化率分母固定 9 不缩减；`metrics.json` 为报告时点快照，
-  未到达的下游节点按 manual_intervention + 未执行说明记录，`data_complete=false`
-  时通过率为 null（不输出误导数值）。
+- X-MTR-01/02：自动化率分母固定 9 不缩减；`metrics.json` 先以报告时点快照落盘，
+  流水线收尾后刷新为九节点终态版（docs/13 P-10），`data_complete=false`
+  时自动化率为 null（不输出误导数值）。
 """
 
 from __future__ import annotations
@@ -172,13 +172,14 @@ def _render_markdown(
     lines += ["## 6. 环境失败清单（不计缺陷，待环境确认）", ""]
     lines += [_results_table(env_rows) if env_rows else "- 无。", ""]
 
-    # X-MTR：自动化率快照说明
+    # X-MTR：自动化率快照说明（收尾后 metrics.json 刷新为终态版，docs/13 P-10）
     lines += [
         "## 7. 自动化率快照",
         "",
-        "> `metrics.json` 为本报告时点快照：未到达的下游节点（缺陷清单/回归沉淀）",
+        "> 本报告生成时 `metrics.json` 为报告时点快照：未到达的下游节点（缺陷清单/回归沉淀）",
         "> 按人工介入记录且数据不完整（`data_complete=false`），自动化率为 null，",
         "> 不输出误导数值（X-MTR-02）。分母固定 9 不缩减（X-MTR-01）。",
+        "> 流水线收尾后 `metrics.json` 刷新为九节点终态版（最终自动化率以终态版为准）。",
         "",
     ]
     return "\n".join(lines) + "\n"
@@ -199,13 +200,25 @@ def _results_table(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _build_metrics(state: JobState) -> dict[str, Any]:
+def build_final_metrics(state: JobState) -> dict[str, Any]:
+    """构造 metrics.json 终态版（流水线收尾刷新，docs/13 P-10）。
+
+    与报告时点快照同源同口径，但全部节点按 state 终态计算：
+    收尾后 defect_list/retest_regression 的终态不再被「未到达」深写覆盖，
+    完整跑完的 job 自动化率不再停在报告时点值。
+    """
+    return _build_metrics(state, final=True)
+
+
+def _build_metrics(state: JobState, final: bool = False) -> dict[str, Any]:
     """构造 metrics.json（程序化，X-MTR-01/02 口径）。
 
-    快照口径：已完成节点标 completed；降级节点（state.degraded）标
-    manual_intervention + degraded=true（D1 按人工介入计入）；本节点（test_report）
-    产物即将落盘，按 completed 记；未到达的下游节点标 manual_intervention +
-    未执行说明。任一节点未真正完成 → data_complete=false → 通过率 null。
+    快照口径（final=False，test_report 节点内）：已完成节点标 completed；降级节点
+    （state.degraded）标 manual_intervention + degraded=true（D1 按人工介入计入）；
+    本节点（test_report）产物即将落盘，按 completed 记；未到达的下游节点标
+    manual_intervention + 未执行说明。
+    终态口径（final=True，流水线收尾）：全部节点按 state 终态，无本节点特判。
+    任一节点未真正完成 → data_complete=false → 通过率 null。
     """
     degraded_by_node = {str(d.get("node")): str(d.get("reason", "")) for d in state.degraded}
     nodes: list[dict[str, Any]] = []
@@ -213,10 +226,7 @@ def _build_metrics(state: JobState) -> dict[str, Any]:
     for name in NODE_ORDER:
         status = state.node(name).status
         entry: dict[str, Any]
-        if name == NODE_NAME:
-            entry = {"name": name, "status": "completed"}
-            completed_count += 1
-        elif status is NodeStatus.COMPLETED:
+        if status is NodeStatus.COMPLETED:
             entry = {"name": name, "status": "completed"}
             completed_count += 1
         elif name in degraded_by_node:
@@ -226,11 +236,14 @@ def _build_metrics(state: JobState) -> dict[str, Any]:
                 "degraded": True,
                 "degrade_reason": degraded_by_node[name],
             }
+        elif not final and name == NODE_NAME:
+            entry = {"name": name, "status": "completed"}
+            completed_count += 1
         else:
             entry = {
                 "name": name,
                 "status": "manual_intervention",
-                "intervention_reason": "未执行（本报告时点流水线尚未到达该节点）",
+                "intervention_reason": "未执行（流水线未到达该节点）",
             }
         nodes.append(entry)
 

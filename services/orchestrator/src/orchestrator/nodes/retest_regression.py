@@ -68,116 +68,149 @@ async def run_retest_regression(
     engine.check_runnable(state, NODE_NAME)
     engine.mark_running(state, NODE_NAME)
     try:
-        defects_payload = _load_json(store, state.job_id, "defects.json")
-        testcases = _load_json(store, state.job_id, "testcases.json")
-        interfaces = _load_json(store, state.job_id, "interfaces.json")
-
-        defects: list[dict[str, Any]] = list(defects_payload.get("defects", []))
-        case_by_id = {
-            str(c.get("id", "")): c for c in testcases.get("cases", []) if c.get("id")
-        }
-        interface_by_id = {
-            str(i.get("id", "")): i for i in interfaces.get("interfaces", []) if i.get("id")
-        }
-
-        rest_ready = await probe_rest(rest_base_url, transport)
-        rest_runner = RestRunner(rest_base_url, transport)
-        demo_runner = MockDemoRunner()
-        warnings: list[str] = []
-        archived: list[dict[str, Any]] = []
-        job_dir = store.job_dir(state.job_id)
-
-        for defect in defects:
-            case_id = str(defect.get("case_id", ""))
-            case = case_by_id.get(case_id)
-            script_rel = str((case or {}).get("script_path", ""))
-            script_path = job_dir / script_rel if script_rel else None
-            if_id = str(defect.get("interface_id", ""))
-            interface = interface_by_id.get(if_id, {})
-            protocol = str(interface.get("protocol", "rest"))
-
-            # 复测环境探测（R-EXEC-02 同源口径）：REST 不可达 → 跳过该项，
-            # 不判缺陷状态流转（环境失败不判为缺陷，X-EXEC-01 同源精神）
-            if protocol == "rest" and not rest_ready:
-                warnings.append(
-                    f"复测环境不可达（X-EXEC-01 同源）：缺陷 {defect.get('id')}"
-                    f"（用例 {case_id}）跳过复测，状态保持不变"
-                )
-                continue
-
-            # X-DEF-02：脚本已被人工删除/修改 → 指明缺失用例，该项跳过
-            if case is None or script_path is None or not script_path.is_file():
-                warnings.append(
-                    f"X-DEF-02：用例 {case_id}（缺陷 {defect.get('id')}）脚本缺失"
-                    f"（{script_rel or '<无 script_path>'}），复测跳过该项"
-                )
-                continue
-
-            # 复测重跑（R-DEF-02：重跑关联用例；判定与 auto_execute 同源：2xx + 语义断言）
-            runner = rest_runner if protocol == "rest" else demo_runner
-            params = case.get("params") if isinstance(case.get("params"), dict) else {}
-            response = await runner.invoke(
-                InvokeRequest(interface=interface, params=params)
-            )
-            # 复测重跑（R-DEF-02：重跑关联用例；判定与 auto_execute 同源：
-            # status token > 2xx + 语义等值对；404 归环境失败不判缺陷修复）
-            retest_passed = False
-            if response.ok and response.status is not None:
-                if response.status == 404:
-                    # 环境类（接口未部署）——复测不计通过也不计修复失败，环境待确认
-                    retest_passed = False
-                else:
-                    retest_passed, _failures = _judge_assertion(
-                        str(case.get("expected", "")), response.status, response.body
-                    )
-
-            now = _now_iso()
-            history: list[dict[str, Any]] = list(defect.get("history", []))
-            history.append({"event": "retest_started", "timestamp": now})
-            if retest_passed:
-                # F-DEF-03：复测通过 → 关闭建议
-                history.append({"event": "retest_passed", "timestamp": now})
-                history.append({"event": "close_suggested", "timestamp": now})
-                defect["status"] = "closed_suggested"
-                # F-REG-01/02：归档 = 移动至回归目录 + 溯源随档；
-                # 溯源缺失（requirement_id 为空）则跳过归档并告警——不造数据
-                requirement_id = str(case.get("requirement_id", ""))
-                if requirement_id:
-                    target_rel = _archive_script(job_dir, script_path, protocol)
-                    archived.append(
-                        {
-                            "case_id": case_id,
-                            "script_path": target_rel,
-                            "requirement_id": requirement_id,
-                            "interface_id": if_id,
-                            "protocol": protocol,
-                            "archived_at": now,
-                        }
-                    )
-                else:
-                    warnings.append(
-                        f"F-REG-02 溯源缺失：用例 {case_id}（缺陷 {defect.get('id')}）"
-                        "无 requirement_id，跳过归档（脚本留原执行目录）"
-                    )
-            else:
-                # F-DEF-03：仍失败 → 保留（脚本留原目录，未沉淀）
-                history.append({"event": "retest_failed", "timestamp": now})
-                history.append({"event": "retained", "timestamp": now})
-                defect["status"] = "retained"
-            defect["history"] = history
-
-        defects_payload["defects"] = defects
-        if warnings:
-            defects_payload["warnings"] = warnings
-        store.write(state.job_id, "defects.json", defects_payload)
-        path = store.write(
-            state.job_id, "regression_index.json", _build_index(state.job_id, archived, store)
-        )
+        result = await retest_defects(store, state.job_id, rest_base_url, transport)
         engine.mark_completed(state, NODE_NAME)
-        return path
+        return Path(str(result["regression_index_path"]))
     except PipelineError as exc:
         engine.mark_failed(state, NODE_NAME, exc)
         raise
+
+
+async def retest_defects(
+    te_store: ArtifactStore,
+    job_id: str,
+    rest_base_url: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+    only_defect_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """复测核心（供 9 节点流水线与 REST API 单条复测共用）。
+
+    Args:
+        te_store: test-executor 身份产物卷（defects.json / regression_index.json 丙写）。
+        only_defect_ids: None → 全量复测（F-DEF-02）；指定集合 → 仅复测该批缺陷
+            （Web 缺陷闭环页「单条复测」按钮，07 §3.5）。
+
+    Returns:
+        {"retested": [缺陷 ID 清单], "archived": [归档条目], "warnings": [告警],
+        "regression_index_path": 产物路径}。
+
+    Raises:
+        PipelineError: 前置产物缺失（X-ORCH-01）。
+    """
+    defects_payload = _load_json(te_store, job_id, "defects.json")
+    testcases = _load_json(te_store, job_id, "testcases.json")
+    interfaces = _load_json(te_store, job_id, "interfaces.json")
+
+    defects: list[dict[str, Any]] = list(defects_payload.get("defects", []))
+    case_by_id = {
+        str(c.get("id", "")): c for c in testcases.get("cases", []) if c.get("id")
+    }
+    interface_by_id = {
+        str(i.get("id", "")): i for i in interfaces.get("interfaces", []) if i.get("id")
+    }
+
+    rest_ready = await probe_rest(rest_base_url, transport)
+    rest_runner = RestRunner(rest_base_url, transport)
+    demo_runner = MockDemoRunner()
+    warnings: list[str] = []
+    archived: list[dict[str, Any]] = []
+    retested: list[str] = []
+    job_dir = te_store.job_dir(job_id)
+
+    for defect in defects:
+        if only_defect_ids is not None and str(defect.get("id", "")) not in only_defect_ids:
+            continue
+        case_id = str(defect.get("case_id", ""))
+        case = case_by_id.get(case_id)
+        script_rel = str((case or {}).get("script_path", ""))
+        script_path = job_dir / script_rel if script_rel else None
+        if_id = str(defect.get("interface_id", ""))
+        interface = interface_by_id.get(if_id, {})
+        protocol = str(interface.get("protocol", "rest"))
+
+        # 复测环境探测（R-EXEC-02 同源口径）：REST 不可达 → 跳过该项，
+        # 不判缺陷状态流转（环境失败不判为缺陷，X-EXEC-01 同源精神）
+        if protocol == "rest" and not rest_ready:
+            warnings.append(
+                f"复测环境不可达（X-EXEC-01 同源）：缺陷 {defect.get('id')}"
+                f"（用例 {case_id}）跳过复测，状态保持不变"
+            )
+            continue
+
+        # X-DEF-02：脚本已被人工删除/修改 → 指明缺失用例，该项跳过
+        if case is None or script_path is None or not script_path.is_file():
+            warnings.append(
+                f"X-DEF-02：用例 {case_id}（缺陷 {defect.get('id')}）脚本缺失"
+                f"（{script_rel or '<无 script_path>'}），复测跳过该项"
+            )
+            continue
+
+        # 复测重跑（R-DEF-02：重跑关联用例；判定与 auto_execute 同源：
+        # status token > 2xx + 语义等值对；404 归环境失败不判缺陷修复）
+        runner = rest_runner if protocol == "rest" else demo_runner
+        params = case.get("params") if isinstance(case.get("params"), dict) else {}
+        response = await runner.invoke(
+            InvokeRequest(interface=interface, params=params)
+        )
+        retest_passed = False
+        if response.ok and response.status is not None:
+            if response.status == 404:
+                # 环境类（接口未部署）——复测不计通过也不计修复失败，环境待确认
+                retest_passed = False
+            else:
+                retest_passed, _failures = _judge_assertion(
+                    str(case.get("expected", "")), response.status, response.body
+                )
+
+        now = _now_iso()
+        history: list[dict[str, Any]] = list(defect.get("history", []))
+        history.append({"event": "retest_started", "timestamp": now})
+        if retest_passed:
+            # F-DEF-03：复测通过 → 关闭建议
+            history.append({"event": "retest_passed", "timestamp": now})
+            history.append({"event": "close_suggested", "timestamp": now})
+            defect["status"] = "closed_suggested"
+            # F-REG-01/02：归档 = 移动至回归目录 + 溯源随档；
+            # 溯源缺失（requirement_id 为空）则跳过归档并告警——不造数据
+            requirement_id = str(case.get("requirement_id", ""))
+            if requirement_id:
+                target_rel = _archive_script(job_dir, script_path, protocol)
+                archived.append(
+                    {
+                        "case_id": case_id,
+                        "script_path": target_rel,
+                        "requirement_id": requirement_id,
+                        "interface_id": if_id,
+                        "protocol": protocol,
+                        "archived_at": now,
+                    }
+                )
+            else:
+                warnings.append(
+                    f"F-REG-02 溯源缺失：用例 {case_id}（缺陷 {defect.get('id')}）"
+                    "无 requirement_id，跳过归档（脚本留原执行目录）"
+                )
+        else:
+            # F-DEF-03：仍失败 → 保留（脚本留原目录，未沉淀）
+            history.append({"event": "retest_failed", "timestamp": now})
+            history.append({"event": "retained", "timestamp": now})
+            defect["status"] = "retained"
+        defect["history"] = history
+        retested.append(str(defect.get("id", "")))
+
+    defects_payload["defects"] = defects
+    if warnings:
+        defects_payload["warnings"] = warnings
+    te_store.write(job_id, "defects.json", defects_payload)
+    path = te_store.write(
+        job_id, "regression_index.json", _build_index(job_id, archived, te_store)
+    )
+    return {
+        "retested": retested,
+        "archived": archived,
+        "warnings": warnings,
+        "regression_index_path": str(path),
+    }
 
 
 def _archive_script(job_dir: Path, script_path: Path, protocol: str) -> str:
