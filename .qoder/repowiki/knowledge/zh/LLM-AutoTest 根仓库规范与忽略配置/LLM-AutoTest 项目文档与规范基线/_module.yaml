@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: docs
+title: LLM-AutoTest 项目文档与规范基线
+scope:
+    - docs/
+source_files: []
+depends_on: []
+related_to:
+    - path: schemas_and_prompts
