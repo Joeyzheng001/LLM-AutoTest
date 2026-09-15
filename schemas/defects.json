@@ -7,6 +7,11 @@
   "properties": {
     "schema_version": { "type": "string", "const": "1.0" },
     "job_id": { "type": "string", "pattern": "^job-" },
+    "warnings": {
+      "type": "array",
+      "description": "v1.1 可选：处理告警（X-DEF-02 复测跳过记录等）",
+      "items": { "type": "string", "minLength": 1 }
+    },
     "defects": {
       "type": "array",
       "description": "R-DEF-01：仅断言失败进入；环境失败隔离于待环境确认（不入本清单）",
