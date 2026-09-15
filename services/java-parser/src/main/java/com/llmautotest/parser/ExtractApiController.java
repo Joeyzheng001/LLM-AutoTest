@@ -37,7 +37,7 @@ public class ExtractApiController {
         if (request.repositories() == null || request.repositories().isEmpty()) {
             throw new ScanApiController.InvalidRequestException("repositories 不能为空");
         }
-        JobAccepted accepted = jobs.submit(request.job_id(), () -> runner.run(request));
+        JobAccepted accepted = jobs.submit(JobManager.JobKind.EXTRACT, request.job_id(), () -> runner.run(request));
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(accepted);
     }
 
@@ -58,7 +58,7 @@ public class ExtractApiController {
     }
 
     private JobRecord requireJob(String jobId) {
-        JobRecord record = jobs.get(jobId);
+        JobRecord record = jobs.get(JobManager.JobKind.EXTRACT, jobId);
         if (record == null) {
             throw new ScanApiController.JobNotFoundException(jobId);
         }

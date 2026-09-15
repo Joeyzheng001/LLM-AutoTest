@@ -3,8 +3,10 @@
 // 未接入时如实告警（不虚构候选）——协议插件化在第二个协议落地时经 ProtocolResolver 接入。
 package com.llmautotest.parser.job;
 
+import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseProblemException;
-import com.github.javaparser.StaticJavaParser;
+import com.github.javaparser.ParseResult;
+import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
@@ -12,6 +14,7 @@ import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.ArrayInitializerExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
+import com.github.javaparser.ast.expr.MarkerAnnotationExpr;
 import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.NormalAnnotationExpr;
 import com.github.javaparser.ast.expr.SingleMemberAnnotationExpr;
@@ -38,6 +41,11 @@ import org.springframework.stereotype.Component;
 public class ExtractJobRunner {
 
     private static final Logger LOG = LoggerFactory.getLogger(ExtractJobRunner.class);
+
+    /** 解析器实例（联调发现：StaticJavaParser 配置是 ThreadLocal，线程池线程拿不到——
+     * 改为持有实例，语言级别对齐项目 Java 21，record 等语法可解析）。 */
+    private static final JavaParser PARSER = new JavaParser(
+            new ParserConfiguration().setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21));
 
     /** 静态定位置信度：注解命中为确定性强特征（X-REQ-04 置信度标记）。 */
     private static final double STATIC_CONFIDENCE = 0.9;
@@ -134,7 +142,12 @@ public class ExtractJobRunner {
     private void extractFile(
             String source, RepositoryInput repo, String relative,
             List<Map<String, Object>> candidates) {
-        CompilationUnit unit = StaticJavaParser.parse(source);
+        ParseResult<CompilationUnit> result = PARSER.parse(source);
+        if (!result.isSuccessful() || result.getResult().isEmpty()) {
+            // 解析失败路径：转交外层 catch 统一记 X-REV-01 告警（单文件跳过不中断）
+            throw new ParseProblemException(result.getProblems());
+        }
+        CompilationUnit unit = result.getResult().get();
         for (ClassOrInterfaceDeclaration cls : unit.findAll(ClassOrInterfaceDeclaration.class)) {
             Optional<AnnotationExpr> restController = cls.getAnnotationByName("RestController");
             if (restController.isEmpty()) {
@@ -235,6 +248,10 @@ public class ExtractJobRunner {
 
     /** 提取注解全部字符串路径参数（数组形式逐个产出候选）。 */
     private static List<String> annotationPaths(AnnotationExpr ann) {
+        if (ann instanceof MarkerAnnotationExpr) {
+            // 裸注解（@GetMapping 无成员）：Spring 语义 = 映射到类级前缀
+            return List.of("");
+        }
         if (ann instanceof SingleMemberAnnotationExpr single) {
             return stringArgs(single.getMemberValue());
         }
@@ -244,6 +261,8 @@ public class ExtractJobRunner {
                     return stringArgs(pair.getValue());
                 }
             }
+            // 有成员但无路径（如仅 consumes/produces）：同样映射到类级前缀
+            return List.of("");
         }
         return List.of();
     }

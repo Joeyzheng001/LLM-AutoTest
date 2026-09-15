@@ -85,6 +85,59 @@ class ExtractJobRunnerTest {
     }
 
     @Test
+    void bareMappingAnnotationMapsToClassPrefix() throws IOException {
+        // 回归锁定：联调发现的真 bug——裸 @GetMapping/@PostMapping（无路径成员）
+        // 应映射到类级前缀，而非漏产候选
+        Path repo = Files.createDirectories(tempDir.resolve("svc"));
+        Files.writeString(repo.resolve("UserController.java"), """
+                @RestController
+                @RequestMapping("/api/v1/users")
+                class UserController {
+                    @GetMapping
+                    String list() { return "[]"; }
+
+                    @PostMapping
+                    String create() { return "ok"; }
+                }
+                """);
+
+        Map<String, Object> payload = runner.run(new ExtractRequest(
+                "job-bare", List.of(input(repo, false)), null));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> candidates = (List<Map<String, Object>>) payload.get("candidates");
+        assertThat(candidates).extracting(c -> c.get("signature"))
+                .containsExactlyInAnyOrder("GET /api/v1/users", "POST /api/v1/users");
+    }
+
+    @Test
+    void recordSyntaxParsesUnderJava21Level() throws IOException {
+        // 回归锁定：联调发现——JavaParser 默认语言级别低于 16，record 解析失败告警
+        Path repo = Files.createDirectories(tempDir.resolve("svc"));
+        Files.writeString(repo.resolve("User.java"), """
+                package com.demo.user;
+
+                public record User(long id, String name) {
+                }
+                """);
+        Files.writeString(repo.resolve("UserController.java"), """
+                @RestController
+                @RequestMapping("/api/v1/users")
+                class UserController {
+                    @GetMapping("/{id}")
+                    User get(long id) { return null; }
+                }
+                """);
+
+        Map<String, Object> payload = runner.run(new ExtractRequest(
+                "job-record", List.of(input(repo, false)), null));
+
+        @SuppressWarnings("unchecked")
+        List<String> warnings = (List<String>) payload.get("warnings");
+        assertThat(warnings).noneMatch(w -> w.contains("User.java"));
+    }
+
+    @Test
     void parseFailureRecordedAsXRev01Warning() throws IOException {
         Path repo = Files.createDirectories(tempDir.resolve("broken"));
         Files.writeString(repo.resolve("Broken.java"), "class Broken {{{");

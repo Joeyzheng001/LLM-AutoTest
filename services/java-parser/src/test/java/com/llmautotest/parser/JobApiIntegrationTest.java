@@ -109,6 +109,37 @@ class JobApiIntegrationTest {
                 .andExpect(jsonPath("$.code").value("JOB_NOT_FOUND"));
     }
 
+    @Test
+    void sameJobIdScanAndExtractDoNotCollide() throws Exception {
+        // 回归锁定：联调发现的真 bug——幂等键裸用 job_id，scan/extract 同 id 互相顶掉
+        Path repo = Files.createDirectories(tempDir.resolve("svc"));
+        Files.writeString(repo.resolve("PingController.java"), """
+                @RestController
+                class PingController {
+                    @GetMapping("/api/v1/ping")
+                    String ping() { return "pong"; }
+                }
+                """);
+        String body = objectMapper.writeValueAsString(java.util.Map.of(
+                "job_id", "job-shared-1",
+                "repositories", java.util.List.of(java.util.Map.of(
+                        "name", "svc", "path", repo.toString(), "branch", "main"))));
+
+        mockMvc.perform(post("/api/v1/scan-jobs")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isAccepted());
+        mockMvc.perform(post("/api/v1/extract-jobs")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isAccepted());
+
+        JsonNode scanState = pollUntilCompleted("/api/v1/scan-jobs/job-shared-1");
+        assertThat(scanState.get("code_inventory").get("job_id").asText())
+                .isEqualTo("job-shared-1");
+        JsonNode extractState = pollUntilCompleted("/api/v1/extract-jobs/job-shared-1");
+        assertThat(extractState.get("candidates").get(0).get("signature").asText())
+                .isEqualTo("GET /api/v1/ping");
+    }
+
     /** 轮询直至终态（completed/failed），总时限 5 秒（本地 FS 任务瞬时完成）。 */
     private JsonNode pollUntilCompleted(String path) throws Exception {
         long deadline = System.currentTimeMillis() + 5_000;
