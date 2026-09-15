@@ -1,0 +1,101 @@
+/**
+ * 设计令牌：简约科技风（深色）
+ * 原则：低噪声背景 + 单一强调色 + 细线分隔 + 等宽数字；状态色仅用于语义（成功/告警/危险）。
+ * 变更纪律：只许新增令牌；改值须同步 docs/07 的视觉基线说明。
+ */
+
+:root {
+  /* 背景层级（由深到浅） */
+  --bg: #0a0e17;
+  --bg-elev: #0e1420;
+  --surface: #121928;
+  --surface-2: #172033;
+
+  /* 边框（细线，低对比） */
+  --border: #222c42;
+  --border-strong: #2e3b57;
+
+  /* 文本层级 */
+  --text-1: #e6ebf4;
+  --text-2: #9aa6bf;
+  --text-3: #5d6980;
+
+  /* 强调色（唯一主色：科技蓝） */
+  --accent: #4da3ff;
+  --accent-strong: #6fb7ff;
+  --accent-dim: rgba(77, 163, 255, 0.12);
+  --accent-glow: rgba(77, 163, 255, 0.28);
+
+  /* 语义状态色 */
+  --success: #35d6a4;
+  --success-dim: rgba(53, 214, 164, 0.12);
+  --warning: #f5b84c;
+  --warning-dim: rgba(245, 184, 76, 0.12);
+  --danger: #ff6b6b;
+  --danger-dim: rgba(255, 107, 107, 0.12);
+
+  /* 排版 */
+  --font-sans: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 15px;
+  --text-xl: 18px;
+
+  /* 几何 */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text-1);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  height: 100%;
+}
+
+/* 数字与 ID 一律等宽（科技感 + 对齐） */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

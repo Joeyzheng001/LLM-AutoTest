@@ -30,3 +30,4 @@ volumes/
 .idea/
 .vscode/
 .DS_Store
+services/frontend/tsconfig.tsbuildinfo
