@@ -188,7 +188,7 @@ const active = computed(() => views.find((view) => view.key === activeKey.value)
 .env {
   padding: 1px var(--space-2);
   background: var(--warning-dim);
-  border: 1px solid rgba(245, 184, 76, 0.3);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--warning);
 }

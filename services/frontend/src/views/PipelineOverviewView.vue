@@ -215,7 +215,7 @@ function formatTime(iso: string): string {
 .hint-warning {
   background: var(--warning-dim);
   color: var(--warning);
-  border: 1px solid rgba(245, 184, 76, 0.3);
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
 }
 
 .hint-notice {
@@ -292,7 +292,7 @@ function formatTime(iso: string): string {
 }
 
 .node[data-status='manual_intervention'] {
-  border-color: rgba(245, 184, 76, 0.4);
+  border-color: color-mix(in srgb, var(--warning) 40%, transparent);
   background: var(--warning-dim);
 }
 
@@ -306,7 +306,7 @@ function formatTime(iso: string): string {
     box-shadow: 0 0 0 0 transparent;
   }
   50% {
-    box-shadow: 0 0 12px 0 var(--accent-glow);
+    box-shadow: 0 0 10px 0 var(--accent-glow);
   }
 }
 </style>

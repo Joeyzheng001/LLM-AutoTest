@@ -1,38 +1,38 @@
 /**
- * 设计令牌：简约科技风（深色）
- * 原则：低噪声背景 + 单一强调色 + 细线分隔 + 等宽数字；状态色仅用于语义（成功/告警/危险）。
- * 变更纪律：只许新增令牌；改值须同步 docs/07 的视觉基线说明。
+ * 设计令牌：简约科技风（浅色/白底）
+ * 原则：白底低噪声 + 单一强调色 + 细线分隔 + 等宽数字；状态色仅用于语义（成功/告警/危险）。
+ * 变更纪律：只许新增令牌；改值须同步 docs/07 §二之乙 视觉基线说明。
  */
 
 :root {
-  /* 背景层级（由深到浅） */
-  --bg: #0a0e17;
-  --bg-elev: #0e1420;
-  --surface: #121928;
-  --surface-2: #172033;
+  /* 背景层级（页面底 → 面板 → 卡片，均为浅色） */
+  --bg: #f5f7fa;
+  --bg-elev: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f0f4f9;
 
   /* 边框（细线，低对比） */
-  --border: #222c42;
-  --border-strong: #2e3b57;
+  --border: #e3e8f0;
+  --border-strong: #cbd5e3;
 
   /* 文本层级 */
-  --text-1: #e6ebf4;
-  --text-2: #9aa6bf;
-  --text-3: #5d6980;
+  --text-1: #1a2333;
+  --text-2: #5b6577;
+  --text-3: #93a0b4;
 
   /* 强调色（唯一主色：科技蓝） */
-  --accent: #4da3ff;
-  --accent-strong: #6fb7ff;
-  --accent-dim: rgba(77, 163, 255, 0.12);
-  --accent-glow: rgba(77, 163, 255, 0.28);
+  --accent: #2f7ff5;
+  --accent-strong: #1f6ae0;
+  --accent-dim: rgba(47, 127, 245, 0.08);
+  --accent-glow: rgba(47, 127, 245, 0.35);
 
   /* 语义状态色 */
-  --success: #35d6a4;
-  --success-dim: rgba(53, 214, 164, 0.12);
-  --warning: #f5b84c;
-  --warning-dim: rgba(245, 184, 76, 0.12);
-  --danger: #ff6b6b;
-  --danger-dim: rgba(255, 107, 107, 0.12);
+  --success: #12a06e;
+  --success-dim: rgba(18, 160, 110, 0.09);
+  --warning: #c77f0a;
+  --warning-dim: rgba(199, 127, 10, 0.09);
+  --danger: #e05252;
+  --danger-dim: rgba(224, 82, 82, 0.09);
 
   /* 排版 */
   --font-sans: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
@@ -53,6 +53,10 @@
   --space-4: 16px;
   --space-5: 24px;
   --space-6: 32px;
+
+  /* 阴影（浅色主题用轻投影替代暗色辉光） */
+  --shadow-sm: 0 1px 2px rgba(26, 35, 51, 0.05);
+  --shadow-md: 0 2px 8px rgba(26, 35, 51, 0.07);
 }
 
 * {
