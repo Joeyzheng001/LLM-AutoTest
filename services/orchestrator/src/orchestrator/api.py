@@ -134,6 +134,16 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
     async def submit_job(request: JobSubmitRequest) -> dict[str, Any]:
         """提交全流程 job：校验 → 落盘输入 → 后台驱动 PipelineRunner。"""
         job_id = request.job_id or f"job-web-{uuid.uuid4().hex[:12]}"
+        # 横切 ID 约定（docs/11）：所有产物 schema 要求 job_id 匹配 ^job-；
+        # 在提交入口拒绝（宁停不猜），避免跑到第 N 个节点才因产物校验级联降级
+        if not job_id.startswith("job-"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"job_id 须以 job- 开头（横切 ID 约定，产物 schema ^job-）"
+                    f"——当前值：{job_id}；留空可自动生成 job-web-…"
+                ),
+            )
         if _task_alive(app, job_id):
             raise HTTPException(status_code=409, detail=f"job {job_id} 正在运行中")
         if not request.resume:
@@ -190,6 +200,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 jobs.append(
                     {
                         "job_id": state.get("job_id", entry.name),
+                        "created_at": state.get("created_at"),
                         "updated_at": state.get("updated_at"),
                         "running": _task_alive(app, str(state.get("job_id", entry.name))),
                         "completed": sum(1 for n in nodes if n.get("status") == "completed"),
@@ -199,6 +210,9 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                         "has_report": (entry / "test_report.md").is_file(),
                     }
                 )
+        # 创建时间倒排（最新提交在前）；运行中的任务再稳定置顶（两趟稳定排序叠加）
+        jobs.sort(key=lambda j: str(j.get("created_at") or ""), reverse=True)
+        jobs.sort(key=lambda j: j["running"], reverse=True)
         return {"jobs": jobs}
 
     @app.get("/api/v1/jobs/{job_id}")

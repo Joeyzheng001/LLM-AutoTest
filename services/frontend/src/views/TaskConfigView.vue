@@ -124,6 +124,10 @@ async function handleSubmit(): Promise<void> {
       resume: form.resume,
     }
     const trimmedJobId = form.jobId.trim()
+    if (trimmedJobId && !trimmedJobId.startsWith('job-')) {
+      submitError.value = '任务 ID 须以 job- 开头（横切 ID 约定）；留空可自动生成'
+      return
+    }
     if (trimmedJobId) payload.job_id = trimmedJobId
     const result = await submitJob(payload)
     submittedJobId.value = result.job_id
@@ -246,7 +250,7 @@ async function handleSubmit(): Promise<void> {
           />
         </label>
         <label class="field">
-          <span class="field-label">任务 ID（可选，留空自动生成）</span>
+          <span class="field-label">任务 ID（可选，留空自动生成；须以 job- 开头）</span>
           <input v-model="form.jobId" type="text" class="mono" placeholder="job-web-…" />
         </label>
         <label class="switch-row">

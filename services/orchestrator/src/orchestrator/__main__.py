@@ -43,6 +43,13 @@ def _build_runner(settings: Settings) -> PipelineRunner:
 
 async def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
     """run 子命令：跑全流程（状态已存在时自动断点续跑）。"""
+    # 横切 ID 约定（docs/11）：产物 schema 要求 job_id 匹配 ^job-；入口拒绝免级联降级
+    if not args.job_id.startswith("job-"):
+        logger.error(
+            "job_id 须以 job- 开头（横切 ID 约定，产物 schema ^job-）——当前值：%s",
+            args.job_id,
+        )
+        return 2
     doc_paths = [Path(doc) for doc in args.doc]
     missing = [str(path) for path in doc_paths if not path.is_file()]
     if missing:

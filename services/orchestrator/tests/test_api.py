@@ -274,20 +274,20 @@ async def test_submit_job_docs_and_legacy_validations(
 ) -> None:
     """C-10 文档字段拒绝路径：两组均空 / 旧字段只填一半 / docs 与旧字段同时给（docs 优先）。"""
     app, _fake, client, repo_dir = env
-    empty = _submit_body(repo_dir, "d0")
+    empty = _submit_body(repo_dir, "job-api-d0")
     del empty["doc_name"], empty["doc_content_b64"]
     assert (await client.post("/api/v1/jobs", json=empty)).status_code == 400
-    half = _submit_body(repo_dir, "d1")
+    half = _submit_body(repo_dir, "job-api-d1")
     del half["doc_content_b64"]
     assert (await client.post("/api/v1/jobs", json=half)).status_code == 400
     # 两组同时给：docs 优先（不报错，旧字段忽略）
-    both = _submit_body(repo_dir, "d2")
+    both = _submit_body(repo_dir, "job-api-d2")
     both["docs"] = [
         {"doc_name": "only.md", "doc_content_b64": base64.b64encode(b"# only").decode()}
     ]
     assert (await client.post("/api/v1/jobs", json=both)).status_code == 202
-    await _await_task(app, "d2")
-    job_dir = Path(str(app.state.settings.artifacts_root)) / "d2"
+    await _await_task(app, "job-api-d2")
+    job_dir = Path(str(app.state.settings.artifacts_root)) / "job-api-d2"
     assert (job_dir / "input" / "only.md").is_file()
     assert not (job_dir / "input" / "requirements.md").exists()
 
@@ -297,14 +297,30 @@ async def test_submit_job_empty_repos_rejected(
 ) -> None:
     """C-10：空仓库列表拒绝（≥1）；单仓库合法通过。"""
     app, fake, client, repo_dir = env
-    empty = _submit_body(repo_dir, "r0")
+    empty = _submit_body(repo_dir, "job-api-r0")
     empty["repos"] = []
     assert (await client.post("/api/v1/jobs", json=empty)).status_code == 422  # Pydantic min_length
     # 单仓库（C-10 放宽后合法）
-    response = await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "r1"))
+    response = await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-r1"))
     assert response.status_code == 202
-    await _await_task(app, "r1")
+    await _await_task(app, "job-api-r1")
     assert fake.calls[-1]["repos"] == [("repo-a", str(repo_dir))]
+
+
+async def test_submit_job_invalid_job_id_rejected(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """非 job- 前缀 job_id 提交入口拒绝（横切 ID 约定），不建目录不跑流水线。
+
+    实例：中文任务名提交曾致 9 节点全部因产物 schema ^job- 校验级联降级。
+    """
+    app, fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "第一次全局测试")
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 400
+    assert "job-" in response.json()["detail"]
+    assert fake.calls == []
+    assert not (Path(str(app.state.settings.artifacts_root)) / "第一次全局测试").exists()
 
 
 async def test_submit_job_validations(
@@ -352,7 +368,7 @@ async def test_job_status_and_artifacts(
 async def test_list_jobs(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:
-    """清单端点：按产物目录扫描 + completed/degraded 计数。"""
+    """清单端点：按产物目录扫描 + completed/degraded 计数 + 创建时间倒排。"""
     app, _fake, client, repo_dir = env
     await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-0003"))
     await _await_task(app, "job-api-0003")
@@ -362,12 +378,40 @@ async def test_list_jobs(
     assert jobs[0]["running"] is False
 
 
+async def test_list_jobs_created_desc(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """任务列表按创建时间倒排（最新提交在前）：改写旧 job 的 created_at 验证顺序。"""
+    app, _fake, client, repo_dir = env
+    root = Path(str(app.state.settings.artifacts_root))
+    await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-old"))
+    await _await_task(app, "job-api-old")
+    await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-new"))
+    await _await_task(app, "job-api-new")
+    # 两份 state.json 的 created_at 可能同秒——手工改写确保可比：旧 job 回拨 1 小时
+    old_state = json.loads((root / "job-api-old" / "state.json").read_text(encoding="utf-8"))
+    old_state["created_at"] = "2026-01-01T00:00:00+00:00"
+    (root / "job-api-old" / "state.json").write_text(
+        json.dumps(old_state, ensure_ascii=False), encoding="utf-8"
+    )
+    jobs = (await client.get("/api/v1/jobs")).json()["jobs"]
+    assert [j["job_id"] for j in jobs] == ["job-api-new", "job-api-old"]
+    assert jobs[0]["created_at"] is not None
+
+
 async def test_retest_full_and_single(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """全量复测（force_node 队列化）与单条复测（同源核心，环境不可达如实告警）。"""
     app, fake, client, repo_dir = env
-    # rest_url 用封闭端口（单条复测环境探测必失败——不受本机演示服务影响）
+    # rest_url 用封闭端口；单条复测的环境探测直接桩为不可达——测点是「不可达 →
+    # 跳过 + 告警」行为本身，不依赖真实网络拒绝（透明代理环境下 502 响应会被
+    # probe_rest 判为存活，真实端口拒绝不可移植）
+    async def _probe_unreachable(*args: Any, **kwargs: Any) -> bool:
+        return False
+
+    monkeypatch.setattr("orchestrator.nodes.retest_regression.probe_rest", _probe_unreachable)
     body = _submit_body(repo_dir, "job-api-0004")
     body["rest_url"] = "http://127.0.0.1:1"
     await client.post("/api/v1/jobs", json=body)
