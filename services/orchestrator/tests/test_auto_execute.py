@@ -5,6 +5,7 @@ MockTransport 模拟被测 REST 服务（/health 探活 + 业务端点）。
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import Engine
 from orchestrator.errors import X_ORCH_02, PipelineError
 from orchestrator.nodes import run_auto_execute
+from orchestrator.nodes.auto_execute import InvokeRequest, RestRunner, login_for_headers
 from orchestrator.pipeline import NodeStatus
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
@@ -542,3 +544,186 @@ async def test_auto_execute_expected_status_token(
     result = payload["results"][0]
     assert result["passed"] is True
     assert result.get("failure_kind") is None
+
+
+# ---- C-15 鉴权：登录提取凭据头（数值/凭据不经 LLM）----
+
+_AUTH: dict[str, Any] = {
+    "login_url": "http://mock:9000/api/auth/login/",
+    "username": "admin",
+    "password": "admin123456",
+}
+
+
+async def test_login_for_headers_token() -> None:
+    """token 字段 → Authorization: Token（实测被测服务口径）。"""
+    seen: list[dict[str, Any]] = []
+
+    def login_service(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            {
+                "path": request.url.path,
+                "body": json.loads(request.content.decode("utf-8")),
+            }
+        )
+        return httpx.Response(200, json={"token": "tok-abc123", "username": "admin"})
+
+    headers = await login_for_headers(_AUTH, httpx.MockTransport(login_service))
+    assert headers == {"Authorization": "Token tok-abc123"}
+    assert seen == [
+        {
+            "path": "/api/auth/login/",
+            "body": {"username": "admin", "password": "admin123456"},
+        }
+    ]
+
+
+async def test_login_for_headers_cookie_fallback() -> None:
+    """无 token 字段 → Set-Cookie 回带（session 会话口径，属性剔除）。"""
+    def login_service(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": True},
+            headers=[
+                ("set-cookie", "sessionid=s123; Path=/; HttpOnly"),
+                ("set-cookie", "csrftoken=xyz; Path=/"),
+            ],
+        )
+
+    headers = await login_for_headers(_AUTH, httpx.MockTransport(login_service))
+    assert headers == {"Cookie": "sessionid=s123; csrftoken=xyz"}
+
+
+async def test_login_for_headers_rejects_bad_credentials() -> None:
+    """登录 401 → X-EXEC-01（环境类，节点重试口径）。"""
+    def login_service(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "凭据错误"})
+
+    with pytest.raises(PipelineError) as exc_info:
+        await login_for_headers(_AUTH, httpx.MockTransport(login_service))
+    assert exc_info.value.code == "X-EXEC-01"
+    assert "401" in exc_info.value.message
+
+
+async def test_login_for_headers_unreachable() -> None:
+    """登录接口不可达 → X-EXEC-01。"""
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    with pytest.raises(PipelineError) as exc_info:
+        await login_for_headers(_AUTH, httpx.MockTransport(unreachable))
+    assert exc_info.value.code == "X-EXEC-01"
+
+
+async def test_login_for_headers_no_credentials_in_response() -> None:
+    """响应无 token 且无 Set-Cookie → X-EXEC-01（无凭据可提取）。"""
+    def login_service(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True})
+
+    with pytest.raises(PipelineError) as exc_info:
+        await login_for_headers(_AUTH, httpx.MockTransport(login_service))
+    assert exc_info.value.code == "X-EXEC-01"
+    assert "无凭据" in exc_info.value.message
+
+
+async def test_auto_execute_with_auth_injects_credentials(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """C-15 全链路：执行前登录 → 凭据头注入全部 REST 请求。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+    seen_auth: list[str | None] = []
+
+    def secured_service(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/api/auth/login/":
+            return httpx.Response(200, json={"token": "tok-e2e", "username": "admin"})
+        seen_auth.append(request.headers.get("authorization"))
+        return httpx.Response(200, json={"id": 1, "name": "用户A"})
+
+    _write_case(te_store, expected="2xx 响应结构符合接口定义")
+    await run_auto_execute(
+        engine, state, te_store, "http://mock:9000",
+        httpx.MockTransport(secured_service), auth=_AUTH,
+    )
+    assert seen_auth == ["Token tok-e2e"]
+    payload = te_store.read_json(_JOB, "execution.json")
+    assert payload["summary"]["total"] == 1
+    assert payload["results"][0]["passed"] is True
+
+
+async def test_auto_execute_auth_login_failure_degrades(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """C-15：登录失败 → X-EXEC-01 环境类（断言不进缺陷、节点降级口径由 runner 测试覆盖）。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+
+    def login_reject(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(401, json={"detail": "凭据错误"})
+
+    _write_case(te_store, expected="2xx 响应结构符合接口定义")
+    with pytest.raises(PipelineError) as exc_info:
+        await run_auto_execute(
+            engine, state, te_store, "http://mock:9000",
+            httpx.MockTransport(login_reject), auth=_AUTH,
+        )
+    assert exc_info.value.code == "X-EXEC-01"
+
+
+# ---- P-12：Django APPEND_SLASH 301 补偿 ----
+
+async def test_rest_runner_301_append_slash_compensation() -> None:
+    """无尾斜杠 POST 被 301 到同路径 + "/" → 同 method 重发一次。"""
+    hits: list[str] = []
+
+    def slash_service(request: httpx.Request) -> httpx.Response:
+        hits.append(f"{request.method} {request.url.path}")
+        if request.url.path == "/api/auth/login":
+            return httpx.Response(
+                301, headers={"Location": "http://mock:9000/api/auth/login/"}
+            )
+        if request.url.path == "/api/auth/login/":
+            return httpx.Response(200, json={"token": "tok-x"})
+        return httpx.Response(404)
+
+    runner = RestRunner("http://mock:9000", httpx.MockTransport(slash_service))
+    response = await runner.invoke(
+        InvokeRequest(
+            interface={
+                "signature": {"method": "POST", "path": "/api/auth/login"},
+                "params": [],
+            },
+            params={},
+        )
+    )
+    assert response.ok is True
+    assert response.status == 200
+    assert hits == ["POST /api/auth/login", "POST /api/auth/login/"]
+
+
+async def test_rest_runner_301_to_other_path_not_compensated() -> None:
+    """301 指向不同路径（真实重定向）不补偿——防把页面重定向当成功。"""
+    hits: list[str] = []
+
+    def redirect_service(request: httpx.Request) -> httpx.Response:
+        hits.append(f"{request.method} {request.url.path}")
+        if request.url.path == "/api/v1/users":
+            return httpx.Response(301, headers={"Location": "http://mock:9000/login"})
+        return httpx.Response(200, text="page")
+
+    runner = RestRunner("http://mock:9000", httpx.MockTransport(redirect_service))
+    response = await runner.invoke(
+        InvokeRequest(
+            interface={
+                "signature": {"method": "GET", "path": "/api/v1/users"},
+                "params": [],
+            },
+            params={},
+        )
+    )
+    assert hits == ["GET /api/v1/users"]  # 仅一次请求，不跟随异路径 301
+    assert response.status == 301

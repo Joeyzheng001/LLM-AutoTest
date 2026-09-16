@@ -68,12 +68,26 @@ class Runner(Protocol):
 
 
 class RestRunner:
-    """REST 执行器：按 signature.method/path 与参数位置（query/body/path/header）调用。"""
+    """REST 执行器：按 signature.method/path 与参数位置（query/body/path/header）调用。
 
-    def __init__(self, base_url: str, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    C-15：auth_headers 非空时注入登录凭据头（Authorization/Cookie）；
+    verify=False 用于 https 自签场景（表单「跳过证书校验」）；
+    P-12：Django APPEND_SLASH 301 补偿——无尾斜杠路径被 301 到同路径加 "/" 时
+    同 method 重发一次（扫描候选无尾斜杠，实测被测服务为 Django 口径）。
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+        auth_headers: dict[str, str] | None = None,
+        verify: bool = True,
+    ) -> None:
         """transport 仅测试注入，生产留 None。"""
         self._base_url = base_url
         self._transport = transport
+        self._auth_headers = auth_headers or {}
+        self._verify = verify
 
     async def invoke(self, request: InvokeRequest) -> InvokeResponse:
         """按接口签名拼请求并调用；连接/超时归环境类错误。"""
@@ -105,10 +119,23 @@ class RestRunner:
                 base_url=self._base_url,
                 timeout=request.timeout_s,
                 transport=self._transport,
+                verify=self._verify,
             ) as client:
+                merged = {**self._auth_headers, **headers}
                 response = await client.request(
-                    method, path, params=query or None, json=body or None, headers=headers or None
+                    method, path, params=query or None, json=body or None,
+                    headers=merged or None,
                 )
+                # P-12：Django APPEND_SLASH 301 补偿（同 method 重发一次）
+                location = response.headers.get("location", "")
+                if location and response.status_code == 301:
+                    # Location 可能是绝对 URL（Django 默认）——只取路径部分比对
+                    redirect_path = httpx.URL(location).path
+                    if redirect_path.rstrip("/") == path.rstrip("/"):
+                        response = await client.request(
+                            method, redirect_path, params=query or None, json=body or None,
+                            headers=merged or None,
+                        )
         except httpx.TimeoutException as exc:
             return InvokeResponse(
                 ok=False, status=None, body=None, error=f"执行超时（X-EXEC-02）：{exc}",
@@ -225,16 +252,85 @@ class MockDemoRunner:
         )
 
 
-async def probe_rest(base_url: str, transport: httpx.AsyncBaseTransport | None = None) -> bool:
+async def probe_rest(
+    base_url: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+    verify: bool = True,
+) -> bool:
     """R-EXEC-02：REST 环境探活（GET /health，任何响应均视为服务存活）。"""
     try:
         async with httpx.AsyncClient(
-            base_url=base_url, timeout=3.0, transport=transport
+            base_url=base_url, timeout=3.0, transport=transport, verify=verify
         ) as client:
             await client.get("/health")
     except (httpx.TimeoutException, httpx.TransportError):
         return False
     return True
+
+
+async def login_for_headers(
+    auth: dict[str, Any],
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> dict[str, str]:
+    """C-15：执行前登录被测服务，提取凭据头（数值/凭据不经 LLM）。
+
+    实测口径（docs/13 C-15）：POST login_url JSON {username, password} →
+    - 响应 JSON 含 token 类字段（token/access_token/key）→ Authorization: Token <token>；
+    - 否则 Set-Cookie → Cookie 回带（session 会话口径）；
+    - 登录失败（非 2xx/3xx 或连接异常）→ PipelineError X-EXEC-01（环境类，节点重试）。
+    verify=insecure_tls（https 自签场景表单默认跳过校验）。
+    """
+    login_url = str(auth.get("login_url", ""))
+    username = str(auth.get("username", ""))
+    password = str(auth.get("password", ""))
+    verify = not bool(auth.get("insecure_tls", True))
+    try:
+        async with httpx.AsyncClient(timeout=10.0, transport=transport, verify=verify) as client:
+            response = await client.post(
+                login_url, json={"username": username, "password": password}
+            )
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        raise PipelineError(
+            code="X-EXEC-01",
+            message=f"登录接口不可达（C-15）：{login_url}：{exc}",
+            node_id=NODE_NAME,
+        ) from exc
+    if response.status_code >= 400:
+        raise PipelineError(
+            code="X-EXEC-01",
+            message=(
+                f"登录失败（C-15）：{login_url} 返回 {response.status_code}"
+                f"（检查用户名/密码/登录 URL 是否带尾斜杠）"
+            ),
+            node_id=NODE_NAME,
+        )
+    # 凭据提取：token 字段优先，回退 Set-Cookie 回带
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        for field in ("token", "access_token", "key"):
+            token = payload.get(field)
+            if isinstance(token, str) and token:
+                return {"Authorization": f"Token {token}"}
+    cookies = [
+        "=".join(part.strip() for part in cookie.split("=", 1))
+        for cookie in response.headers.get_list("set-cookie")
+        if "=" in cookie
+    ]
+    if cookies:
+        # 去属性（HttpOnly/SameSite 等）：只取第一个会话键值对口径
+        pairs = [c.split(";", 1)[0] for c in cookies]
+        return {"Cookie": "; ".join(pairs)}
+    raise PipelineError(
+        code="X-EXEC-01",
+        message=(
+            f"登录响应无凭据可提取（C-15）：{login_url}"
+            "（响应体无 token 字段且无 Set-Cookie）"
+        ),
+        node_id=NODE_NAME,
+    )
 
 
 async def run_auto_execute(
@@ -243,6 +339,7 @@ async def run_auto_execute(
     store: ArtifactStore,
     rest_base_url: str,
     transport: httpx.AsyncBaseTransport | None = None,
+    auth: dict[str, Any] | None = None,
 ) -> Path:
     """执行 auto_execute 全流程：读用例 → 探测 → 分协议执行 → 落盘。
 
@@ -250,12 +347,14 @@ async def run_auto_execute(
         store: test-executor 身份的产物卷（execution.json 丙写）。
         rest_base_url: REST 被测/Mock 服务地址（R-EXEC-02 探测与执行共用）。
         transport: 测试注入（MockTransport），生产留 None。
+        auth: C-15 鉴权配置（login_url/username/password/insecure_tls）；
+            非空时先登录拿凭据头注入全部 REST 请求（登录失败 X-EXEC-01 节点重试）。
 
     Returns:
         execution.json 产物路径。
 
     Raises:
-        PipelineError: 前置产物缺失（X-ORCH-01）；跳序（X-ORCH-02）。
+        PipelineError: 前置产物缺失（X-ORCH-01）；跳序（X-ORCH-02）；登录失败（X-EXEC-01）。
     """
     engine.check_runnable(state, NODE_NAME)
     engine.mark_running(state, NODE_NAME)
@@ -266,9 +365,16 @@ async def run_auto_execute(
             str(i.get("id", "")): i for i in interfaces if i.get("id")
         }
 
+        # C-15：登录注入（凭据由代码提取，不经 LLM）；https 自签同步作用于探活/执行
+        auth_headers: dict[str, str] = {}
+        verify = True
+        if auth:
+            auth_headers = await login_for_headers(auth, transport)
+            verify = not bool(auth.get("insecure_tls", True))
+
         # R-EXEC-02：环境探测优先于执行
-        rest_ready = await probe_rest(rest_base_url, transport)
-        rest_runner = RestRunner(rest_base_url, transport)
+        rest_ready = await probe_rest(rest_base_url, transport, verify)
+        rest_runner = RestRunner(rest_base_url, transport, auth_headers, verify)
         demo_runner = MockDemoRunner()
 
         results: list[dict[str, Any]] = []

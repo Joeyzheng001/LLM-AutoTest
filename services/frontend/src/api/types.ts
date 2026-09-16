@@ -79,12 +79,21 @@ export interface DocInput {
   doc_content_b64: string
 }
 
+// C-15：鉴权配置（可选；执行前登录被测服务注入凭据头，数值/凭据不经 LLM）
+export interface AuthConfig {
+  login_url: string
+  username: string
+  password: string
+  insecure_tls?: boolean // https 自签场景默认跳过证书校验
+}
+
 export interface JobSubmitPayload {
   job_id?: string
   docs: DocInput[]
   repos: RepoConfig[] // C-10：≥1 个仓库（原 ≥2 放宽）
   rest_url: string
   resume?: boolean
+  auth?: AuthConfig // C-15：鉴权配置（可选）
 }
 
 /* ---- 产物形状（只声明页面用到的字段；后端 Schema 为唯一事实源） ---- */

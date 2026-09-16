@@ -37,6 +37,7 @@ from orchestrator.nodes.auto_execute import (
     MockDemoRunner,
     RestRunner,
     _judge_assertion,
+    login_for_headers,
     probe_rest,
 )
 
@@ -51,6 +52,7 @@ async def run_retest_regression(
     store: ArtifactStore,
     rest_base_url: str,
     transport: httpx.AsyncBaseTransport | None = None,
+    auth: dict[str, Any] | None = None,
 ) -> Path:
     """复测全量缺陷并沉淀回归资产：defects.json（状态流转）+ regression_index.json。
 
@@ -58,17 +60,18 @@ async def run_retest_regression(
         store: test-executor 身份的产物卷（两产物均丙写）。
         rest_base_url: REST 被测/Mock 服务地址（复测重跑共用）。
         transport: 测试注入（MockTransport），生产留 None。
+        auth: C-15 鉴权配置（与 auto_execute 同口径，凭据头注入复测请求）。
 
     Returns:
         regression_index.json 产物路径。
 
     Raises:
-        PipelineError: 前置产物缺失（X-ORCH-01）；跳序（X-ORCH-02）。
+        PipelineError: 前置产物缺失（X-ORCH-01）；跳序（X-ORCH-02）；登录失败（X-EXEC-01）。
     """
     engine.check_runnable(state, NODE_NAME)
     engine.mark_running(state, NODE_NAME)
     try:
-        result = await retest_defects(store, state.job_id, rest_base_url, transport)
+        result = await retest_defects(store, state.job_id, rest_base_url, transport, auth=auth)
         engine.mark_completed(state, NODE_NAME)
         return Path(str(result["regression_index_path"]))
     except PipelineError as exc:
@@ -82,6 +85,7 @@ async def retest_defects(
     rest_base_url: str,
     transport: httpx.AsyncBaseTransport | None = None,
     only_defect_ids: set[str] | None = None,
+    auth: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """复测核心（供 9 节点流水线与 REST API 单条复测共用）。
 
@@ -89,6 +93,7 @@ async def retest_defects(
         te_store: test-executor 身份产物卷（defects.json / regression_index.json 丙写）。
         only_defect_ids: None → 全量复测（F-DEF-02）；指定集合 → 仅复测该批缺陷
             （Web 缺陷闭环页「单条复测」按钮，07 §3.5）。
+        auth: C-15 鉴权配置（登录失败 → X-EXEC-01，凭据头注入复测请求）。
 
     Returns:
         {"retested": [缺陷 ID 清单], "archived": [归档条目], "warnings": [告警],
@@ -109,8 +114,15 @@ async def retest_defects(
         str(i.get("id", "")): i for i in interfaces.get("interfaces", []) if i.get("id")
     }
 
-    rest_ready = await probe_rest(rest_base_url, transport)
-    rest_runner = RestRunner(rest_base_url, transport)
+    # C-15：登录注入（与 auto_execute 同口径）
+    auth_headers: dict[str, str] = {}
+    verify = True
+    if auth:
+        auth_headers = await login_for_headers(auth, transport)
+        verify = not bool(auth.get("insecure_tls", True))
+
+    rest_ready = await probe_rest(rest_base_url, transport, verify)
+    rest_runner = RestRunner(rest_base_url, transport, auth_headers, verify)
     demo_runner = MockDemoRunner()
     warnings: list[str] = []
     archived: list[dict[str, Any]] = []

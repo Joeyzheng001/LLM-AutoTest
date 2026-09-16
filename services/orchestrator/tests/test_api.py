@@ -41,6 +41,7 @@ class FakeRunner:
         repositories: list[Any],
         rest_base_url: str,
         force_node: str | None = None,
+        auth: dict[str, Any] | None = None,
     ) -> PipelineOutcome:
         self.calls.append(
             {
@@ -49,6 +50,7 @@ class FakeRunner:
                 "repos": [(r.name, r.path) for r in repositories],
                 "rest_base_url": rest_base_url,
                 "force_node": force_node,
+                "auth": auth,
             }
         )
         job_dir = self.orch_store.job_dir(job_id)
@@ -434,6 +436,75 @@ async def test_submit_job_validations(
     bad_url = _submit_body(repo_dir, "v4")
     bad_url["rest_url"] = "ftp://x"
     assert (await client.post("/api/v1/jobs", json=bad_url)).status_code == 400
+
+
+async def test_submit_job_auth_validation(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-15：鉴权配置三种拒绝路径：坏 login_url/空密码/超长凭据。"""
+    _app, fake, client, repo_dir = env
+    bad_url = _submit_body(repo_dir, "job-auth-v1")
+    bad_url["auth"] = {
+        "login_url": "ftp://x/login",
+        "username": "admin",
+        "password": "admin123456",
+    }
+    response = await client.post("/api/v1/jobs", json=bad_url)
+    assert response.status_code == 400
+    assert "login_url" in response.json()["detail"]
+    empty_pw = _submit_body(repo_dir, "job-auth-v2")
+    empty_pw["auth"] = {
+        "login_url": "http://127.0.0.1:9000/api/auth/login/",
+        "username": "admin",
+        "password": "",
+    }
+    response = await client.post("/api/v1/jobs", json=empty_pw)
+    assert response.status_code == 400
+    assert "username/password 不能为空" in response.json()["detail"]
+    too_long = _submit_body(repo_dir, "job-auth-v3")
+    too_long["auth"] = {
+        "login_url": "http://127.0.0.1:9000/api/auth/login/",
+        "username": "admin",
+        "password": "x" * 257,
+    }
+    response = await client.post("/api/v1/jobs", json=too_long)
+    assert response.status_code == 400
+    assert "超长" in response.json()["detail"]
+    assert fake.calls == []
+
+
+async def test_submit_job_auth_persisted_and_passed(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-15：合法 auth → job_input.json 落盘 + FakeRunner 收到入参；未填 auth 时为 None。"""
+    app, fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-auth1")
+    body["auth"] = {
+        "login_url": "https://10.50.16.19:8443/api/auth/login/",
+        "username": "admin",
+        "password": "admin123456",
+        "insecure_tls": True,
+    }
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 202
+    await _await_task(app, "job-api-auth1")
+    saved = json.loads(
+        (
+            Path(str(app.state.settings.artifacts_root)) / "job-api-auth1" / "job_input.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert saved["auth"] == {
+        "login_url": "https://10.50.16.19:8443/api/auth/login/",
+        "username": "admin",
+        "password": "admin123456",
+        "insecure_tls": True,
+    }
+    assert fake.calls[-1]["auth"] == saved["auth"]
+    # 未填 auth 的提交 → runner 收到 None（鉴权可选，不影响既有链路）
+    response = await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-auth2"))
+    assert response.status_code == 202
+    await _await_task(app, "job-api-auth2")
+    assert fake.calls[-1]["auth"] is None
 
 
 async def test_job_status_and_artifacts(

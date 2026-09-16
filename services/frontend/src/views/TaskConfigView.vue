@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // 任务配置页（07 页 01 · 真实提交）：多文档上传（C-10，base64）+ 本地仓库路径（R-CODE-01 口径）+
-// 被测服务地址 + 断点续跑开关 → POST /api/v1/jobs（后台驱动同一 PipelineRunner，F-ORCH-01）。
-// 红线：协议范围由源码扫描自动识别（非表单参数）；fixtures 前置数据（D8）在流程启动前预置，不在本表单收集。
+// 被测服务地址 + 断点续跑开关 + 鉴权配置（C-15，可选）→ POST /api/v1/jobs（后台驱动同一 PipelineRunner，F-ORCH-01）。
+// 红线：协议范围由源码扫描自动识别（非表单参数）；鉴权走表单兜底（C-15，D8 升版），
+// 其余 fixtures 前置数据仍在流程启动前预置，不在本表单收集。
 import { computed, reactive, ref } from 'vue'
 import { submitJob } from '../api/client'
 import type { JobSubmitPayload } from '../api/types'
@@ -26,6 +27,15 @@ const form = reactive({
   jobId: '',
   restUrl: 'http://127.0.0.1:9000',
   resume: true,
+})
+
+// C-15：鉴权配置（可选区块；默认收起，开启后执行前登录被测服务注入凭据头）
+const authEnabled = ref(false)
+const auth = reactive({
+  loginUrl: '',
+  username: '',
+  password: '',
+  insecureTls: true,
 })
 
 const docFiles = reactive<DocRow[]>([])
@@ -78,8 +88,18 @@ const reposValid = computed(
     repos.every((row) => row.name.trim() !== '' && row.path.trim().startsWith('/')),
 )
 
+// C-15：开启鉴权时三项必填 + login_url 须为 http(s)
+const authValid = computed(
+  () =>
+    !authEnabled.value ||
+    (auth.loginUrl.trim().startsWith('http') &&
+      auth.username.trim() !== '' &&
+      auth.password !== ''),
+)
+
 const formValid = computed(
-  () => docFiles.length >= 1 && reposValid.value && form.restUrl.startsWith('http'),
+  () =>
+    docFiles.length >= 1 && reposValid.value && form.restUrl.startsWith('http') && authValid.value,
 )
 
 function pickDocs(event: Event): void {
@@ -146,6 +166,17 @@ async function handleSubmit(): Promise<void> {
       })),
       rest_url: form.restUrl.trim(),
       resume: form.resume,
+      // C-15：鉴权配置（可选；开启才随提交发送，凭据只落本机 job_input.json）
+      ...(authEnabled.value
+        ? {
+            auth: {
+              login_url: auth.loginUrl.trim(),
+              username: auth.username.trim(),
+              password: auth.password,
+              insecure_tls: auth.insecureTls,
+            },
+          }
+        : {}),
     }
     const trimmedJobId = form.jobId.trim()
     if (trimmedJobId && !trimmedJobId.startsWith('job-')) {
@@ -293,9 +324,55 @@ async function handleSubmit(): Promise<void> {
           </span>
         </label>
         <p class="switch-note">
-          协议范围由源码扫描自动识别（R-CODE-01，非表单参数）；鉴权/造数等前置数据须在流程启动前预置于
-          fixtures（D8），不在本表单收集。
+          协议范围由源码扫描自动识别（R-CODE-01，非表单参数）；鉴权可由下方「鉴权配置」提供（C-15，D8
+          升版：fixtures 优先、表单兜底）；造数等其余前置数据仍预置于 fixtures，不在本表单收集。
         </p>
+      </section>
+
+      <!-- C-15：鉴权配置（可选；执行前登录被测服务注入凭据头，数值/凭据不经 LLM） -->
+      <section class="field-group">
+        <header class="group-title">鉴权配置（可选，C-15）</header>
+        <label class="switch-row">
+          <input v-model="authEnabled" type="checkbox" />
+          <span>被测服务需要登录（执行/复测前自动登录并注入凭据头）</span>
+        </label>
+        <template v-if="authEnabled">
+          <label class="field">
+            <span class="field-label">登录接口地址（POST，JSON {username, password}）</span>
+            <input
+              v-model="auth.loginUrl"
+              type="text"
+              class="mono"
+              placeholder="https://10.50.16.19:8443/api/auth/login/"
+            />
+          </label>
+          <div class="two-col">
+            <label class="field">
+              <span class="field-label">用户名</span>
+              <input v-model="auth.username" type="text" autocomplete="off" placeholder="admin" />
+            </label>
+            <label class="field">
+              <span class="field-label">密码</span>
+              <input
+                v-model="auth.password"
+                type="password"
+                autocomplete="new-password"
+                placeholder="••••••••"
+              />
+            </label>
+          </div>
+          <label class="switch-row">
+            <input v-model="auth.insecureTls" type="checkbox" />
+            <span>跳过证书校验（https 自签证书场景；被测环境常为自签）</span>
+          </label>
+          <p v-if="!authValid" class="field-error">
+            开启鉴权后：登录地址须为 http(s)、用户名与密码必填
+          </p>
+          <p class="switch-note">
+            登录响应含 token 字段 → Authorization: Token 注入；无 token 则回带 Set-Cookie
+            会话。凭据仅随 job 落盘本机（job_input.json，不外露），不经 LLM。
+          </p>
+        </template>
       </section>
 
       <!-- 提交 -->
@@ -354,6 +431,13 @@ async function handleSubmit(): Promise<void> {
   flex-direction: column;
   gap: var(--space-1);
   margin-bottom: var(--space-3);
+}
+
+/* C-15：鉴权用户名/密码并排 */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
 }
 
 .field-label {

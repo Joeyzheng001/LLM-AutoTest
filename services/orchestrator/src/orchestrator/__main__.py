@@ -1,7 +1,8 @@
 """orchestrator 服务入口：CLI 统一入口（F-ORCH-01/02）+ REST API 服务。
 
 子命令：
-- run：单命令跑全流程（--doc 需求文档可多份（C-10）--repos 仓库配置 JSON --rest-url 被测服务）
+- run：单命令跑全流程（--doc 需求文档可多份（C-10）--repos 仓库配置 JSON
+  --rest-url 被测服务 --auth 鉴权配置 JSON 文件（C-15，可选））
 - status：查 job 状态与产物清单（断点续跑诊断）
 - serve：启动 REST API（Web 并存入口，V2.1）
 """
@@ -63,6 +64,13 @@ async def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
     if not repositories:
         logger.error("仓库配置为空（--repos JSON 数组，至少 1 个）")
         return 2
+    auth: dict[str, object] | None = None
+    if args.auth:
+        try:
+            auth = json.loads(Path(args.auth).read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.error("鉴权配置非法（C-15）：%s", exc)
+            return 2
 
     runner = _build_runner(settings)
     outcome = await runner.run(
@@ -71,6 +79,7 @@ async def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
         repositories=repositories,
         rest_base_url=args.rest_url,
         force_node=args.force_node,
+        auth=auth,
     )
     print(summarize_outcome(outcome))
     return 0 if outcome.ok else 1
@@ -136,6 +145,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--force-node",
         default=None,
         help="重跑指定已完成节点（旧产物移入 archive/，留痕红线，设计 §1.2）",
+    )
+    run.add_argument(
+        "--auth",
+        default=None,
+        help=(
+            "鉴权配置 JSON 文件路径（C-15："
+            "{login_url,username,password,insecure_tls}；建议文件而非命令行避免凭据进 shell 历史）"
+        ),
     )
 
     status = sub.add_parser("status", help="查 job 状态与产物清单")

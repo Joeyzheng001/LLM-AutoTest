@@ -73,6 +73,21 @@ class DocInput(BaseModel):
     doc_content_b64: str
 
 
+class AuthConfig(BaseModel):
+    """鉴权配置（C-15：D8 升版——fixtures 优先、表单为兜底）。
+
+    auto_execute/retest_regression 执行前 POST login_url 登录，
+    token → Authorization: Token；无 token 则回带 Set-Cookie。
+    数值/凭据不经 LLM（红线）；insecure_tls 用于 https 自签场景
+    （被测环境常为自签证书，默认跳过校验，表单可关）。
+    """
+
+    login_url: str
+    username: str
+    password: str
+    insecure_tls: bool = True
+
+
 class JobSubmitRequest(BaseModel):
     """job 提交请求（文档以 base64 传递，免 python-multipart 依赖）。
 
@@ -87,6 +102,8 @@ class JobSubmitRequest(BaseModel):
     repos: list[RepoConfig] = Field(min_length=1)  # C-10：≥1 个仓库（原 ≥2 放宽）
     rest_url: str
     resume: bool = True
+    # C-15：鉴权配置（可选；填写则执行前登录被测服务注入凭据头）
+    auth: AuthConfig | None = None
 
 
 class RetestRequest(BaseModel):
@@ -203,14 +220,37 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 )
         if not request.rest_url.startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="rest_url 须为 http(s) 地址")
+        auth_payload: dict[str, Any] | None = None
+        if request.auth is not None:
+            auth = request.auth
+            if not auth.login_url.startswith(("http://", "https://")):
+                raise HTTPException(
+                    status_code=400, detail="auth.login_url 须为 http(s) 地址（C-15）"
+                )
+            if not auth.username or not auth.password:
+                raise HTTPException(
+                    status_code=400,
+                    detail="auth.username/password 不能为空（C-15）",
+                )
+            # 凭据长度上限（防滥用；非安全边界——job_input.json 为本机明文落盘）
+            if len(auth.username) > 128 or len(auth.password) > 256:
+                raise HTTPException(
+                    status_code=400,
+                    detail="auth.username/password 超长（C-15：用户名≤128、密码≤256）",
+                )
+            auth_payload = auth.model_dump()
 
-        job_input = {
+        job_input: dict[str, Any] = {
             "job_id": job_id,
             "doc_paths": [str(path) for path in doc_paths],
             "repos": [repo.model_dump() for repo in request.repos],
             "rest_url": request.rest_url,
             "submitted_at": _now_iso(),
         }
+        if auth_payload is not None:
+            # C-15：凭据随 job 落盘（供 rerun/retest 复用原始输入）；
+            # job_input.json 属服务内部元数据，不在产物读取白名单内（不外露）
+            job_input["auth"] = auth_payload
         orch_store.job_dir(job_id).mkdir(parents=True, exist_ok=True)
         (orch_store.job_dir(job_id) / "job_input.json").write_text(
             json.dumps(job_input, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -312,7 +352,11 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             _spawn_run(app, job_id, force_node="retest_regression")
             return {"job_id": job_id, "mode": "full", "status": "queued"}
         result = await retest_defects(
-            te_store, job_id, job_input["rest_url"], only_defect_ids={request.defect_id}
+            te_store,
+            job_id,
+            job_input["rest_url"],
+            only_defect_ids={request.defect_id},
+            auth=job_input.get("auth"),
         )
         return {
             "job_id": job_id,
@@ -502,6 +546,8 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
     doc_paths = [Path(p) for p in job_input.get("doc_paths", [])]
     if not doc_paths and job_input.get("doc_path"):
         doc_paths = [Path(job_input["doc_path"])]
+    # C-15：鉴权配置随原始输入复用（rerun/retest 全量同样生效）
+    auth = job_input.get("auth")
 
     async def _run() -> None:
         runner: PipelineRunner = app.state.runner
@@ -512,6 +558,7 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
                 repositories=repositories,
                 rest_base_url=job_input["rest_url"],
                 force_node=force_node,
+                auth=auth,
             )
             app.state.job_outcomes[job_id] = outcome
             logger.info("job %s 完成（force_node=%s）", job_id, force_node)

@@ -88,12 +88,15 @@ class PipelineRunner:
         repositories: list[RepositoryInput],
         rest_base_url: str,
         force_node: str | None = None,
+        auth: dict[str, Any] | None = None,
     ) -> PipelineOutcome:
         """按固定顺序驱动 9 节点（F-ORCH-01）。
-
+    
         state.json 已存在时经产物判据续跑（F-ORCH-02）；
         doc_paths：需求文档列表（C-10 多文档，至少 1 份）；
-        force_node：重跑已完成节点（旧产物先移入 archive/，禁止原地覆盖——留痕红线）。
+        force_node：重跑已完成节点（旧产物先移入 archive/，禁止原地覆盖——留痕红 线）；
+        auth：C-15 鉴权配置（login_url/username/password/insecure_tls），
+            auto_execute/retest_regression 执行前登录注入凭据头。
         """
         state = self._open_or_init(job_id)
         if force_node is not None:
@@ -118,7 +121,8 @@ class PipelineRunner:
                 continue
 
             await self._run_node_with_retry(
-                node_name, state, llm, prompts_dir, doc_paths, repositories, rest_base_url, outcome
+                node_name, state, llm, prompts_dir, doc_paths, repositories, rest_base_url,
+                outcome, auth,
             )
 
         self._refresh_final_metrics(state)
@@ -146,13 +150,15 @@ class PipelineRunner:
         repositories: list[RepositoryInput],
         rest_base_url: str,
         outcome: PipelineOutcome,
+        auth: dict[str, Any] | None = None,
     ) -> None:
         """单节点治理：LLM 类失败重试一次，再失败或非 LLM 类失败 → 降级并继续（D1）。"""
         attempts = state.node(node_name).attempts
         while attempts < MAX_NODE_ATTEMPTS:
             try:
                 await self._invoke_node(
-                    node_name, state, llm, prompts_dir, doc_paths, repositories, rest_base_url
+                    node_name, state, llm, prompts_dir, doc_paths, repositories, rest_base_url,
+                    auth,
                 )
                 outcome.completed.append(node_name)
                 return
@@ -180,6 +186,7 @@ class PipelineRunner:
         doc_paths: list[Path],
         repositories: list[RepositoryInput],
         rest_base_url: str,
+        auth: dict[str, Any] | None = None,
     ) -> None:
         """分派到对应节点实现（甲/乙产物走 orch_store，丙产物走 te_store）。"""
         if node_name == "req_parse":
@@ -208,7 +215,7 @@ class PipelineRunner:
             )
         elif node_name == "auto_execute":
             await run_auto_execute(
-                self._engine, state, self._te_store, rest_base_url
+                self._engine, state, self._te_store, rest_base_url, auth=auth
             )
         elif node_name == "test_report":
             await run_test_report(self._engine, state, self._orch_store)
@@ -216,7 +223,7 @@ class PipelineRunner:
             await run_defect_list(self._engine, state, self._te_store)
         elif node_name == "retest_regression":
             await run_retest_regression(
-                self._engine, state, self._te_store, rest_base_url
+                self._engine, state, self._te_store, rest_base_url, auth=auth
             )
         else:  # pragma: no cover - NODE_ORDER 固定 9 项，防御性兜底
             raise PipelineError(
