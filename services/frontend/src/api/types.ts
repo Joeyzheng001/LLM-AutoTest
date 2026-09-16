@@ -60,6 +60,7 @@ export interface RepoConfig {
   name: string
   path: string
   branch: string
+  baseline_branch?: string // C-09：基线分支（非空 → 双分支 diff 变更范围视图）
   is_fallback: boolean
   include_paths?: string[]
 }
@@ -125,6 +126,27 @@ export interface DerivedRisk {
 export interface MissingFeature {
   requirement_id: string
   title: string
+}
+
+// C-09 视图四：变更范围（双分支 diff 程序化派生，不经 LLM）
+export interface ChangeScopeEntry {
+  interface_id: string
+  repo: string
+  file: string
+  change: 'added' | 'modified'
+  covered_by: string[] // 空 = 变更接口未被任何需求覆盖（变更风险信号）
+}
+
+export interface RemovedFile {
+  repo: string
+  file: string
+}
+
+// 变更但未命中接口定义文件（业务逻辑层变更——行为风险信号）
+export interface UnmatchedChangedFile {
+  repo: string
+  file: string
+  change: 'added' | 'modified'
 }
 
 export interface ExecResult {

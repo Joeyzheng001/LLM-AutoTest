@@ -160,7 +160,7 @@ components:
       enum: [queued, running, completed, failed]
 
     RepositoryInput:
-      # 07 遗留事项 #1：路径 + 分支结构补全
+      # 07 遗留事项 #1：路径 + 分支结构补全；C-09：基线分支（可选）
       type: object
       required: [name, path, branch]
       properties:
@@ -172,6 +172,12 @@ components:
           description: 已检出正确分支的本地路径（容器内可见）
         branch:
           type: string
+        baseline_branch:
+          type: string
+          description: |
+            基线分支（C-09 双分支 diff，可选）：非空时扫描产出
+            changed_files{added,modified,removed}（git diff merge-base 口径）；
+            缺省 = 不比对。指定但仓库非 Git 仓库或 ref 不存在 → 仓库级 X-CODE-01
         is_fallback:
           type: boolean
           default: false
@@ -214,6 +220,26 @@ components:
           type: string
         branch:
           type: string
+        baseline_branch:
+          type: string
+          description: 基线分支（C-09；仅在指定时出现）
+        changed_files:
+          type: object
+          description: 基线→被测分支变更文件清单（C-09，仅在指定 baseline_branch 时出现）
+          required: [added, modified, removed]
+          properties:
+            added:
+              type: array
+              items:
+                type: string
+            modified:
+              type: array
+              items:
+                type: string
+            removed:
+              type: array
+              items:
+                type: string
         is_fallback:
           type: boolean
         status:

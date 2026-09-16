@@ -1,16 +1,20 @@
 <script setup lang="ts">
-// Code Review 三视图页（07 §3.3）：视图一映射表（四态+置信度）+ 视图二风险清单 +
-// 视图三遗漏功能清单（三视图同源 review_mapping.json）+ 人工审核面板（F-REVW-06）。
-// 红线：全部数据来自后端产物；风险/遗漏由后端程序化派生（R-REVW-02），前端只渲染。
+// Code Review 页（07 §3.3）：视图一映射表（四态+置信度）+ 视图二风险清单 +
+// 视图三遗漏功能清单（三视图同源 review_mapping.json）+ 人工审核面板（F-REVW-06）+
+// 视图四·变更范围（C-09 双分支 diff，仅配基线分支的 job 展示；旧产物无键则隐藏）。
+// 红线：全部数据来自后端产物；风险/遗漏/变更范围均由后端程序化派生，前端只渲染。
 // 人工审核不在 9 节点口径内（D6/D7）：approved 仅记录；rejected 回流 testcase_generate。
 import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
 import { getRequirementItems, getReviewMapping, postReviewLog } from '../api/client'
 import type {
+  ChangeScopeEntry,
   RequirementItem,
   ReviewMapping,
   DerivedRisk,
   MissingFeature,
+  RemovedFile,
+  UnmatchedChangedFile,
   ReviewLogResponse,
 } from '../api/types'
 import { MAPPING_STATUS_LABELS } from '../api/labels'
@@ -21,6 +25,10 @@ const items = ref<RequirementItem[]>([])
 const mappings = ref<ReviewMapping[]>([])
 const risks = ref<DerivedRisk[]>([])
 const missing = ref<MissingFeature[]>([])
+const changeScope = ref<ChangeScopeEntry[]>([])
+const removedFiles = ref<RemovedFile[]>([])
+const unmatchedFiles = ref<UnmatchedChangedFile[]>([])
+const hasChangeScope = ref(false)
 const loading = ref(false)
 const error = ref('')
 
@@ -52,12 +60,21 @@ async function load(): Promise<void> {
     mappings.value = review.mappings
     risks.value = review.risks
     missing.value = review.missing_features
+    // C-09：旧产物无键 → 空数组（视图四隐藏）；有键但为空 = 配了基线但无变更
+    changeScope.value = review.change_scope ?? []
+    removedFiles.value = review.removed_files ?? []
+    unmatchedFiles.value = review.unmatched_changed_files ?? []
+    hasChangeScope.value = review.change_scope !== undefined
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Review 产物加载失败'
     items.value = []
     mappings.value = []
     risks.value = []
     missing.value = []
+    changeScope.value = []
+    removedFiles.value = []
+    unmatchedFiles.value = []
+    hasChangeScope.value = false
   } finally {
     loading.value = false
   }
@@ -95,6 +112,10 @@ function formatConfidence(value: number): string {
   // 展示格式化（保留两位），非计算
   return value.toFixed(2)
 }
+
+const uncoveredCount = computed(
+  () => changeScope.value.filter((entry) => !entry.covered_by.length).length,
+)
 </script>
 
 <template>
@@ -176,6 +197,77 @@ function formatConfidence(value: number): string {
           </ul>
         </div>
       </div>
+
+      <!-- 视图四：变更范围（C-09 双分支 diff，仅配基线分支的 job 展示） -->
+      <div v-if="hasChangeScope" class="card change-scope-card">
+        <header class="derived-title">
+          视图四 · 变更范围（C-09 基线→被测分支 diff · 程序化派生不经 LLM）
+        </header>
+        <p
+          v-if="!changeScope.length && !removedFiles.length && !unmatchedFiles.length"
+          class="derived-empty"
+        >
+          双分支比对完成：无变更文件。
+        </p>
+        <table v-else class="mapping-table scope-table">
+          <thead>
+            <tr>
+              <th scope="col">接口</th>
+              <th scope="col">仓库 / 文件</th>
+              <th scope="col">变更</th>
+              <th scope="col">需求覆盖</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="entry in changeScope" :key="entry.interface_id">
+              <td>
+                <span class="mono">{{ entry.interface_id }}</span>
+              </td>
+              <td>
+                <span class="mono loc">{{ entry.repo }}/{{ entry.file }}</span>
+              </td>
+              <td>
+                <span class="tag" :data-change="entry.change">
+                  {{ entry.change === 'added' ? '新增' : '修改' }}
+                </span>
+              </td>
+              <td>
+                <span v-if="entry.covered_by.length" class="mono">{{
+                  entry.covered_by.join('、')
+                }}</span>
+                <span v-else class="uncovered">未被需求覆盖（变更风险）</span>
+              </td>
+            </tr>
+            <tr v-for="entry in unmatchedFiles" :key="`um-${entry.repo}-${entry.file}`">
+              <td><span class="dim">无接口命中</span></td>
+              <td>
+                <span class="mono loc">{{ entry.repo }}/{{ entry.file }}</span>
+              </td>
+              <td>
+                <span class="tag" :data-change="entry.change">
+                  {{ entry.change === 'added' ? '新增' : '修改' }}
+                </span>
+              </td>
+              <td>
+                <span class="uncovered"
+                  >业务逻辑层变更——接口签名未变但行为可能变更，需人工复核</span
+                >
+              </td>
+            </tr>
+            <tr v-for="entry in removedFiles" :key="`rm-${entry.repo}-${entry.file}`">
+              <td><span class="dim">—</span></td>
+              <td>
+                <span class="mono loc">{{ entry.repo }}/{{ entry.file }}</span>
+              </td>
+              <td><span class="tag" data-change="removed">删除</span></td>
+              <td><span class="dim">被测侧已无源码，无法关联接口</span></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="uncoveredCount" class="scope-note">
+          {{ uncoveredCount }} 个变更接口未被任何需求条目映射——需人工确认变更意图。
+        </p>
+      </div>
     </template>
 
     <p v-else class="state-line">code_review 产物尚未生成（需任务跑到该节点之后）。</p>
@@ -240,6 +332,43 @@ function formatConfidence(value: number): string {
 }
 
 .state-error {
+  color: var(--warning);
+}
+
+/* 视图四：变更范围（C-09） */
+.scope-table td,
+.scope-table th {
+  text-align: left;
+}
+
+.tag[data-change='added'] {
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+}
+
+.tag[data-change='modified'] {
+  background: var(--warning-dim, rgba(204, 145, 23, 0.12));
+  color: var(--warning);
+}
+
+.tag[data-change='removed'] {
+  background: var(--danger-dim, rgba(196, 74, 74, 0.12));
+  color: var(--danger, #c44a4a);
+}
+
+.uncovered {
+  color: var(--warning);
+  font-size: var(--text-sm);
+}
+
+.dim {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.scope-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
   color: var(--warning);
 }
 

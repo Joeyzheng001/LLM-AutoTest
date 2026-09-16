@@ -296,3 +296,97 @@ async def test_code_review_skip_order_guard(env: tuple[Engine, ArtifactStore]) -
         await run_code_review(engine, state, store, _StubLlm(_LLM_GOOD), _PROMPTS)
 
     assert err.value.code == X_ORCH_02
+
+
+async def test_code_review_change_scope_without_baseline(env: tuple[Engine, ArtifactStore]) -> None:
+    """C-09 向后兼容：未配基线分支（无 changed_files 键）→ 视图四为空数组。"""
+    engine, store = env
+    state = engine.open_job(_JOB)
+
+    await run_code_review(engine, state, store, _StubLlm(_LLM_GOOD), _PROMPTS)
+
+    payload = store.read_json(_JOB, "review_mapping.json")
+    assert payload["change_scope"] == []
+    assert payload["removed_files"] == []
+    assert payload["unmatched_changed_files"] == []
+
+
+async def test_code_review_change_scope_derivation(env: tuple[Engine, ArtifactStore]) -> None:
+    """C-09 视图四：变更文件 × 接口文件关联 + covered_by 回填 + removed 单列。"""
+    engine, store = env
+    state = engine.open_job(_JOB)
+    inventory = store.read_json(_JOB, "code_inventory.json")
+    inventory["repositories"][0]["baseline_branch"] = "main"
+    inventory["repositories"][0]["changed_files"] = {
+        "added": [],
+        "modified": ["UserController.java", "UserService.java"],
+        "removed": ["LegacyController.java"],
+    }
+    inventory["repositories"][1]["baseline_branch"] = "main"
+    inventory["repositories"][1]["changed_files"] = {
+        "added": ["OrderGrpc.java"],
+        "modified": [],
+        "removed": [],
+    }
+    store.write(_JOB, "code_inventory.json", inventory)
+
+    await run_code_review(engine, state, store, _StubLlm(_LLM_GOOD), _PROMPTS)
+
+    payload = store.read_json(_JOB, "review_mapping.json")
+    # 变更接口两条：UserController（modified，REQ-001 覆盖）与 OrderGrpc（added，REQ-002 覆盖）
+    assert payload["change_scope"] == [
+        {
+            "interface_id": "IF-REST-001",
+            "repo": "user-service",
+            "file": "UserController.java",
+            "change": "modified",
+            "covered_by": ["REQ-001"],
+        },
+        {
+            "interface_id": "IF-GRPC-001",
+            "repo": "order-center",
+            "file": "OrderGrpc.java",
+            "change": "added",
+            "covered_by": ["REQ-002"],
+        },
+    ]
+    assert payload["removed_files"] == [
+        {"repo": "user-service", "file": "LegacyController.java"}
+    ]
+    # UserService.java 变更但无接口定义命中（业务逻辑层变更口径，DEF-001 同型）
+    assert payload["unmatched_changed_files"] == [
+        {"repo": "user-service", "file": "UserService.java", "change": "modified"}
+    ]
+
+
+async def test_code_review_change_scope_uncovered(env: tuple[Engine, ArtifactStore]) -> None:
+    """C-09：变更接口未被任何需求映射 → covered_by 为空（变更风险信号）。"""
+    engine, store = env
+    state = engine.open_job(_JOB)
+    inventory = store.read_json(_JOB, "code_inventory.json")
+    inventory["repositories"][1]["baseline_branch"] = "main"
+    inventory["repositories"][1]["changed_files"] = {
+        "added": [],
+        "modified": ["OrderGrpc.java"],
+        "removed": [],
+    }
+    store.write(_JOB, "code_inventory.json", inventory)
+    # REQ-002 不映射任何接口（undetermined）→ OrderGrpc 变更无需求覆盖
+    llm_uncovered = _LLM_GOOD.replace(
+        '"interface_id": "IF-GRPC-001",\n      ', ""
+    ).replace('"status": "partial",', '"status": "undetermined",')
+
+    await run_code_review(engine, state, store, _StubLlm(llm_uncovered), _PROMPTS)
+
+    payload = store.read_json(_JOB, "review_mapping.json")
+    assert payload["change_scope"] == [
+        {
+            "interface_id": "IF-GRPC-001",
+            "repo": "order-center",
+            "file": "OrderGrpc.java",
+            "change": "modified",
+            "covered_by": [],
+        }
+    ]
+    assert payload["removed_files"] == []
+    assert payload["unmatched_changed_files"] == []

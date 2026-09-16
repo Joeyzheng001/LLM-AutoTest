@@ -10,6 +10,7 @@ interface RepoRow {
   name: string
   path: string
   branch: string
+  baselineBranch: string
   isFallback: boolean
 }
 
@@ -22,8 +23,8 @@ const form = reactive({
 const docFile = ref<File | null>(null)
 const docError = ref('')
 const repos = reactive<RepoRow[]>([
-  { name: 'user-service', path: '', branch: 'main', isFallback: false },
-  { name: 'order-center', path: '', branch: 'main', isFallback: false },
+  { name: 'user-service', path: '', branch: 'main', baselineBranch: '', isFallback: false },
+  { name: 'order-center', path: '', branch: 'main', baselineBranch: '', isFallback: false },
 ])
 
 const submitting = ref(false)
@@ -31,7 +32,7 @@ const submitError = ref('')
 const submittedJobId = ref('')
 
 function addRepo(): void {
-  repos.push({ name: '', path: '', branch: 'main', isFallback: false })
+  repos.push({ name: '', path: '', branch: 'main', baselineBranch: '', isFallback: false })
 }
 
 function removeRepo(index: number): void {
@@ -102,6 +103,8 @@ async function handleSubmit(): Promise<void> {
         name: row.name.trim(),
         path: row.path.trim(),
         branch: row.branch.trim() || 'main',
+        // C-09：基线分支可选（空 = 不比对；非空 → code_review 派生变更范围视图）
+        ...(row.baselineBranch.trim() ? { baseline_branch: row.baselineBranch.trim() } : {}),
         is_fallback: row.isFallback,
       })),
       rest_url: form.restUrl.trim(),
@@ -152,7 +155,8 @@ async function handleSubmit(): Promise<void> {
         </header>
 
         <div class="repo-head">
-          <span>仓库名</span><span>本地绝对路径</span><span>分支</span><span>兜底</span><span />
+          <span>仓库名</span><span>本地绝对路径</span><span>分支</span><span>基线分支</span
+          ><span>兜底</span><span />
         </div>
 
         <div v-for="(row, index) in repos" :key="index" class="repo-row">
@@ -178,6 +182,13 @@ async function handleSubmit(): Promise<void> {
             :aria-label="`仓库 ${index + 1} 分支`"
           />
           <input
+            v-model="row.baselineBranch"
+            type="text"
+            class="mono"
+            placeholder="可选，如 main"
+            :aria-label="`仓库 ${index + 1} 基线分支`"
+          />
+          <input
             v-model="row.isFallback"
             type="checkbox"
             :aria-label="`仓库 ${index + 1} 兜底标记`"
@@ -195,6 +206,10 @@ async function handleSubmit(): Promise<void> {
         <button class="ghost-btn" type="button" @click="addRepo">+ 添加仓库</button>
         <p v-if="!reposValid" class="field-error">
           每个仓库需有名称与绝对路径（以 / 开头），且仓库数 ≥ 2。
+        </p>
+        <p class="switch-note">
+          基线分支（C-09，可选）：非空时后端按 merge-base 做双分支 diff，CodeReview
+          页展示变更范围视图；留空 = 不比对。仓库须为本地 Git 仓库且分支须存在。
         </p>
       </section>
 
@@ -340,7 +355,7 @@ async function handleSubmit(): Promise<void> {
 .repo-head,
 .repo-row {
   display: grid;
-  grid-template-columns: 150px 1fr 90px 40px 56px;
+  grid-template-columns: 150px 1fr 90px 90px 40px 56px;
   gap: var(--space-2);
   align-items: center;
 }

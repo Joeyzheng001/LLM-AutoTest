@@ -27,11 +27,12 @@ DEFAULT_MAX_WAIT_S = 600.0  # job 总等待上限（超时算 X-ORCH-03）
 
 @dataclass(frozen=True)
 class RepositoryInput:
-    """契约 RepositoryInput：路径 + 分支（07 遗留事项 #1 口径）。"""
+    """契约 RepositoryInput：路径 + 分支（07 遗留事项 #1）；基线分支可选（C-09）。"""
 
     name: str
     path: str
     branch: str
+    baseline_branch: str | None = None
     is_fallback: bool = False
     include_paths: tuple[str, ...] = field(default_factory=tuple)
 
@@ -42,6 +43,8 @@ class RepositoryInput:
             "path": self.path,
             "branch": self.branch,
         }
+        if self.baseline_branch:
+            payload["baseline_branch"] = self.baseline_branch
         if self.is_fallback:
             payload["is_fallback"] = True
         if self.include_paths:

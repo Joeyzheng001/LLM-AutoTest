@@ -61,6 +61,50 @@
         }
       }
     },
+    "change_scope": {
+      "type": "array",
+      "description": "视图四：变更范围（C-09 双分支 diff；接口按 code_location.file 关联变更文件，程序化派生不经 LLM；无基线分支时为空数组）",
+      "items": {
+        "type": "object",
+        "required": ["interface_id", "repo", "file", "change", "covered_by"],
+        "properties": {
+          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
+          "repo": { "type": "string" },
+          "file": { "type": "string", "description": "仓内相对路径" },
+          "change": { "type": "string", "enum": ["added", "modified"] },
+          "covered_by": {
+            "type": "array",
+            "description": "映射到该接口的需求条目（空 = 变更接口未被需求覆盖）",
+            "items": { "type": "string", "pattern": "^REQ-\\d{3}$" }
+          }
+        }
+      }
+    },
+    "removed_files": {
+      "type": "array",
+      "description": "基线→被测分支删除的文件（C-09；被测侧无源码可关联接口，单列）",
+      "items": {
+        "type": "object",
+        "required": ["repo", "file"],
+        "properties": {
+          "repo": { "type": "string" },
+          "file": { "type": "string" }
+        }
+      }
+    },
+    "unmatched_changed_files": {
+      "type": "array",
+      "description": "变更但未关联任何接口定义文件的文件（C-09；业务逻辑层变更等——接口签名未变但行为可能变更，需人工复核）",
+      "items": {
+        "type": "object",
+        "required": ["repo", "file", "change"],
+        "properties": {
+          "repo": { "type": "string" },
+          "file": { "type": "string" },
+          "change": { "type": "string", "enum": ["added", "modified"] }
+        }
+      }
+    },
     "review_log": {
       "type": "array",
       "description": "人工审核记录（F-REVW-06：通过/驳回 + 回流；E-REVIEW-03 闭环）",

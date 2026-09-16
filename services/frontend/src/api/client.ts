@@ -1,6 +1,7 @@
 /** orchestrator REST API 客户端（dev 经 vite 代理 → :8000；prod 同源）。 */
 
 import type {
+  ChangeScopeEntry,
   DefectEntry,
   ExecResult,
   ExecSummary,
@@ -13,6 +14,8 @@ import type {
   MetricsPayload,
   MissingFeature,
   RegressionIndexPayload,
+  RemovedFile,
+  UnmatchedChangedFile,
   RequirementItem,
   RetestResponse,
   ReviewLogResponse,
@@ -99,6 +102,9 @@ export function getReviewMapping(jobId: string): Promise<{
   mappings: ReviewMapping[]
   risks: DerivedRisk[]
   missing_features: MissingFeature[]
+  change_scope?: ChangeScopeEntry[] // C-09：旧产物无此键 → undefined → 页面隐藏视图四
+  removed_files?: RemovedFile[]
+  unmatched_changed_files?: UnmatchedChangedFile[]
 }> {
   return request(`/api/v1/jobs/${jobId}/artifacts/review_mapping.json`)
 }

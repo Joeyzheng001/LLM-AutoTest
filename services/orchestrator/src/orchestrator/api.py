@@ -53,6 +53,7 @@ class RepoConfig(BaseModel):
     name: str
     path: str
     branch: str = "main"
+    baseline_branch: str | None = None  # C-09：基线分支（可选，指定则产出变更清单）
     is_fallback: bool = False
     include_paths: list[str] = Field(default_factory=list)
 

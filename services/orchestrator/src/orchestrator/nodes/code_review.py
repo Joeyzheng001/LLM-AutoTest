@@ -1,5 +1,6 @@
 """code_review 节点：三视图产出（F-REVW-01~05）——一次 LLM 调用产映射表，
-风险清单与遗漏功能清单程序化派生（R-REVW-02：与映射表 100% 一致）。
+风险清单与遗漏功能清单程序化派生（R-REVW-02：与映射表 100% 一致）；
+双分支配置时程序化派生视图四·变更范围（C-09，不经 LLM）。
 
 产物：review_mapping.json（Day1 冻结口径：三视图合一单产物；
 R-REVW-03 的三文件名是规格草案表述，以 schemas/ 冻结文件名为准）。
@@ -7,7 +8,14 @@ R-REVW-03 的三文件名是规格草案表述，以 schemas/ 冻结文件名为
 程序化派生（数值/清单不经 LLM）：
 - risks：status=partial 自动进入（R-REVW-04：实现不完整即风险）；
 - missing_features：status=missing 条目提取，title 从需求条目回填；
-- evidence.code_location：从 interface_id 对应接口回填（LLM 给的忽略）。
+- evidence.code_location：从 interface_id 对应接口回填（LLM 给的忽略）；
+- change_scope（C-09）：code_inventory.changed_files × interfaces.code_location
+  文件关联 → 变更接口清单，covered_by 从映射表回填（空 = 未被需求覆盖）；
+- unmatched_changed_files（C-09）：变更但未命中任何接口定义文件的文件
+  （业务逻辑层变更等——接口签名未变但行为可能变更，需人工复核）；
+- removed_files（C-09）：被测侧已删除文件单列（无源码可关联接口）。
+
+code_inventory.json 无 changed_files 键（未配基线分支）时两视图为空数组。
 
 校验（R-REVW-01 覆盖率 100% + 虚构防护）：
 - 每条输入 REQ 必须有且仅一个映射条目，缺/多/虚构 REQ → X-LLM-02；
@@ -63,6 +71,7 @@ async def run_code_review(
     try:
         requirements = _load_requirements(store, state.job_id)
         interfaces = _load_interfaces(store, state.job_id)
+        inventory = _load_code_inventory(store, state.job_id)
 
         prompt = load_prompt(prompts_dir, NODE_NAME)
         user_content = json.dumps(
@@ -72,12 +81,18 @@ async def run_code_review(
         result = await llm.complete(NODE_NAME, prompt, user_content)
         mappings = _merge_llm_mappings(result.text, requirements, interfaces)
 
+        change_scope, removed_files, unmatched = _derive_change_scope(
+            inventory, interfaces, mappings
+        )
         payload: dict[str, Any] = {
             "schema_version": "1.0",
             "job_id": state.job_id,
             "mappings": mappings,
             "risks": _derive_risks(mappings),
             "missing_features": _derive_missing(mappings, requirements),
+            "change_scope": change_scope,
+            "removed_files": removed_files,
+            "unmatched_changed_files": unmatched,
         }
         try:
             path = store.write(state.job_id, "review_mapping.json", payload)
@@ -136,6 +151,86 @@ def _load_interfaces(store: ArtifactStore, job_id: str) -> list[dict[str, Any]]:
             node_id=NODE_NAME,
         )
     return [dict(entry) for entry in entries]
+
+
+def _load_code_inventory(store: ArtifactStore, job_id: str) -> dict[str, Any]:
+    """读 code_inventory.json（C-09 变更范围派生源；无则空对象 → 两视图为空）。"""
+    try:
+        return dict(store.read_json(job_id, "code_inventory.json"))
+    except FileNotFoundError:
+        return {}
+
+
+def _derive_change_scope(
+    inventory: dict[str, Any],
+    interfaces: list[dict[str, Any]],
+    mappings: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """视图四（C-09）：变更接口 × 需求覆盖（程序化派生，不经 LLM）。
+
+    关联口径：interface.code_location.{repo, file} 命中仓库 changed_files
+    （added/modified，文件精确匹配仓内相对路径）；covered_by 从映射表回填，
+    空 = 变更接口未被任何需求覆盖（变更风险信号）。removed 文件被测侧
+    无源码可关联接口 → 单列 removed_files；未命中任何接口定义文件的
+    变更文件（业务逻辑层变更等）→ 单列 unmatched_changed_files。
+    """
+    changed_by_repo: dict[str, dict[str, str]] = {}
+    removed: list[dict[str, Any]] = []
+    repositories = inventory.get("repositories") or []
+    for repo in repositories:
+        if not isinstance(repo, dict):
+            continue
+        name = str(repo.get("name", ""))
+        files = repo.get("changed_files") or {}
+        if not isinstance(files, dict):
+            continue
+        file_map: dict[str, str] = {}
+        for file in files.get("added") or []:
+            file_map[str(file)] = "added"
+        for file in files.get("modified") or []:
+            file_map[str(file)] = "modified"
+        changed_by_repo[name] = file_map
+        for file in files.get("removed") or []:
+            removed.append({"repo": name, "file": str(file)})
+
+    if not changed_by_repo and not removed:
+        return [], [], []
+
+    # 映射表反向：interface_id → 覆盖它的 REQ 清单
+    reqs_by_interface: dict[str, list[str]] = {}
+    for entry in mappings:
+        if_id = entry.get("interface_id")
+        if if_id:
+            reqs_by_interface.setdefault(str(if_id), []).append(str(entry["requirement_id"]))
+
+    change_scope: list[dict[str, Any]] = []
+    matched: set[tuple[str, str]] = set()  # 已被接口定义命中的 (repo, file)
+    for interface in interfaces:
+        location = interface.get("code_location") or {}
+        repo_name = str(location.get("repo", ""))
+        file = str(location.get("file", ""))
+        repo_changes = changed_by_repo.get(repo_name)
+        if repo_changes is None or file not in repo_changes:
+            continue
+        matched.add((repo_name, file))
+        if_id = str(interface.get("id", ""))
+        change_scope.append(
+            {
+                "interface_id": if_id,
+                "repo": repo_name,
+                "file": file,
+                "change": repo_changes[file],
+                "covered_by": reqs_by_interface.get(if_id, []),
+            }
+        )
+
+    # 未命中接口定义的变更文件（业务逻辑层变更等——行为风险信号）
+    unmatched: list[dict[str, Any]] = []
+    for repo_name, file_map in changed_by_repo.items():
+        for file, change in file_map.items():
+            if (repo_name, file) not in matched:
+                unmatched.append({"repo": repo_name, "file": file, "change": change})
+    return change_scope, removed, unmatched
 
 
 def _merge_llm_mappings(

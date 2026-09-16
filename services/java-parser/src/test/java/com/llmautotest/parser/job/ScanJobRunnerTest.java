@@ -9,8 +9,10 @@ import com.llmautotest.parser.contract.ScanRequest;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -126,6 +128,97 @@ class ScanJobRunnerTest {
         assertThat(inventory.get("schema_version")).isEqualTo("1.0");
         assertThat(inventory.get("job_id")).isEqualTo("job-1");
         assertThat(onlyRepository(inventory).get("is_fallback")).isEqualTo(true);
+        // C-09 向后兼容：未指定基线分支 → 不产出 baseline_branch/changed_files 键
+        assertThat(onlyRepository(inventory).get("changed_files")).isNull();
+        assertThat(onlyRepository(inventory).get("baseline_branch")).isNull();
+    }
+
+    // ---- C-09 双分支 diff ----
+
+    @Test
+    void baselineDiffProducesChangedFiles() throws Exception {
+        Path repo = gitRepoWithFeatureBranch();
+        RepositoryInput input = new RepositoryInput(
+                "diffed", repo.toString(), "feature", "main", null, null);
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-d", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        assertThat(entry.get("status")).isEqualTo("ok");
+        assertThat(entry.get("baseline_branch")).isEqualTo("main");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> changed = (Map<String, Object>) entry.get("changed_files");
+        assertThat((List<Object>) changed.get("added")).containsExactly((Object) "C.java");
+        assertThat((List<Object>) changed.get("modified")).containsExactly((Object) "A.java");
+        assertThat((List<Object>) changed.get("removed")).containsExactly((Object) "B.java");
+    }
+
+    @Test
+    void baselineDiffOnNonGitRepoReportsError() throws IOException {
+        Path repo = Files.createDirectories(tempDir.resolve("plain"));
+        Files.writeString(repo.resolve("A.java"), "class A {}\n");
+        RepositoryInput input = new RepositoryInput(
+                "plain", repo.toString(), "main", "main", null, null);
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-e", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        assertThat(entry.get("status")).isEqualTo("error");
+        assertThat(entry.get("file_count")).isEqualTo(0);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> error = (Map<String, Object>) entry.get("error");
+        assertThat(error.get("code")).isEqualTo("BRANCH_DIFF_FAILED");
+    }
+
+    @Test
+    void baselineDiffOnUnknownRefReportsError() throws Exception {
+        Path repo = gitRepoWithFeatureBranch();
+        RepositoryInput input = new RepositoryInput(
+                "diffed", repo.toString(), "feature", "no-such-ref", null, null);
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-f", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        assertThat(entry.get("status")).isEqualTo("error");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> error = (Map<String, Object>) entry.get("error");
+        assertThat(error.get("code")).isEqualTo("BRANCH_DIFF_FAILED");
+    }
+
+    /** 建真实 git 仓库：main（A.java + B.java）→ feature（改 A + 删 B + 加 C）。 */
+    private Path gitRepoWithFeatureBranch() throws Exception {
+        Path repo = Files.createDirectories(tempDir.resolve("diffed"));
+        runGit(repo, "init", "-b", "main");
+        Files.writeString(repo.resolve("A.java"), "class A {}\n");
+        Files.writeString(repo.resolve("B.java"), "class B {}\n");
+        runGit(repo, "add", "-A");
+        runGit(repo, "commit", "-m", "base");
+        runGit(repo, "checkout", "-b", "feature");
+        Files.writeString(repo.resolve("A.java"), "class A { int x; }\n");
+        Files.delete(repo.resolve("B.java"));
+        Files.writeString(repo.resolve("C.java"), "class C {}\n");
+        runGit(repo, "add", "-A");
+        runGit(repo, "commit", "-m", "feature");
+        return repo;
+    }
+
+    private static void runGit(Path repo, String... args) throws Exception {
+        List<String> cmd = new ArrayList<>();
+        cmd.add("git");
+        cmd.add("-C");
+        cmd.add(repo.toString());
+        // 测试环境无全局身份时 commit 会拒绝；命令级 -c 不污染全局配置
+        cmd.add("-c");
+        cmd.add("user.email=test@example.com");
+        cmd.add("-c");
+        cmd.add("user.name=scan-test");
+        cmd.addAll(List.of(args));
+        Process process = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+        String output = new String(
+                process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        if (!process.waitFor(30, TimeUnit.SECONDS) || process.exitValue() != 0) {
+            throw new AssertionError("git 失败：" + String.join(" ", args) + "\n" + output);
+        }
     }
 
     private ScanRequest request(Path repo, boolean fallback, List<String> includes) {

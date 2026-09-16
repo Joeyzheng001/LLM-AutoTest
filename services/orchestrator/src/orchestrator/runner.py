@@ -266,18 +266,21 @@ def repository_inputs_from_config(
 ) -> list[RepositoryInput]:
     """任务配置（JSON/CLI 参数）→ RepositoryInput 列表。
 
-    相对路径按当前工作目录解析为绝对路径（java-parser 侧按绝对路径定位仓库）。
+    相对路径按当前工作目录解析为绝对路径（java-parser 侧按绝对路径定位仓库）；
+    baseline_branch 可选（C-09 双分支 diff，空字符串归 None 不比对）。
     """
     inputs: list[RepositoryInput] = []
     for repo in repositories:
         path = Path(str(repo["path"]))
         if not path.is_absolute():
             path = Path.cwd() / path
+        baseline = str(repo.get("baseline_branch") or "").strip() or None
         inputs.append(
             RepositoryInput(
                 name=str(repo["name"]),
                 path=str(path),
                 branch=str(repo.get("branch", "main")),
+                baseline_branch=baseline,
                 is_fallback=bool(repo.get("is_fallback", False)),
                 include_paths=tuple(repo.get("include_paths", ())),
             )

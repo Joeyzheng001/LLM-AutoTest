@@ -18,7 +18,7 @@ interface NavView {
 const views: NavView[] = [
   { key: 'config', label: '任务配置', component: TaskConfigView },
   { key: 'overview', label: '流水线总览', component: PipelineOverviewView },
-  { key: 'review', label: 'Code Review 三视图', component: CodeReviewView },
+  { key: 'review', label: 'Code Review', component: CodeReviewView },
   { key: 'report', label: '测试报告', component: TestReportView },
   { key: 'defects', label: '缺陷闭环', component: DefectLoopView },
   { key: 'regression', label: '回归沉淀与度量', component: RegressionMetricsView },

@@ -20,7 +20,7 @@ from orchestrator.llm.client import LlmResult
 from orchestrator.nodes.code_review import SupportsComplete
 from orchestrator.pipeline import NodeStatus
 from orchestrator.prompts_loader import PromptSpec
-from orchestrator.runner import PipelineRunner
+from orchestrator.runner import PipelineRunner, repository_inputs_from_config
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 _PROMPTS = Path(__file__).resolve().parents[3] / "prompts"
@@ -475,3 +475,20 @@ async def test_runner_force_node_rejects_unknown_node(tmp_path: Path) -> None:
             _JOB, _doc(tmp_path), _repos(), "http://rest:9000", force_node="not-a-node"
         )
     assert exc_info.value.code == "X-ORCH-01"
+
+
+def test_repository_inputs_baseline_branch_passthrough() -> None:
+    """C-09：baseline_branch 透传（空/缺省归 None 不比对）。"""
+    inputs = repository_inputs_from_config(
+        [
+            {"name": "a", "path": "/abs/a", "branch": "feature", "baseline_branch": "main"},
+            {"name": "b", "path": "/abs/b", "branch": "main", "baseline_branch": ""},
+            {"name": "c", "path": "/abs/c", "branch": "main"},
+        ]
+    )
+    assert inputs[0].baseline_branch == "main"
+    assert inputs[0].to_dict()["baseline_branch"] == "main"
+    assert inputs[1].baseline_branch is None
+    assert "baseline_branch" not in inputs[1].to_dict()
+    assert inputs[2].baseline_branch is None
+    assert "baseline_branch" not in inputs[2].to_dict()

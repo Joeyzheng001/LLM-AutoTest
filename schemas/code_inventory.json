@@ -18,6 +18,20 @@
           "name": { "type": "string" },
           "path": { "type": "string", "description": "已检出正确分支的本地路径（07 遗留事项 #1）" },
           "branch": { "type": "string" },
+          "baseline_branch": {
+            "type": "string",
+            "description": "基线分支（C-09 双分支 diff；缺省 = 不比对）"
+          },
+          "changed_files": {
+            "type": "object",
+            "description": "基线→被测分支变更文件清单（C-09，git diff merge-base 口径，仓内相对路径）",
+            "required": ["added", "modified", "removed"],
+            "properties": {
+              "added": { "type": "array", "items": { "type": "string" } },
+              "modified": { "type": "array", "items": { "type": "string" } },
+              "removed": { "type": "array", "items": { "type": "string" } }
+            }
+          },
           "is_fallback": { "type": "boolean" },
           "status": {
             "type": "string",
