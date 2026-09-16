@@ -72,6 +72,30 @@ def _resp_interface_reconstruct(user_content: str) -> str:
     return json.dumps({"interfaces": interfaces}, ensure_ascii=False)
 
 
+def _stub_priority(title: str, description: str) -> str:
+    """C-16：朴素解析优先级分层（确定性关键词规则，非 LLM 语义猜测）。
+
+    原统一 P2（「无法判优先级」）过于扁平——核心业务与边缘条目无区分。
+    规则：P0 = 核心业务/主流程关键词（登录/交易/资金/下单/开户/正常流程等）；
+    P1 = 常规功能关键词（查询/创建/更新/删除/对账/导出/异常等）；P2 = 其余。
+    仍属桩行为（stub_note 如实标注），真实 LLM 解析时由模型语义判定。
+    """
+    text = f"{title} {description}"
+    p0_kws = (
+        "登录", "鉴权", "认证", "token", "交易", "资金", "下单", "申购", "赎回",
+        "开户", "转账", "正常流程", "主流程", "核心", "P0",
+    )
+    p1_kws = (
+        "查询", "创建", "新增", "更新", "修改", "删除", "销户", "对账", "导出",
+        "统计", "异常", "权限", "P1", "重要",
+    )
+    if any(k in text for k in p0_kws):
+        return "P0"
+    if any(k in text for k in p1_kws):
+        return "P1"
+    return "P2"
+
+
 def _parse_req_items(doc_text: str) -> list[dict[str, object]] | None:
     """req_parse 朴素解析（通用模式）：从文档文本提取编号条目。
 
@@ -98,8 +122,9 @@ def _parse_req_items(doc_text: str) -> list[dict[str, object]] | None:
             "id": item_id,
             "title": title[:50],
             "description": s[:200],
-            "priority": "P2",  # 朴素解析无法判优先级，统一 P2（LLM 语义部分，诚实口径）
-            "stub_note": "桩朴素解析产生（非真实 LLM 语义）",
+            # C-16：关键词规则分层（原统一 P2 过于扁平）；仍打桩标注非真实 LLM 语义
+            "priority": _stub_priority(title[:50], s[:200]),
+            "stub_note": "桩朴素解析产生（非真实 LLM 语义；优先级为关键词规则推断）",
         })
     # 去重（C-10：多文档合并后同 id 撞号改为续号而非丢弃——静默吞条目会
     # 造成需求覆盖缺口而不被察觉；真实 LLM 解析无此问题）

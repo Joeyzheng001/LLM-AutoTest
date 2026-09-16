@@ -1,11 +1,12 @@
 <script setup lang="ts">
 // 流水线总览页（07 页 02 · 真实数据）：job 列表（list_jobs）+ 9 节点状态（get_job_status，
-// 运行中每 3s 轮询，离开页面即停）+ 接口还原清单（interfaces.json，代码溯源 F-REV-04）+
-// 自动化率卡片（metrics.json 后端汇总，前端不计算）。
+// 运行中每 3s 轮询，离开页面即停）+ 自动化率卡片（metrics.json 后端汇总，前端不计算）。
+// C-16：节点卡可点击跳转对应页面（携带 jobId）；接口还原清单移除（独立页「源码扫描与接口还原」已有）。
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { getInterfaces, getJobStatus, getMetrics, listJobs, rerunJob } from '../api/client'
-import type { JobListItem, JobStatus, MetricsPayload, NodeState, InterfaceDef } from '../api/types'
+import { getJobStatus, getMetrics, listJobs, rerunJob } from '../api/client'
+import type { JobListItem, JobStatus, MetricsPayload, NodeState } from '../api/types'
 import { NODE_LABELS, STATUS_LABELS } from '../api/labels'
+import { navigateTo } from '../api/navigation'
 
 const POLL_INTERVAL_MS = 3000
 const LIST_REFRESH_MS = 10000
@@ -17,7 +18,6 @@ const selectedId = ref('')
 const status = ref<JobStatus | null>(null)
 const statusError = ref('')
 const metrics = ref<MetricsPayload | null>(null)
-const interfaces = ref<InterfaceDef[]>([])
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -66,7 +66,6 @@ async function refreshDetail(): Promise<void> {
   if (!selectedId.value) {
     status.value = null
     metrics.value = null
-    interfaces.value = []
     return
   }
   statusError.value = ''
@@ -81,11 +80,6 @@ async function refreshDetail(): Promise<void> {
     metrics.value = await getMetrics(selectedId.value)
   } catch {
     metrics.value = null
-  }
-  try {
-    interfaces.value = (await getInterfaces(selectedId.value)).interfaces
-  } catch {
-    interfaces.value = []
   }
 }
 
@@ -128,14 +122,47 @@ onUnmounted(() => {
 
 /* 九节点按固定顺序渲染（R-MTR-01），state.nodes 顺序不假定 */
 interface OrderedNode {
+  name: string
   label: string
   node: NodeState | undefined
 }
 
+// C-16：节点 → 目标页映射（code_scan/interface_reconstruct 同在「源码扫描与接口还原」页；
+// auto_execute 结果经 execution.json 在测试报告页展示）
+const NODE_VIEW: Record<string, string> = {
+  req_parse: 'requirements',
+  code_scan: 'scan',
+  interface_reconstruct: 'scan',
+  code_review: 'review',
+  testcase_generate: 'cases',
+  auto_execute: 'report',
+  test_report: 'report',
+  defect_list: 'defects',
+  retest_regression: 'regression',
+}
+
 const nodesInOrder = computed<OrderedNode[]>(() => {
   const byName = new Map((status.value?.nodes ?? []).map((node) => [node.name, node]))
-  return Object.entries(NODE_LABELS).map(([name, label]) => ({ label, node: byName.get(name) }))
+  return Object.entries(NODE_LABELS).map(([name, label]) => ({
+    name,
+    label,
+    node: byName.get(name),
+  }))
 })
+
+/* C-16：节点卡跳转——已完成/降级节点可点（有产物可看），pending/running 灰置 */
+function nodeClickable(entry: OrderedNode): boolean {
+  const statusName = entry.node?.status
+  return (
+    selectedId.value !== '' && (statusName === 'completed' || statusName === 'manual_intervention')
+  )
+}
+
+function handleNodeClick(entry: OrderedNode): void {
+  if (!nodeClickable(entry) || !selectedId.value) return
+  const view = NODE_VIEW[entry.name]
+  if (view) navigateTo(view, selectedId.value)
+}
 
 function formatRate(value: number | null): string {
   // 展示口径：后端已汇总的值仅做格式化（百分比），null = 数据不完整（X-MTR-02）
@@ -144,14 +171,6 @@ function formatRate(value: number | null): string {
 
 function formatTime(iso: string | null): string {
   return iso ? iso.replace('T', ' ').replace('Z', ' UTC').slice(0, 23) : '—'
-}
-
-function locationText(item: InterfaceDef): string {
-  const location = item.code_location
-  if (!location) return ''
-  const lines =
-    location.start_line != null ? `:${location.start_line}-${location.end_line ?? ''}` : ''
-  return `${location.repo}/${location.file}${lines}`
 }
 </script>
 
@@ -237,10 +256,20 @@ function locationText(item: InterfaceDef): string {
         降级 · {{ NODE_LABELS[record.node] ?? record.node }}：{{ record.reason }}（按人工介入计入）
       </div>
 
-      <!-- 9 节点流水线（R-MTR-01 固定口径） -->
+      <!-- 9 节点流水线（R-MTR-01 固定口径；C-16 点击跳转对应页面） -->
       <div class="pipeline">
         <div v-for="(entry, index) in nodesInOrder" :key="index" class="node-wrap">
-          <div v-if="entry.node" class="node" :data-status="entry.node.status">
+          <div
+            v-if="entry.node"
+            class="node"
+            :data-status="entry.node.status"
+            :class="{ 'node-link': nodeClickable(entry) }"
+            :role="nodeClickable(entry) ? 'button' : undefined"
+            :title="nodeClickable(entry) ? `查看${entry.label}详情` : undefined"
+            :tabindex="nodeClickable(entry) ? 0 : undefined"
+            @click="handleNodeClick(entry)"
+            @keydown.enter="handleNodeClick(entry)"
+          >
             <span class="node-index mono">{{ String(index + 1).padStart(2, '0') }}</span>
             <span class="node-label">{{ entry.label }}</span>
             <span class="node-status">{{
@@ -249,29 +278,6 @@ function locationText(item: InterfaceDef): string {
             <span v-if="entry.node.error" class="node-error">{{ entry.node.error.message }}</span>
           </div>
         </div>
-      </div>
-
-      <!-- 接口还原清单（F-REV-04 代码溯源；节点未跑到时如实提示） -->
-      <div class="interface-block">
-        <header class="block-title">
-          接口还原清单（{{ interfaces.length }} 个 · 代码位置溯源 F-REV-04）
-        </header>
-        <p v-if="!interfaces.length" class="state-line">
-          interfaces.json 尚未生成（需任务跑到接口还原节点之后）。
-        </p>
-        <ul v-else class="interface-list">
-          <li v-for="item in interfaces" :key="item.id" class="interface-item">
-            <span class="tag mono" :class="{ 'tag-warning': item.is_fallback }">
-              {{ item.protocol }}
-            </span>
-            <span class="mono interface-id">{{ item.id }}</span>
-            <span class="mono interface-sig"
-              >{{ item.signature.method }} {{ item.signature.path }}</span
-            >
-            <span class="mono interface-loc">{{ locationText(item) }}</span>
-            <span v-if="item.is_fallback" class="tag tag-warning">兜底</span>
-          </li>
-        </ul>
       </div>
     </section>
 
@@ -548,6 +554,17 @@ function locationText(item: InterfaceDef): string {
   border-radius: var(--radius-md);
 }
 
+/* C-16：可跳转节点卡（hover 提示可点） */
+.node-link {
+  cursor: pointer;
+}
+
+.node-link:hover,
+.node-link:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
 .node-index {
   font-size: var(--text-xs);
   color: var(--text-3);
@@ -613,69 +630,5 @@ function locationText(item: InterfaceDef): string {
   .running-dot {
     animation: none;
   }
-}
-
-/* 接口还原清单 */
-.interface-block {
-  margin-top: var(--space-5);
-}
-
-.block-title {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  margin-bottom: var(--space-3);
-  padding-bottom: var(--space-2);
-  border-bottom: 1px solid var(--border);
-}
-
-.interface-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.interface-item {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-  margin-bottom: var(--space-2);
-  font-size: var(--text-sm);
-}
-
-.tag {
-  display: inline-block;
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-2);
-}
-
-.tag-warning {
-  background: var(--warning-dim);
-  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
-  color: var(--warning);
-}
-
-.interface-id {
-  color: var(--accent-strong);
-  font-size: var(--text-xs);
-}
-
-.interface-sig {
-  font-size: var(--text-xs);
-  color: var(--text-1);
-}
-
-.interface-loc {
-  font-size: var(--text-xs);
-  color: var(--text-3);
-  word-break: break-all;
 }
 </style>

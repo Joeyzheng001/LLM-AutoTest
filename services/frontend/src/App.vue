@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // 应用外壳：左侧九页导航（07 §3.1–3.6 六屏 + C-10 三产物展示屏）+ 顶栏；视图切换（无路由依赖）。
 // 全部页面接 orchestrator REST API（数值来自后端，前端不计算）。
-import { computed, ref, type Component } from 'vue'
+// C-16：navigation 共享状态——总览页节点卡跳转携带 jobId 切页（目标页经 initialJobId prop 接收）。
+import { computed, ref, watch, type Component } from 'vue'
 import CodeReviewView from './views/CodeReviewView.vue'
 import CodeScanView from './views/CodeScanView.vue'
 import DefectLoopView from './views/DefectLoopView.vue'
@@ -11,6 +12,7 @@ import RequirementsView from './views/RequirementsView.vue'
 import TaskConfigView from './views/TaskConfigView.vue'
 import TestCasesView from './views/TestCasesView.vue'
 import TestReportView from './views/TestReportView.vue'
+import { navigation } from './api/navigation'
 
 interface NavView {
   key: string
@@ -33,6 +35,14 @@ const views: NavView[] = [
 
 const activeKey = ref('overview')
 const active = computed(() => views.find((view) => view.key === activeKey.value))
+
+// C-16：总览页节点卡跳转（navigation.view 变化 → 切页；jobId 随 prop 下发）
+watch(
+  () => navigation.view,
+  (view) => {
+    if (view && views.some((v) => v.key === view)) activeKey.value = view
+  },
+)
 </script>
 
 <template>
@@ -69,7 +79,7 @@ const active = computed(() => views.find((view) => view.key === activeKey.value)
         <span class="topbar-badge mono">实时数据 · orchestrator :8000</span>
       </header>
       <main class="content">
-        <component :is="active?.component" />
+        <component :is="active?.component" :initial-job-id="navigation.jobId" />
       </main>
     </div>
   </div>

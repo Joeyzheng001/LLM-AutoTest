@@ -9,6 +9,9 @@ import type { RequirementItem } from '../api/types'
 
 const _jobId = ref('')
 
+// C-16：总览页节点卡跳转携带 jobId（App.vue 动态组件下发）
+const props = defineProps<{ initialJobId?: string }>()
+
 const items = ref<RequirementItem[]>([])
 const sourceFiles = ref<string[]>([])
 const loading = ref(false)
@@ -32,6 +35,18 @@ async function load(): Promise<void> {
   }
 }
 
+// C-16：总览页节点卡跳转（immediate 同步赋值早于 watch(_jobId) 注册，须显式触发 load；
+// 且须在 load/refs 之后——immediate 执行时函数体引用的 const 已初始化，免 TDZ）
+watch(
+  () => props.initialJobId,
+  (v) => {
+    if (v) {
+      _jobId.value = v
+      void load()
+    }
+  },
+  { immediate: true },
+)
 watch(_jobId, () => void load())
 </script>
 
