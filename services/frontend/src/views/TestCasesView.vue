@@ -1,0 +1,267 @@
+<script setup lang="ts">
+// 用例生成页（C-10 独立展示屏）：testcases.json 全量用例——
+// 三类分列（F-GEN-01）+ 接口/需求双溯源（F-GEN-04）+ 参数/预期 + 脚本可加载性（R-GEN-03）。
+// 红线：low_confidence（unknown 参数，X-GEN-03）与 warnings 如实标注，前端不计算。
+import { computed, ref, watch } from 'vue'
+import JobPicker from '../components/JobPicker.vue'
+import { getTestcases } from '../api/client'
+import type { TestCaseEntry } from '../api/types'
+import { CASE_CATEGORY_LABELS } from '../api/labels'
+
+const _jobId = ref('')
+
+const cases = ref<TestCaseEntry[]>([])
+const warnings = ref<string[]>([])
+const loading = ref(false)
+const error = ref('')
+
+// 三类分列（F-GEN-01：每接口三类各 ≥1 为生成侧口径，此处仅展示分列）
+const byCategory = computed(() => ({
+  normal: cases.value.filter((c) => c.category === 'normal'),
+  boundary: cases.value.filter((c) => c.category === 'boundary'),
+  exception: cases.value.filter((c) => c.category === 'exception'),
+}))
+
+async function load(): Promise<void> {
+  if (!_jobId.value) return
+  loading.value = true
+  error.value = ''
+  try {
+    const payload = await getTestcases(_jobId.value)
+    cases.value = payload.cases
+    warnings.value = payload.warnings ?? []
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '用例产物加载失败'
+    cases.value = []
+    warnings.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
+watch(_jobId, () => void load())
+
+function paramsText(params: Record<string, unknown> | undefined): string {
+  if (!params || !Object.keys(params).length) return '无参数'
+  return Object.entries(params)
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(' ')
+}
+</script>
+
+<template>
+  <div class="cases-view">
+    <JobPicker v-model="_jobId" />
+
+    <p v-if="loading" class="state-line">加载用例产物中…</p>
+    <p v-else-if="error" class="state-line state-error" role="alert">{{ error }}</p>
+    <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
+
+    <template v-else-if="cases.length">
+      <div class="view-head">
+        <span class="tag tag-accent">用例生成结果（testcases.json）</span>
+        <span class="coverage-note">
+          共 <span class="mono">{{ cases.length }}</span> 条（正常
+          <span class="mono">{{ byCategory.normal.length }}</span> / 边界
+          <span class="mono">{{ byCategory.boundary.length }}</span> / 异常
+          <span class="mono">{{ byCategory.exception.length }}</span
+          >，F-GEN-01 三类）
+        </span>
+      </div>
+
+      <!-- 生成质量告警（X-GEN-01/02 如实标注） -->
+      <div v-for="(warning, index) in warnings" :key="index" class="hint hint-warning">
+        {{ warning }}
+      </div>
+
+      <div class="card">
+        <table class="case-table">
+          <thead>
+            <tr>
+              <th scope="col">用例</th>
+              <th scope="col">类别</th>
+              <th scope="col">标题</th>
+              <th scope="col">溯源（F-GEN-04）</th>
+              <th scope="col">参数</th>
+              <th scope="col">预期</th>
+              <th scope="col">脚本</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in cases" :key="item.id">
+              <td>
+                <span class="mono case-id">{{ item.id }}</span>
+              </td>
+              <td>
+                <span class="tag" :data-category="item.category">
+                  {{ CASE_CATEGORY_LABELS[item.category] ?? item.category }}
+                </span>
+              </td>
+              <td>
+                <div class="req-cell">
+                  <span>{{ item.title }}</span>
+                  <span v-if="item.low_confidence" class="low-conf"
+                    >低置信度（unknown 参数，X-GEN-03）</span
+                  >
+                </div>
+              </td>
+              <td>
+                <div class="req-cell">
+                  <span class="mono loc">{{ item.interface_id }}</span>
+                  <span v-if="item.requirement_id" class="mono loc">{{ item.requirement_id }}</span>
+                </div>
+              </td>
+              <td>
+                <span class="mono loc">{{ paramsText(item.params) }}</span>
+              </td>
+              <td>
+                <span class="desc">{{ item.expected }}</span>
+              </td>
+              <td>
+                <span v-if="item.loadable" class="mono loc">{{ item.script_path }}</span>
+                <span v-else class="state-error">脚本不可加载（R-GEN-03）</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
+
+    <p v-else class="state-line">testcases.json 尚未生成（需任务跑到用例生成节点之后）。</p>
+  </div>
+</template>
+
+<style scoped>
+.cases-view {
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.state-line {
+  padding: var(--space-3);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.state-error {
+  color: var(--warning);
+  font-size: var(--text-xs);
+}
+
+.view-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.coverage-note {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+.hint {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-2);
+}
+
+.hint-warning {
+  background: var(--warning-dim);
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+  overflow-x: auto;
+}
+
+.tag {
+  display: inline-block;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.tag-accent {
+  background: var(--accent-dim);
+  border-color: var(--accent-glow);
+  color: var(--accent-strong);
+}
+
+.tag[data-category='normal'] {
+  background: var(--accent-dim);
+  border-color: var(--accent-glow);
+  color: var(--accent-strong);
+}
+
+.tag[data-category='boundary'] {
+  background: var(--warning-dim, rgba(204, 145, 23, 0.12));
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+  color: var(--warning);
+}
+
+.tag[data-category='exception'] {
+  background: var(--danger-dim, rgba(196, 74, 74, 0.12));
+  border-color: color-mix(in srgb, var(--danger, #c44a4a) 30%, transparent);
+  color: var(--danger, #c44a4a);
+}
+
+.case-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.case-table th {
+  text-align: left;
+  font-weight: 500;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+
+.case-table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.case-id {
+  color: var(--accent-strong);
+  font-size: var(--text-xs);
+}
+
+.req-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.low-conf {
+  font-size: var(--text-xs);
+  color: var(--warning);
+}
+
+.desc {
+  color: var(--text-2);
+}
+
+.loc {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  word-break: break-all;
+}
+</style>

@@ -83,7 +83,7 @@ class PipelineRunner:
     async def run(
         self,
         job_id: str,
-        doc_path: Path,
+        doc_paths: list[Path],
         repositories: list[RepositoryInput],
         rest_base_url: str,
         force_node: str | None = None,
@@ -91,6 +91,7 @@ class PipelineRunner:
         """按固定顺序驱动 9 节点（F-ORCH-01）。
 
         state.json 已存在时经产物判据续跑（F-ORCH-02）；
+        doc_paths：需求文档列表（C-10 多文档，至少 1 份）；
         force_node：重跑已完成节点（旧产物先移入 archive/，禁止原地覆盖——留痕红线）。
         """
         state = self._open_or_init(job_id)
@@ -115,7 +116,7 @@ class PipelineRunner:
                 continue
 
             await self._run_node_with_retry(
-                node_name, state, llm, prompts_dir, doc_path, repositories, rest_base_url, outcome
+                node_name, state, llm, prompts_dir, doc_paths, repositories, rest_base_url, outcome
             )
 
         self._refresh_final_metrics(state)
@@ -139,7 +140,7 @@ class PipelineRunner:
         state: JobState,
         llm: LlmClient,
         prompts_dir: Path,
-        doc_path: Path,
+        doc_paths: list[Path],
         repositories: list[RepositoryInput],
         rest_base_url: str,
         outcome: PipelineOutcome,
@@ -149,7 +150,7 @@ class PipelineRunner:
         while attempts < MAX_NODE_ATTEMPTS:
             try:
                 await self._invoke_node(
-                    node_name, state, llm, prompts_dir, doc_path, repositories, rest_base_url
+                    node_name, state, llm, prompts_dir, doc_paths, repositories, rest_base_url
                 )
                 outcome.completed.append(node_name)
                 return
@@ -174,14 +175,14 @@ class PipelineRunner:
         state: JobState,
         llm: LlmClient,
         prompts_dir: Path,
-        doc_path: Path,
+        doc_paths: list[Path],
         repositories: list[RepositoryInput],
         rest_base_url: str,
     ) -> None:
         """分派到对应节点实现（甲/乙产物走 orch_store，丙产物走 te_store）。"""
         if node_name == "req_parse":
             await run_req_parse(
-                self._engine, state, self._orch_store, llm, prompts_dir, doc_path
+                self._engine, state, self._orch_store, llm, prompts_dir, doc_paths
             )
         elif node_name == "code_scan":
             await run_code_scan(

@@ -1,10 +1,10 @@
 <script setup lang="ts">
-// 任务配置页（07 页 01 · 真实提交）：文档上传（base64）+ 本地仓库路径（R-CODE-01 口径）+
+// 任务配置页（07 页 01 · 真实提交）：多文档上传（C-10，base64）+ 本地仓库路径（R-CODE-01 口径）+
 // 被测服务地址 + 断点续跑开关 → POST /api/v1/jobs（后台驱动同一 PipelineRunner，F-ORCH-01）。
 // 红线：协议范围由源码扫描自动识别（非表单参数）；fixtures 前置数据（D8）在流程启动前预置，不在本表单收集。
 import { computed, reactive, ref } from 'vue'
 import { submitJob } from '../api/client'
-import type { RepoConfig } from '../api/types'
+import type { JobSubmitPayload } from '../api/types'
 
 interface RepoRow {
   name: string
@@ -14,13 +14,20 @@ interface RepoRow {
   isFallback: boolean
 }
 
+// C-10：多文档（至少 1 份；三格式可混传，LLM 单次解析分节拼接）
+interface DocRow {
+  name: string
+  size: number
+  file: File
+}
+
 const form = reactive({
   jobId: '',
   restUrl: 'http://127.0.0.1:9000',
   resume: true,
 })
 
-const docFile = ref<File | null>(null)
+const docFiles = reactive<DocRow[]>([])
 const docError = ref('')
 const repos = reactive<RepoRow[]>([
   { name: 'user-service', path: '', branch: 'main', baselineBranch: '', isFallback: false },
@@ -39,30 +46,37 @@ function removeRepo(index: number): void {
   repos.splice(index, 1)
 }
 
+function removeDoc(index: number): void {
+  docFiles.splice(index, 1)
+}
+
 const reposValid = computed(
   () =>
-    repos.length >= 2 &&
+    repos.length >= 1 &&
     repos.every((row) => row.name.trim() !== '' && row.path.trim().startsWith('/')),
 )
 
 const formValid = computed(
-  () => docFile.value !== null && reposValid.value && form.restUrl.startsWith('http'),
+  () => docFiles.length >= 1 && reposValid.value && form.restUrl.startsWith('http'),
 )
 
-function pickDoc(event: Event): void {
-  const file = (event.target as HTMLInputElement).files?.[0] ?? null
+function pickDocs(event: Event): void {
+  const files = Array.from((event.target as HTMLInputElement).files ?? [])
   docError.value = ''
-  if (!file) {
-    docFile.value = null
-    return
+  const input = event.target as HTMLInputElement
+  for (const file of files) {
+    const suffix = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+    if (!['.md', '.docx', '.xlsx'].includes(suffix)) {
+      docError.value = `文档格式不支持（F-REQ-01~03：md/docx/xlsx）：${file.name}`
+      continue
+    }
+    // 重名去重：同名文件不重复入列（后端落盘也会加序号，前端提前拦）
+    if (docFiles.some((row) => row.name === file.name)) {
+      continue
+    }
+    docFiles.push({ name: file.name, size: file.size, file })
   }
-  const suffix = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
-  if (!['.md', '.docx', '.xlsx'].includes(suffix)) {
-    docError.value = '文档格式不支持（F-REQ-01~03：md/docx/xlsx）'
-    docFile.value = null
-    return
-  }
-  docFile.value = file
+  input.value = '' // 允许移除后重选同一文件
 }
 
 function readFileAsBase64(file: File): Promise<string> {
@@ -84,21 +98,20 @@ function readFileAsBase64(file: File): Promise<string> {
 }
 
 async function handleSubmit(): Promise<void> {
-  if (!formValid.value || submitting.value || !docFile.value) return
+  if (!formValid.value || submitting.value) return
   submitting.value = true
   submitError.value = ''
   submittedJobId.value = ''
   try {
-    const payload: {
-      job_id?: string
-      doc_name: string
-      doc_content_b64: string
-      repos: RepoConfig[]
-      rest_url: string
-      resume: boolean
-    } = {
-      doc_name: docFile.value.name,
-      doc_content_b64: await readFileAsBase64(docFile.value),
+    // C-10：docs 列表逐份 base64（后端分节拼接单次送 LLM）
+    const docs = await Promise.all(
+      docFiles.map(async (row) => ({
+        doc_name: row.name,
+        doc_content_b64: await readFileAsBase64(row.file),
+      })),
+    )
+    const payload: JobSubmitPayload = {
+      docs,
       repos: repos.map((row) => ({
         name: row.name.trim(),
         path: row.path.trim(),
@@ -125,32 +138,39 @@ async function handleSubmit(): Promise<void> {
 <template>
   <div class="config">
     <form class="card" @submit.prevent="handleSubmit">
-      <!-- 需求文档（三格式 F-REQ-01~03） -->
+      <!-- 需求文档（三格式 F-REQ-01~03；C-10 可多份） -->
       <section class="field-group">
         <header class="group-title">
           需求文档
           <span class="group-note"
-            >支持 md / docx / xlsx（F-REQ-01~03），Schema 校验由后端统一执行（F-REQ-04）</span
+            >可多份（C-10）；支持 md / docx / xlsx（F-REQ-01~03），Schema
+            校验由后端统一执行（F-REQ-04）</span
           >
         </header>
         <label class="doc-upload" for="doc-file">
-          <input id="doc-file" type="file" accept=".md,.docx,.xlsx" @change="pickDoc" />
-          <span v-if="docFile" class="doc-chosen">
-            <span class="mono">{{ docFile.name }}</span>
-            <span class="doc-size mono">{{ Math.round(docFile.size / 1024) }} KB</span>
-          </span>
-          <span v-else class="doc-placeholder">选择需求文档文件…</span>
+          <input id="doc-file" type="file" accept=".md,.docx,.xlsx" multiple @change="pickDocs" />
+          <span class="doc-placeholder">选择需求文档文件（可多选，至少 1 份）…</span>
         </label>
+        <ul v-if="docFiles.length" class="doc-list">
+          <li v-for="(row, index) in docFiles" :key="row.name" class="doc-item">
+            <span class="mono">{{ row.name }}</span>
+            <span class="doc-size mono">{{ Math.round(row.size / 1024) }} KB</span>
+            <button class="icon-btn" type="button" @click="removeDoc(index)">移除</button>
+          </li>
+        </ul>
         <p v-if="docError" class="field-error" role="alert">{{ docError }}</p>
+        <p class="switch-note">
+          多文档在后端按文件名分节拼接后单次送 LLM 解析（需求条目统一编号）；至少上传 1 份。
+        </p>
       </section>
 
-      <!-- 被测仓库（G3：≥2；R-CODE-01 本地路径口径；D5：兜底分列） -->
+      <!-- 被测仓库（C-10：≥1；R-CODE-01 本地路径口径；D5：兜底分列） -->
       <section class="field-group">
         <header class="group-title">
           被测仓库
           <span class="group-note"
-            >至少 2
-            个（G3）；本地绝对路径口径（R-CODE-01，检出正确分支后指向工作区目录）；兜底仓库结果单独分列（D5）</span
+            >至少 1
+            个（C-10；验收演示仍双仓库口径）；本地绝对路径口径（R-CODE-01，检出正确分支后指向工作区目录）；兑底仓库结果单独分列（D5）</span
           >
         </header>
 
@@ -196,7 +216,7 @@ async function handleSubmit(): Promise<void> {
           <button
             class="icon-btn"
             type="button"
-            :disabled="repos.length <= 2"
+            :disabled="repos.length <= 1"
             @click="removeRepo(index)"
           >
             移除
@@ -205,7 +225,7 @@ async function handleSubmit(): Promise<void> {
 
         <button class="ghost-btn" type="button" @click="addRepo">+ 添加仓库</button>
         <p v-if="!reposValid" class="field-error">
-          每个仓库需有名称与绝对路径（以 / 开头），且仓库数 ≥ 2。
+          每个仓库需有名称与绝对路径（以 / 开头），且仓库数 ≥ 1。
         </p>
         <p class="switch-note">
           基线分支（C-09，可选）：非空时后端按 merge-base 做双分支 diff，CodeReview
@@ -333,15 +353,28 @@ async function handleSubmit(): Promise<void> {
   font-size: var(--text-sm);
 }
 
-.doc-chosen {
+/* C-10：已选文档清单 */
+.doc-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+}
+
+.doc-item {
   display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-1);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   font-size: var(--text-sm);
   color: var(--accent-strong);
 }
 
 .doc-size {
+  margin-left: auto;
   font-size: var(--text-xs);
   color: var(--text-3);
 }

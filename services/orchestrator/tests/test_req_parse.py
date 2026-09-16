@@ -66,12 +66,14 @@ async def test_req_parse_success(env: tuple[Engine, ArtifactStore], doc: Path) -
     state = engine.init_job(_JOB)
     llm = _StubLlm(_GOOD_OUTPUT)
 
-    path = await run_req_parse(engine, state, store, llm, _PROMPTS, doc)
+    path = await run_req_parse(engine, state, store, llm, _PROMPTS, [doc])
 
     assert path.is_file()
     payload: dict[str, Any] = store.read_json(_JOB, "requirement_items.json")
     assert payload["job_id"] == _JOB
     assert payload["source_file"] == str(doc)
+    # C-10：多文档产物 source_files 记全部（单文档时为单元素列表）
+    assert payload["source_files"] == [str(doc)]
     assert payload["items"][0]["id"] == "REQ-001"
     assert state.node("req_parse").status is NodeStatus.COMPLETED
 
@@ -86,7 +88,7 @@ async def test_req_parse_tolerates_code_fence(env: tuple[Engine, ArtifactStore],
     engine, store = env
     state = engine.init_job(_JOB)
     fenced = f"```json\n{_GOOD_OUTPUT}\n```"
-    await run_req_parse(engine, state, store, _StubLlm(fenced), _PROMPTS, doc)
+    await run_req_parse(engine, state, store, _StubLlm(fenced), _PROMPTS, [doc])
     assert state.node("req_parse").status is NodeStatus.COMPLETED
 
 
@@ -96,7 +98,7 @@ async def test_req_parse_bad_json_x_llm_02(env: tuple[Engine, ArtifactStore], do
     state = engine.init_job(_JOB)
     with pytest.raises(PipelineError) as excinfo:
         await run_req_parse(
-            engine, state, store, _StubLlm("前面一段解释 {items:[...] 后面一段"), _PROMPTS, doc
+            engine, state, store, _StubLlm("前面一段解释 {items:[...] 后面一段"), _PROMPTS, [doc]
         )
     assert excinfo.value.code == "X-LLM-02"
     assert state.node("req_parse").status is NodeStatus.PENDING
@@ -113,7 +115,7 @@ async def test_req_parse_missing_items_x_llm_02(
     engine, store = env
     state = engine.init_job(_JOB)
     with pytest.raises(PipelineError) as excinfo:
-        await run_req_parse(engine, state, store, _StubLlm('{"条目": []}'), _PROMPTS, doc)
+        await run_req_parse(engine, state, store, _StubLlm('{"条目": []}'), _PROMPTS, [doc])
     assert excinfo.value.code == "X-LLM-02"
 
 
@@ -125,8 +127,31 @@ async def test_req_parse_schema_violation_x_llm_02(
     state = engine.init_job(_JOB)
     bad = '{"items": [{"id": "1", "title": "t", "description": "d"}]}'
     with pytest.raises(PipelineError) as excinfo:
-        await run_req_parse(engine, state, store, _StubLlm(bad), _PROMPTS, doc)
+        await run_req_parse(engine, state, store, _StubLlm(bad), _PROMPTS, [doc])
     assert excinfo.value.code == "X-LLM-02"
+
+
+async def test_req_parse_multi_docs_merged_sections(
+    env: tuple[Engine, ArtifactStore], doc: Path, tmp_path: Path
+) -> None:
+    """C-10：多文档分节拼接——两份文档均入 user_content，产物 source_files 记两份。"""
+    engine, store = env
+    state = engine.init_job(_JOB)
+    doc_b = tmp_path / "订单需求.md"
+    doc_b.write_text("## 2. 订单\n功能：按单号查询订单。", encoding="utf-8")
+    llm = _StubLlm(_GOOD_OUTPUT)
+
+    await run_req_parse(engine, state, store, llm, _PROMPTS, [doc, doc_b])
+
+    payload = store.read_json(_JOB, "requirement_items.json")
+    assert payload["source_files"] == [str(doc), str(doc_b)]
+    # 单次 LLM 调用，两份文档内容均入参且带分节标题
+    assert len(llm.received) == 1
+    _prompt_ref, user_content = llm.received[0]
+    assert "需求文档 1：需求.md" in user_content
+    assert "需求文档 2：订单需求.md" in user_content
+    assert "按 ID 查询用户" in user_content
+    assert "按单号查询订单" in user_content
 
 
 async def test_req_parse_missing_doc_x_orch_01(
@@ -137,7 +162,7 @@ async def test_req_parse_missing_doc_x_orch_01(
     state = engine.init_job(_JOB)
     with pytest.raises(PipelineError) as excinfo:
         await run_req_parse(
-            engine, state, store, _StubLlm(_GOOD_OUTPUT), _PROMPTS, tmp_path / "无.md"
+            engine, state, store, _StubLlm(_GOOD_OUTPUT), _PROMPTS, [tmp_path / "无.md"]
         )
     assert excinfo.value.code == "X-ORCH-01"
 
@@ -149,7 +174,7 @@ async def test_req_parse_blocked_when_out_of_order(
     engine, store = env
     state = engine.init_job(_JOB)
     # 人为把首节点置为已完成之外的状态不改其可运行性；直接跑通后节点状态被冻结
-    await run_req_parse(engine, state, store, _StubLlm(_GOOD_OUTPUT), _PROMPTS, doc)
+    await run_req_parse(engine, state, store, _StubLlm(_GOOD_OUTPUT), _PROMPTS, [doc])
     with pytest.raises(PipelineError) as excinfo:
         engine.check_runnable(state, "code_review")
     assert excinfo.value.code == "X-ORCH-02"

@@ -1,7 +1,7 @@
 """orchestrator 服务入口：CLI 统一入口（F-ORCH-01/02）+ REST API 服务。
 
 子命令：
-- run：单命令跑全流程（--doc 需求文档 --repos 仓库配置 JSON --rest-url 被测服务）
+- run：单命令跑全流程（--doc 需求文档可多份（C-10）--repos 仓库配置 JSON --rest-url 被测服务）
 - status：查 job 状态与产物清单（断点续跑诊断）
 - serve：启动 REST API（Web 并存入口，V2.1）
 """
@@ -43,9 +43,10 @@ def _build_runner(settings: Settings) -> PipelineRunner:
 
 async def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
     """run 子命令：跑全流程（状态已存在时自动断点续跑）。"""
-    doc_path = Path(args.doc)
-    if not doc_path.is_file():
-        logger.error("需求文档不存在：%s", doc_path)
+    doc_paths = [Path(doc) for doc in args.doc]
+    missing = [str(path) for path in doc_paths if not path.is_file()]
+    if missing:
+        logger.error("需求文档不存在：%s", "、".join(missing))
         return 2
     try:
         repositories = repository_inputs_from_config(json.loads(Path(args.repos).read_text()))
@@ -53,13 +54,13 @@ async def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
         logger.error("仓库配置非法：%s", exc)
         return 2
     if not repositories:
-        logger.error("仓库配置为空（--repos JSON 数组）")
+        logger.error("仓库配置为空（--repos JSON 数组，至少 1 个）")
         return 2
 
     runner = _build_runner(settings)
     outcome = await runner.run(
         job_id=args.job_id,
-        doc_path=doc_path,
+        doc_paths=doc_paths,
         repositories=repositories,
         rest_base_url=args.rest_url,
         force_node=args.force_node,
@@ -112,7 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="单命令跑全流程（F-ORCH-01）")
     run.add_argument("--job-id", required=True, help="job 标识（job-<uuid>）")
-    run.add_argument("--doc", required=True, help="需求文档路径（md/docx/xlsx）")
+    run.add_argument(
+        "--doc",
+        required=True,
+        action="append",
+        help="需求文档路径（md/docx/xlsx；可重复传入多份，C-10）",
+    )
     run.add_argument(
         "--repos", required=True, help="仓库配置 JSON 路径（[{name,path,branch,is_fallback?}]）"
     )

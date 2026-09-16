@@ -101,13 +101,20 @@ def _parse_req_items(doc_text: str) -> list[dict[str, object]] | None:
             "priority": "P2",  # 朴素解析无法判优先级，统一 P2（LLM 语义部分，诚实口径）
             "stub_note": "桩朴素解析产生（非真实 LLM 语义）",
         })
-    # 去重（同 id 保留首个）
+    # 去重（C-10：多文档合并后同 id 撞号改为续号而非丢弃——静默吞条目会
+    # 造成需求覆盖缺口而不被察觉；真实 LLM 解析无此问题）
     seen: set[str] = set()
     uniq: list[dict[str, object]] = []
     for it in items:
-        if str(it["id"]) not in seen:
-            seen.add(str(it["id"]))
-            uniq.append(it)
+        item_id = str(it["id"])
+        if item_id in seen:
+            next_seq = len(uniq) + 1
+            while f"REQ-{next_seq:03d}" in seen:
+                next_seq += 1
+            item_id = f"REQ-{next_seq:03d}"
+            it = {**it, "id": item_id}
+        seen.add(item_id)
+        uniq.append(it)
     return uniq or None
 
 

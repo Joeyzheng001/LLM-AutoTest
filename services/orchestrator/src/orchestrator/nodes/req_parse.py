@@ -1,4 +1,7 @@
-"""req_parse 节点：需求文档 → LLM 解析 → requirement_items.json 落盘（F-REQ-01~03）。
+"""req_parse 节点：需求文档（可多份，C-10）→ LLM 解析 → requirement_items.json 落盘（F-REQ-01~03）。
+
+多文档口径（C-10）：各文档按文件名分节拼接为单次 LLM 解析输入（单次调用、单一 items 产物）；
+产物 source_files 记录全部文档路径，source_file 保留首文档兼容旧读取方。
 
 失败口径（docs/12）：
 - Prompt 缺失 → X-LLM-03；LLM 网络/超时 → X-LLM-01（客户端内重试）；
@@ -36,9 +39,12 @@ async def run_req_parse(
     store: ArtifactStore,
     llm: SupportsComplete,
     prompts_dir: Path,
-    doc_path: Path,
+    doc_paths: list[Path],
 ) -> Path:
     """执行 req_parse 全流程：跳序检查 → 运行 → 解析 → 校验落盘 → 置完成。
+
+    Args:
+        doc_paths: 需求文档路径列表（C-10 多文档；至少 1 份，调用方保证非空）。
 
     Returns:
         产物文件路径。
@@ -50,13 +56,15 @@ async def run_req_parse(
     engine.mark_running(state, NODE_NAME)
     try:
         prompt = load_prompt(prompts_dir, NODE_NAME)
-        doc_text = load_document_text(doc_path)
+        doc_text = _merge_documents(doc_paths)
         result = await llm.complete(NODE_NAME, prompt, doc_text)
         items = _extract_items(result.text)
         payload: dict[str, Any] = {
             "schema_version": "1.0",
             "job_id": state.job_id,
-            "source_file": str(doc_path),
+            # C-10：source_files 记全部；source_file 保留首文档兼容旧读取方
+            "source_files": [str(path) for path in doc_paths],
+            "source_file": str(doc_paths[0]),
             "items": items,
         }
         try:
@@ -76,6 +84,19 @@ async def run_req_parse(
     except PipelineError as exc:
         engine.mark_failed(state, NODE_NAME, exc)
         raise
+
+
+def _merge_documents(doc_paths: list[Path]) -> str:
+    """多文档分节拼接（C-10）：各文档提取纯文本后按文件名分节，单次送 LLM。
+
+    任一文档缺失/不可读 → load_document_text 抛 X-ORCH-01（宁停不猜，
+    不跳过任何一份——跳过会造成需求覆盖缺口而不被案觉）。
+    """
+    sections = [
+        f"## 需求文档 {index}：{path.name}\n\n{load_document_text(path)}"
+        for index, path in enumerate(doc_paths, start=1)
+    ]
+    return "\n\n---\n\n".join(sections)
 
 
 def _extract_items(text: str) -> list[dict[str, Any]]:

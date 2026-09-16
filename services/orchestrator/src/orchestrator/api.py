@@ -2,7 +2,7 @@
 
 只做协议转换与校验，业务下沉 service（.rules/python-code-style）。
 口径：
-- POST /api/v1/jobs：提交全流程 job（文档 base64 + 仓库配置 + 被测服务地址），
+- POST /api/v1/jobs：提交全流程 job（文档 base64，可多份 C-10 + 仓库配置 + 被测服务地址），
   后台 asyncio 任务驱动 PipelineRunner（F-ORCH-01 同一入口，CLI 与 Web 等价）；
 - 断点续跑（F-ORCH-02）：resume=true（默认）保留历史产物；false 时清空重跑；
 - 产物读取白名单：仅 9 节点产物 + 调用留痕（llm_calls/review_log）；
@@ -58,13 +58,25 @@ class RepoConfig(BaseModel):
     include_paths: list[str] = Field(default_factory=list)
 
 
-class JobSubmitRequest(BaseModel):
-    """job 提交请求（文档以 base64 传递，免 python-multipart 依赖）。"""
+class DocInput(BaseModel):
+    """单份需求文档（C-10 多文档；名称 + base64 内容）。"""
 
-    job_id: str | None = None
     doc_name: str
     doc_content_b64: str
-    repos: list[RepoConfig]
+
+
+class JobSubmitRequest(BaseModel):
+    """job 提交请求（文档以 base64 传递，免 python-multipart 依赖）。
+
+    C-10：docs 列表支持多份；旧单文档字段（doc_name/doc_content_b64）
+    仍接受（兼容旧客户端），两组二选一、docs 优先。
+    """
+
+    job_id: str | None = None
+    docs: list[DocInput] = Field(default_factory=list)
+    doc_name: str | None = None  # C-10 前旧字段（兼容保留）
+    doc_content_b64: str | None = None  # C-10 前旧字段（兼容保留）
+    repos: list[RepoConfig] = Field(min_length=1)  # C-10：≥1 个仓库（原 ≥2 放宽）
     rest_url: str
     resume: bool = True
 
@@ -126,11 +138,11 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             raise HTTPException(status_code=409, detail=f"job {job_id} 正在运行中")
         if not request.resume:
             # 断点续跑开关关闭 → 清空既有 job 目录重跑（F-ORCH-02 反向口径）。
-            # 须在 _save_doc 之前：否则会把刚落盘的文档连同目录一起删掉（P-11）。
+            # 须在 _save_docs 之前：否则会把刚落盘的文档连同目录一起删掉（P-11）。
             existing = orch_store.job_dir(job_id)
             if existing.is_dir():
                 shutil.rmtree(existing)
-        doc_path = _save_doc(orch_store, job_id, request)
+        doc_paths = _save_docs(orch_store, job_id, _request_docs(request))
         for repo in request.repos:
             repo_path = Path(repo.path)
             if not repo_path.is_absolute():
@@ -148,8 +160,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
 
         job_input = {
             "job_id": job_id,
-            "doc_path": str(doc_path),
-            "doc_name": request.doc_name,
+            "doc_paths": [str(path) for path in doc_paths],
             "repos": [repo.model_dump() for repo in request.repos],
             "rest_url": request.rest_url,
             "submitted_at": _now_iso(),
@@ -315,24 +326,56 @@ def _require_job(app: FastAPI, job_id: str) -> Path:
     return job_dir
 
 
-def _save_doc(orch_store: ArtifactStore, job_id: str, request: JobSubmitRequest) -> Path:
-    """落盘上传文档（input/ 子目录），返回路径（req_parse 按后缀解析）。"""
-    suffix = Path(request.doc_name).suffix.lower()
-    if suffix not in _DOC_SUFFIXES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"文档格式不支持（F-REQ-01~03：md/docx/xlsx）：{request.doc_name}",
-        )
-    try:
-        content = base64.b64decode(request.doc_content_b64, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="doc_content_b64 不是合法 base64") from exc
-    if not content:
-        raise HTTPException(status_code=400, detail="文档内容为空")
-    doc_path = orch_store.job_dir(job_id) / "input" / request.doc_name
-    doc_path.parent.mkdir(parents=True, exist_ok=True)
-    doc_path.write_bytes(content)
-    return doc_path
+def _request_docs(request: JobSubmitRequest) -> list[DocInput]:
+    """归一提交文档：docs 优先；否则旧单文档字段；两组均空 → 400。"""
+    if request.docs:
+        return request.docs
+    if request.doc_name is not None or request.doc_content_b64 is not None:
+        if request.doc_name is None or request.doc_content_b64 is None:
+            raise HTTPException(
+                status_code=400, detail="旧单文档字段 doc_name/doc_content_b64 须同时提供"
+            )
+        return [DocInput(doc_name=request.doc_name, doc_content_b64=request.doc_content_b64)]
+    raise HTTPException(status_code=400, detail="至少提交 1 份需求文档（docs 或旧单文档字段）")
+
+
+def _save_docs(orch_store: ArtifactStore, job_id: str, docs: list[DocInput]) -> list[Path]:
+    """逐份校验并落盘上传文档（input/ 子目录），返回路径列表（req_parse 按后缀解析）。
+
+    重名文档自动加序号后缀（不影响后缀识别）；同一请求内两格式同内容时
+    以落盘顺序为准（LLM 单次解析全部拼接）。
+    """
+    paths: list[Path] = []
+    used_names: set[str] = set()
+    for doc in docs:
+        suffix = Path(doc.doc_name).suffix.lower()
+        if suffix not in _DOC_SUFFIXES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"文档格式不支持（F-REQ-01~03：md/docx/xlsx）：{doc.doc_name}",
+            )
+        try:
+            content = base64.b64decode(doc.doc_content_b64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"doc_content_b64 不是合法 base64：{doc.doc_name}"
+            ) from exc
+        if not content:
+            raise HTTPException(status_code=400, detail=f"文档内容为空：{doc.doc_name}")
+        # 重名去重：a.md + a.md → a.md + a-2.md（逐份落盘不覆盖）
+        name = doc.doc_name
+        if name in used_names:
+            stem = Path(doc.doc_name).stem
+            serial = 2
+            while f"{stem}-{serial}{suffix}" in used_names:
+                serial += 1
+            name = f"{stem}-{serial}{suffix}"
+        used_names.add(name)
+        doc_path = orch_store.job_dir(job_id) / "input" / name
+        doc_path.parent.mkdir(parents=True, exist_ok=True)
+        doc_path.write_bytes(content)
+        paths.append(doc_path)
+    return paths
 
 
 def _load_job_input(orch_store: ArtifactStore, job_id: str) -> dict[str, Any]:
@@ -350,13 +393,17 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
     """后台驱动 PipelineRunner（同一入口 F-ORCH-01；force_node 归档留痕）。"""
     job_input = _load_job_input(app.state.orch_store, job_id)
     repositories = repository_inputs_from_config(job_input["repos"])
+    # C-10：新格式 doc_paths 列表；旧 job 的单值 doc_path 兼容归一为列表
+    doc_paths = [Path(p) for p in job_input.get("doc_paths", [])]
+    if not doc_paths and job_input.get("doc_path"):
+        doc_paths = [Path(job_input["doc_path"])]
 
     async def _run() -> None:
         runner: PipelineRunner = app.state.runner
         try:
             outcome = await runner.run(
                 job_id=job_id,
-                doc_path=Path(job_input["doc_path"]),
+                doc_paths=doc_paths,
                 repositories=repositories,
                 rest_base_url=job_input["rest_url"],
                 force_node=force_node,

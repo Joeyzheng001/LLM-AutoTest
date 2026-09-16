@@ -1,12 +1,15 @@
 <script setup lang="ts">
-// 应用外壳：左侧六页导航（07 §3.1–3.6，V2.1 全量 Web 入口）+ 顶栏；视图切换（无路由依赖）。
+// 应用外壳：左侧九页导航（07 §3.1–3.6 六屏 + C-10 三产物展示屏）+ 顶栏；视图切换（无路由依赖）。
 // 全部页面接 orchestrator REST API（数值来自后端，前端不计算）。
 import { computed, ref, type Component } from 'vue'
 import CodeReviewView from './views/CodeReviewView.vue'
+import CodeScanView from './views/CodeScanView.vue'
 import DefectLoopView from './views/DefectLoopView.vue'
 import PipelineOverviewView from './views/PipelineOverviewView.vue'
 import RegressionMetricsView from './views/RegressionMetricsView.vue'
+import RequirementsView from './views/RequirementsView.vue'
 import TaskConfigView from './views/TaskConfigView.vue'
+import TestCasesView from './views/TestCasesView.vue'
 import TestReportView from './views/TestReportView.vue'
 
 interface NavView {
@@ -18,6 +21,10 @@ interface NavView {
 const views: NavView[] = [
   { key: 'config', label: '任务配置', component: TaskConfigView },
   { key: 'overview', label: '流水线总览', component: PipelineOverviewView },
+  // C-10：三个产物独立展示屏（需求解析 / 源码扫描与接口还原 / 用例生成）
+  { key: 'requirements', label: '需求解析', component: RequirementsView },
+  { key: 'scan', label: '源码扫描与接口还原', component: CodeScanView },
+  { key: 'cases', label: '用例生成', component: TestCasesView },
   { key: 'review', label: 'Code Review', component: CodeReviewView },
   { key: 'report', label: '测试报告', component: TestReportView },
   { key: 'defects', label: '缺陷闭环', component: DefectLoopView },

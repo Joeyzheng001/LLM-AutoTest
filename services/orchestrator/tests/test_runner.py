@@ -203,7 +203,7 @@ class _ScriptedRunner(PipelineRunner):
         )._transport
 
     async def _invoke_node(  # type: ignore[no-untyped-def]
-        self, node_name, state, llm, prompts_dir, doc_path, repositories, rest_base_url
+        self, node_name, state, llm, prompts_dir, doc_paths, repositories, rest_base_url
     ):
         """覆写：给 auto_execute/retest 注入 MockTransport。"""
         from orchestrator.nodes import (
@@ -219,7 +219,9 @@ class _ScriptedRunner(PipelineRunner):
         )
 
         if node_name == "req_parse":
-            await run_req_parse(self._engine, state, self._orch_store, self.llm, _PROMPTS, doc_path)
+            await run_req_parse(
+                self._engine, state, self._orch_store, self.llm, _PROMPTS, doc_paths
+            )
         elif node_name == "code_scan":
             await run_code_scan(
                 self._engine, state, self._orch_store, self._java_client, repositories
@@ -270,7 +272,7 @@ def _doc(tmp: Path) -> Path:
 
 
 def _repos() -> list[RepositoryInput]:
-    # Schema 冻结 minItems=2（G3：≥2 个仓库）
+    # C-10：仓库数下限 ≥1（schema minItems 已放宽；mock 侧仍双仓库覆盖多仓场景）
     return [
         RepositoryInput(name="user-service", path="/var/repos/user-service", branch="main"),
         RepositoryInput(name="order-center", path="/var/repos/order-center", branch="master"),
@@ -282,7 +284,7 @@ async def test_runner_full_pipeline_e2e(tmp_path: Path) -> None:
     llm = StubLlm(_default_llm_scripts())
     runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm, rest_status=200)
 
-    outcome = await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+    outcome = await runner.run(_JOB, [_doc(tmp_path)], _repos(), "http://rest:9000")
 
     assert outcome.ok
     assert outcome.completed == [
@@ -328,7 +330,7 @@ async def test_runner_metrics_snapshot_then_final(tmp_path: Path) -> None:
     llm = StubLlm(_default_llm_scripts())
     runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
     # 中断在 test_report 之后：先手动跑前 7 节点，再验证快照与终态差异
-    await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+    await runner.run(_JOB, [_doc(tmp_path)], _repos(), "http://rest:9000")
     # 跑完后重放「报告时点」验证：把 defect_list/retest_regression 回退为 pending 会触发重跑，
     # 此处直接验证终态产物口径——快照版（7/9）已被终态版覆盖，见 test_test_report 快照测试
     metrics = json.loads((tmp_path / _JOB / "metrics.json").read_text(encoding="utf-8"))
@@ -352,7 +354,7 @@ async def test_runner_resume_skips_completed(tmp_path: Path) -> None:
     llm = StubLlm(_default_llm_scripts())
     runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
     # 第一次跑完
-    await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+    await runner.run(_JOB, [_doc(tmp_path)], _repos(), "http://rest:9000")
 
     # 模拟中断时点：删除后半产物（产物为唯一事实，open_job 判据自动回退状态）
     job_dir = tmp_path / _JOB
@@ -371,7 +373,7 @@ async def test_runner_resume_skips_completed(tmp_path: Path) -> None:
 
     llm2 = StubLlm(_default_llm_scripts())
     runner.llm = llm2
-    outcome = await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+    outcome = await runner.run(_JOB, [_doc(tmp_path)], _repos(), "http://rest:9000")
 
     # 产物在的前 4 节点跳过（LLM 只被 testcase_generate 调用）
     assert llm2.calls == ["testcase_generate"]
@@ -390,7 +392,7 @@ async def test_runner_degrade_after_retry(tmp_path: Path) -> None:
     llm = StubLlm(scripts)
     runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
 
-    outcome = await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+    outcome = await runner.run(_JOB, [_doc(tmp_path)], _repos(), "http://rest:9000")
 
     assert not outcome.degraded == []
     degraded_names = [name for name, _reason in outcome.degraded]
@@ -409,7 +411,7 @@ async def test_runner_rest_down_environment_failures_flow(
     llm = StubLlm(_default_llm_scripts())
     runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm, rest_status=500)
 
-    outcome = await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+    outcome = await runner.run(_JOB, [_doc(tmp_path)], _repos(), "http://rest:9000")
 
     assert outcome.ok
     defects = json.loads((tmp_path / _JOB / "defects.json").read_text(encoding="utf-8"))
@@ -435,7 +437,7 @@ async def test_runner_force_node_archives_old_artifacts(tmp_path: Path) -> None:
     """force-node（设计 §1.2）：旧产物移入 archive/，节点重跑产出新产物。"""
     llm = StubLlm(_default_llm_scripts())
     runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
-    await runner.run(_JOB, _doc(tmp_path), _repos(), "http://rest:9000")
+    await runner.run(_JOB, [_doc(tmp_path)], _repos(), "http://rest:9000")
     job_dir = tmp_path / _JOB
     old_items = json.loads((job_dir / "requirement_items.json").read_text(encoding="utf-8"))
 
@@ -451,7 +453,7 @@ async def test_runner_force_node_archives_old_artifacts(tmp_path: Path) -> None:
     llm2 = StubLlm(scripts)
     runner.llm = llm2
     outcome = await runner.run(
-        _JOB, _doc(tmp_path), _repos(), "http://rest:9000", force_node="req_parse"
+        _JOB, [_doc(tmp_path)], _repos(), "http://rest:9000", force_node="req_parse"
     )
 
     assert outcome.ok
@@ -472,9 +474,23 @@ async def test_runner_force_node_rejects_unknown_node(tmp_path: Path) -> None:
     runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
     with pytest.raises(PipelineError) as exc_info:
         await runner.run(
-            _JOB, _doc(tmp_path), _repos(), "http://rest:9000", force_node="not-a-node"
+            _JOB, [_doc(tmp_path)], _repos(), "http://rest:9000", force_node="not-a-node"
         )
     assert exc_info.value.code == "X-ORCH-01"
+
+
+async def test_runner_req_parse_multi_docs(tmp_path: Path) -> None:
+    """C-10：多文档提交——分节拼接单次送 LLM，产物 source_files 记全部。"""
+    llm = StubLlm(_default_llm_scripts())
+    runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
+    doc2 = tmp_path / "req2.md"
+    doc2.write_text("- REQ-002 订单查询：按单号查询订单\n", encoding="utf-8")
+
+    await runner.run(_JOB, [_doc(tmp_path), doc2], _repos(), "http://rest:9000")
+
+    items = json.loads((tmp_path / _JOB / "requirement_items.json").read_text(encoding="utf-8"))
+    assert items["source_files"] == [str(_doc(tmp_path)), str(doc2)]
+    assert items["source_file"] == str(_doc(tmp_path))
 
 
 def test_repository_inputs_baseline_branch_passthrough() -> None:

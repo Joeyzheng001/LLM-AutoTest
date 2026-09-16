@@ -65,11 +65,16 @@ export interface RepoConfig {
   include_paths?: string[]
 }
 
-export interface JobSubmitPayload {
-  job_id?: string
+// C-10：多需求文档（docs 列表；后端兼容旧单文档字段，前端统一走新口径）
+export interface DocInput {
   doc_name: string
   doc_content_b64: string
-  repos: RepoConfig[]
+}
+
+export interface JobSubmitPayload {
+  job_id?: string
+  docs: DocInput[]
+  repos: RepoConfig[] // C-10：≥1 个仓库（原 ≥2 放宽）
   rest_url: string
   resume?: boolean
 }
@@ -82,6 +87,7 @@ export interface RequirementItem {
   description: string
   priority?: string
   stub_note?: string
+  source_files?: string[] // C-10：全部来源文档路径
 }
 
 export interface CodeLocation {
@@ -147,6 +153,36 @@ export interface UnmatchedChangedFile {
   repo: string
   file: string
   change: 'added' | 'modified'
+}
+
+// C-10：源码扫描清单（code_inventory.json；仓库四态 X-CODE-01~03）
+export interface RepoInventory {
+  name: string
+  path: string
+  branch: string
+  baseline_branch?: string
+  changed_files?: { added: string[]; modified: string[]; removed: string[] }
+  is_fallback: boolean
+  status: 'ok' | 'empty' | 'truncated' | 'error'
+  file_count: number
+  truncated_scope?: string[]
+  encoding_skipped?: string[]
+  error?: { code: string; message: string; details?: Record<string, unknown> }
+  files?: Array<{ repo: string; module: string; path: string }>
+}
+
+// C-10：用例清单（testcases.json；F-GEN-01 三类 / F-GEN-04 溯源）
+export interface TestCaseEntry {
+  id: string
+  interface_id: string
+  requirement_id?: string
+  category: 'normal' | 'boundary' | 'exception'
+  title: string
+  params?: Record<string, unknown>
+  expected: string
+  script_path: string
+  loadable: boolean
+  low_confidence?: boolean
 }
 
 export interface ExecResult {

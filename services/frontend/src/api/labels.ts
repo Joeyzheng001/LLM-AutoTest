@@ -44,3 +44,17 @@ export const DEFECT_EVENT_LABELS: Record<string, string> = {
   close_suggested: '关闭建议',
   retained: '保留',
 }
+
+// C-10：仓库扫描四态（X-CODE-01~03）与用例三类（F-GEN-01）
+export const REPO_STATUS_LABELS: Record<string, string> = {
+  ok: '正常',
+  empty: '空仓库（X-CODE-02，流程继续）',
+  truncated: '截断扫描（X-CODE-03）',
+  error: '扫描失败（X-CODE-01）',
+}
+
+export const CASE_CATEGORY_LABELS: Record<string, string> = {
+  normal: '正常',
+  boundary: '边界',
+  exception: '异常',
+}

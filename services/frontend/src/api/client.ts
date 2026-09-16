@@ -15,6 +15,8 @@ import type {
   MissingFeature,
   RegressionIndexPayload,
   RemovedFile,
+  RepoInventory,
+  TestCaseEntry,
   UnmatchedChangedFile,
   RequirementItem,
   RetestResponse,
@@ -84,8 +86,24 @@ export async function getReportMd(jobId: string): Promise<string> {
 
 /* ---- 产物读取（JSON 端点返回对象） ---- */
 
-export function getRequirementItems(jobId: string): Promise<{ items: RequirementItem[] }> {
+export function getRequirementItems(jobId: string): Promise<{
+  items: RequirementItem[]
+  source_files?: string[]
+}> {
   return request(`/api/v1/jobs/${jobId}/artifacts/requirement_items.json`)
+}
+
+// C-10：源码扫描清单（独立展示页数据源）
+export function getCodeInventory(jobId: string): Promise<{ repositories: RepoInventory[] }> {
+  return request(`/api/v1/jobs/${jobId}/artifacts/code_inventory.json`)
+}
+
+// C-10：用例清单（独立展示页数据源）
+export function getTestcases(jobId: string): Promise<{
+  cases: TestCaseEntry[]
+  warnings?: string[]
+}> {
+  return request(`/api/v1/jobs/${jobId}/artifacts/testcases.json`)
 }
 
 export function getInterfaceCandidates(

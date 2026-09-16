@@ -9,8 +9,8 @@
     "job_id": { "type": "string", "pattern": "^job-" },
     "repositories": {
       "type": "array",
-      "minItems": 2,
-      "description": "G3：≥2 个仓库（X-CODE-01~03 四态）",
+      "minItems": 1,
+      "description": "C-10：≥1 个仓库（原 G3 ≥2 放宽，验收演示仍双仓库）；X-CODE-01~03 四态",
       "items": {
         "type": "object",
         "required": ["name", "path", "branch", "is_fallback", "status", "file_count"],

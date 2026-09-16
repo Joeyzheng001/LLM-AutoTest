@@ -7,7 +7,8 @@
   "properties": {
     "schema_version": { "type": "string", "const": "1.0" },
     "job_id": { "type": "string", "pattern": "^job-" },
-    "source_file": { "type": "string", "description": "来源文档路径与格式：docx/md/xlsx（F-REQ-01~03）" },
+    "source_file": { "type": "string", "description": "首份来源文档路径与格式：docx/md/xlsx（F-REQ-01~03；C-10 多文档兼容保留）" },
+    "source_files": { "type": "array", "description": "全部来源文档路径（C-10 多文档输入；单文档时为单元素列表）", "items": { "type": "string" } },
     "items": {
       "type": "array",
       "minItems": 1,

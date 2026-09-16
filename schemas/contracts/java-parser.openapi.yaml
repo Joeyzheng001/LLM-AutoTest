@@ -197,8 +197,8 @@ components:
           description: 由 orchestrator 生成的任务 ID（产物按任务 ID 归档）
         repositories:
           type: array
-          minItems: 2
-          description: 仓库列表（G3：≥2 个）
+          minItems: 1
+          description: 仓库列表（C-10：≥1 个；原 G3 ≥2 放宽，验收演示仍双仓库）
           items:
             $ref: "#/components/schemas/RepositoryInput"
 

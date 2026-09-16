@@ -36,7 +36,7 @@ class FakeRunner:
     async def run(
         self,
         job_id: str,
-        doc_path: Path,
+        doc_paths: list[Path],
         repositories: list[Any],
         rest_base_url: str,
         force_node: str | None = None,
@@ -44,7 +44,7 @@ class FakeRunner:
         self.calls.append(
             {
                 "job_id": job_id,
-                "doc_path": str(doc_path),
+                "doc_paths": [str(path) for path in doc_paths],
                 "repos": [(r.name, r.path) for r in repositories],
                 "rest_base_url": rest_base_url,
                 "force_node": force_node,
@@ -226,7 +226,7 @@ async def _await_task(app: FastAPI, job_id: str) -> None:
 async def test_submit_job_happy_path(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:
-    """提交 → 202；doc/job_input 落盘；FakeRunner 拿到正确入参。"""
+    """提交（旧单文档字段兼容路径）→ 202；doc/job_input 落盘；FakeRunner 拿到正确入参。"""
     app, fake, client, repo_dir = env
     response = await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-0001"))
     assert response.status_code == 202
@@ -235,12 +235,76 @@ async def test_submit_job_happy_path(
     assert len(fake.calls) == 1
     call = fake.calls[0]
     assert call["job_id"] == "job-api-0001"
+    job_dir = Path(str(app.state.settings.artifacts_root)) / "job-api-0001"
+    assert call["doc_paths"] == [str(job_dir / "input" / "requirements.md")]
     assert call["repos"] == [("repo-a", str(repo_dir))]
     assert call["rest_base_url"] == "http://127.0.0.1:9000"
-    job_dir = Path(str(app.state.settings.artifacts_root)) / "job-api-0001"
     assert (job_dir / "input" / "requirements.md").read_text(encoding="utf-8") == _DOC
     saved = json.loads((job_dir / "job_input.json").read_text(encoding="utf-8"))
+    assert saved["doc_paths"] == [str(job_dir / "input" / "requirements.md")]
     assert saved["rest_url"] == "http://127.0.0.1:9000"
+
+
+async def test_submit_job_multi_docs(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-10：docs[] 多文档提交——两份落盘、doc_paths 入参列表、FakeRunner 收到两份。"""
+    app, fake, client, repo_dir = env
+    doc_b = "# 补充需求\n\n3. 删除用户\n"
+    doc_b64 = base64.b64encode(_DOC.encode()).decode()
+    extra_b64 = base64.b64encode(doc_b.encode()).decode()
+    body = _submit_body(repo_dir, "job-api-md01")
+    body["docs"] = [
+        {"doc_name": "requirements.md", "doc_content_b64": doc_b64},
+        {"doc_name": "extra.md", "doc_content_b64": extra_b64},
+    ]
+    del body["doc_name"], body["doc_content_b64"]
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 202
+    await _await_task(app, "job-api-md01")
+    job_dir = Path(str(app.state.settings.artifacts_root)) / "job-api-md01"
+    assert (job_dir / "input" / "requirements.md").read_text(encoding="utf-8") == _DOC
+    assert (job_dir / "input" / "extra.md").read_text(encoding="utf-8") == doc_b
+    assert len(fake.calls) == 1
+    assert len(fake.calls[0]["doc_paths"]) == 2
+
+
+async def test_submit_job_docs_and_legacy_validations(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-10 文档字段拒绝路径：两组均空 / 旧字段只填一半 / docs 与旧字段同时给（docs 优先）。"""
+    app, _fake, client, repo_dir = env
+    empty = _submit_body(repo_dir, "d0")
+    del empty["doc_name"], empty["doc_content_b64"]
+    assert (await client.post("/api/v1/jobs", json=empty)).status_code == 400
+    half = _submit_body(repo_dir, "d1")
+    del half["doc_content_b64"]
+    assert (await client.post("/api/v1/jobs", json=half)).status_code == 400
+    # 两组同时给：docs 优先（不报错，旧字段忽略）
+    both = _submit_body(repo_dir, "d2")
+    both["docs"] = [
+        {"doc_name": "only.md", "doc_content_b64": base64.b64encode(b"# only").decode()}
+    ]
+    assert (await client.post("/api/v1/jobs", json=both)).status_code == 202
+    await _await_task(app, "d2")
+    job_dir = Path(str(app.state.settings.artifacts_root)) / "d2"
+    assert (job_dir / "input" / "only.md").is_file()
+    assert not (job_dir / "input" / "requirements.md").exists()
+
+
+async def test_submit_job_empty_repos_rejected(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-10：空仓库列表拒绝（≥1）；单仓库合法通过。"""
+    app, fake, client, repo_dir = env
+    empty = _submit_body(repo_dir, "r0")
+    empty["repos"] = []
+    assert (await client.post("/api/v1/jobs", json=empty)).status_code == 422  # Pydantic min_length
+    # 单仓库（C-10 放宽后合法）
+    response = await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "r1"))
+    assert response.status_code == 202
+    await _await_task(app, "r1")
+    assert fake.calls[-1]["repos"] == [("repo-a", str(repo_dir))]
 
 
 async def test_submit_job_validations(
