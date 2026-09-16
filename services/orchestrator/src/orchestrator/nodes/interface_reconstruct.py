@@ -32,6 +32,7 @@ from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
 from orchestrator.llm import LlmResult
 from orchestrator.nodes.req_parse import _strip_code_fence
 from orchestrator.prompts_loader import PromptSpec, load_prompt
+from orchestrator.python_scan import scan_repository
 
 NODE_NAME = "interface_reconstruct"
 
@@ -76,8 +77,24 @@ async def run_interface_reconstruct(
     engine.check_runnable(state, NODE_NAME)
     engine.mark_running(state, NODE_NAME)
     try:
-        response = await client.extract(state.job_id, repositories, protocols)
-        candidates, warnings = _normalize_candidates(response)
+        # C-13 语言分流：Java 候选走 java-parser Extract；Python 走内置 AST 扫描
+        java_repos = [r for r in repositories if r.language != "python"]
+        python_repos = [r for r in repositories if r.language == "python"]
+        raw_candidates: list[Any] = []
+        raw_warnings: list[str] = []
+        if java_repos:
+            response = await client.extract(state.job_id, java_repos, protocols)
+            raw_candidates.extend(response.get("candidates") or [])
+            raw_warnings.extend(
+                str(item) for item in response.get("warnings") or [] if isinstance(item, str)
+            )
+        for repo in python_repos:
+            python_result = scan_repository(repo)
+            raw_candidates.extend(python_result.candidates)
+            raw_warnings.extend(python_result.warnings)
+        candidates, warnings = _normalize_candidates(
+            {"candidates": raw_candidates, "warnings": raw_warnings}
+        )
 
         if not candidates:
             raise PipelineError(

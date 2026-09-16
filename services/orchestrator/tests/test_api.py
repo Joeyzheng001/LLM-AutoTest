@@ -6,6 +6,7 @@ state.json + 少量产物——API 协议与留痕行为是测点，节点语义
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from pathlib import Path
@@ -323,6 +324,99 @@ async def test_submit_job_invalid_job_id_rejected(
     assert not (Path(str(app.state.settings.artifacts_root)) / "第一次全局测试").exists()
 
 
+async def test_submit_job_traversal_job_id_rejected(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-12：带 ../ 或路径分隔符的 job_id → 400，不建目录不跑流水线（防穿越 rmtree）。"""
+    app, fake, client, repo_dir = env
+    artifacts_root = Path(str(app.state.settings.artifacts_root))
+    for bad_id in ("job-../../evil", "job-a/b", "job-a\\b", "job-.."):
+        response = await client.post("/api/v1/jobs", json=_submit_body(repo_dir, bad_id))
+        assert response.status_code == 400, f"{bad_id} 应被完整正则拒绝"
+        assert "C-12" in response.json()["detail"]
+    assert fake.calls == []
+    # 产物卷根之外无任何新建目录（穿越未得逞）
+    assert not (artifacts_root.parent / "evil").exists()
+    assert list(artifacts_root.glob("job-a*")) == []
+
+
+async def test_submit_job_doc_name_traversal_rejected(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-12：文档名绝对路径 / ../ / 子路径 / 控制字符 → 400，不落盘任务目录之外。"""
+    app, _fake, client, repo_dir = env
+    artifacts_root = Path(str(app.state.settings.artifacts_root))
+    for bad_name in ("../evil.md", "/abs/evil.md", "sub/x.md", "a..b.md\n"):
+        body = _submit_body(repo_dir, "job-api-sec1")
+        body["doc_name"] = bad_name
+        response = await client.post("/api/v1/jobs", json=body)
+        assert response.status_code == 400, f"{bad_name!r} 应被纯 basename 口径拒绝"
+        assert "文档名非法" in response.json()["detail"]
+    # 任务目录未建立、卷外无文件（任意写入未得逞）
+    assert not (artifacts_root / "job-api-sec1").exists()
+    assert not (artifacts_root.parent / "evil.md").exists()
+
+
+async def test_submit_job_docs_count_and_size_limits(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-12：文档数超 MAX_DOCS（10 份）→ 400；单文档超 10MB → 400。"""
+    app, _fake, client, repo_dir = env
+    artifacts_root = Path(str(app.state.settings.artifacts_root))
+    doc_b64 = base64.b64encode(_DOC.encode()).decode()
+    overflow = {"docs": [
+        {"doc_name": f"d{i}.md", "doc_content_b64": doc_b64} for i in range(11)
+    ]}
+    body = _submit_body(repo_dir, "job-api-sec2", **overflow)
+    del body["doc_name"], body["doc_content_b64"]
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 400
+    assert "上限 10 份" in response.json()["detail"]
+
+    huge = base64.b64encode(b"x" * (10 * 1024 * 1024 + 1)).decode()
+    body = _submit_body(repo_dir, "job-api-sec3", doc_content_b64=huge)
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 400
+    assert "超过上限" in response.json()["detail"]
+    assert not (artifacts_root / "job-api-sec3").exists()
+
+
+async def test_request_body_too_large_413(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-12：content-length 超 MAX_REQUEST_BYTES（64MB）→ 413（解析前拒绝）。"""
+    _app, fake, client, _repo_dir = env
+    request = client.build_request("POST", "/api/v1/jobs", json={})
+    request.headers["Content-Length"] = str(65 * 1024 * 1024)
+    response = await client.send(request)
+    assert response.status_code == 413
+    assert fake.calls == []
+
+
+async def test_submit_job_repo_language_validation(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-13：仓库 language 仅支持 java/python；python 合法提交入参透传。"""
+    app, fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-lang0")
+    body["repos"][0]["language"] = "go"
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 400
+    assert "language 仅支持 java/python" in response.json()["detail"]
+    assert fake.calls == []
+
+    body = _submit_body(repo_dir, "job-api-lang1")
+    body["repos"][0]["language"] = "python"
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 202
+    await _await_task(app, "job-api-lang1")
+    saved = json.loads(
+        (Path(str(app.state.settings.artifacts_root)) / "job-api-lang1" / "job_input.json")
+        .read_text(encoding="utf-8")
+    )
+    assert saved["repos"][0]["language"] == "python"
+
+
 async def test_submit_job_validations(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:
@@ -477,14 +571,78 @@ async def test_review_log_and_reject_rerun(
     assert [e["decision"] for e in entries] == ["approved", "rejected"]
 
 
+async def test_rerun_from_node(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-14：POST /rerun 指定 from_node → 200 入队，force_node 透传给 Runner。"""
+    app, fake, client, repo_dir = env
+    await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-rr01"))
+    await _await_task(app, "job-api-rr01")
+
+    response = await client.post(
+        "/api/v1/jobs/job-api-rr01/rerun", json={"from_node": "code_scan"}
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "job_id": "job-api-rr01",
+        "status": "rerun-queued",
+        "from_node": "code_scan",
+    }
+    await _await_task(app, "job-api-rr01")
+    assert fake.calls[-1]["force_node"] == "code_scan"
+
+
+async def test_rerun_default_full(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-14：from_node 缺省 → 全量重跑（req_parse 级联失效）。"""
+    app, fake, client, repo_dir = env
+    await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-rr02"))
+    await _await_task(app, "job-api-rr02")
+
+    response = await client.post("/api/v1/jobs/job-api-rr02/rerun", json={})
+    assert response.status_code == 200
+    assert response.json()["from_node"] == "req_parse"
+    await _await_task(app, "job-api-rr02")
+    assert fake.calls[-1]["force_node"] == "req_parse"
+
+
+async def test_rerun_rejections(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-14：非法节点 400 / 不存在 job 404 / 运行中 409。"""
+    app, fake, client, repo_dir = env
+    await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-rr03"))
+    await _await_task(app, "job-api-rr03")
+
+    bad_node = await client.post(
+        "/api/v1/jobs/job-api-rr03/rerun", json={"from_node": "bogus"}
+    )
+    assert bad_node.status_code == 400
+    assert "9 节点之一" in bad_node.json()["detail"]
+
+    unknown = await client.post("/api/v1/jobs/job-nope/rerun", json={})
+    assert unknown.status_code == 404
+
+    # 运行中冲突：注入一个未完成的后台任务模拟在跑
+    task = asyncio.create_task(asyncio.sleep(30))
+    app.state.job_tasks["job-api-rr03"] = task
+    try:
+        conflict = await client.post("/api/v1/jobs/job-api-rr03/rerun", json={})
+        assert conflict.status_code == 409
+    finally:
+        task.cancel()
+    assert len(fake.calls) == 1  # 拒绝路径均未触发重跑
+
+
 async def test_unknown_job_404(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:
-    """不存在的 job：统一 404。"""
+    """不存在的 job：统一 404（C-12 后 ID 须合法格式，故用合规前缀的不存在 ID）。"""
     _app, _fake, client, _repo_dir = env
-    assert (await client.get("/api/v1/jobs/nope")).status_code == 404
-    assert (await client.get("/api/v1/jobs/nope/report")).status_code == 404
-    assert (await client.post("/api/v1/jobs/nope/retest", json={})).status_code == 404
+    assert (await client.get("/api/v1/jobs/job-nope")).status_code == 404
+    assert (await client.get("/api/v1/jobs/job-nope/report")).status_code == 404
+    assert (await client.post("/api/v1/jobs/job-nope/retest", json={})).status_code == 404
 
 
 async def test_resume_false_wipes_job_dir(

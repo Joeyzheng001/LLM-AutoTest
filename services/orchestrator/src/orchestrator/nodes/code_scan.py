@@ -1,11 +1,12 @@
-"""code_scan 节点：调 java-parser 扫描多仓库 → code_inventory.json 落盘（F-CODE-01~03）。
+"""code_scan 节点：扫描多仓库 → code_inventory.json 落盘（F-CODE-01~03）。
 
-仓库四态口径（X-CODE-01~03）：
+C-13 语言分流：Java 仓库走 java-parser；Python 仓库走内置 AST 扫描器
+（python_scan，同口径产出）。仓库四态口径（X-CODE-01~03）不变：
 - error（X-CODE-01）→ 节点失败（客户端已透传契约错误码）；
 - empty（X-CODE-02）→ 正常态，流程继续，如实记入产物；
 - truncated（X-CODE-03）→ 正常态，截断范围记入 truncated_scope；
 - ok → 正常。
-全 error 兜底：java-parser 侧失败由 X-ORCH-03 表达。
+全 error 兕底：java-parser 侧失败由 X-ORCH-03 表达。
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import Engine, JobState
 from orchestrator.errors import X_ORCH_01, PipelineError
 from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
+from orchestrator.python_scan import scan_repository
 
 NODE_NAME = "code_scan"
 
@@ -30,7 +32,7 @@ async def run_code_scan(
     client: JavaParserClient,
     repositories: list[RepositoryInput],
 ) -> Path:
-    """执行 code_scan 全流程：跳序检查 → 运行 → 远端扫描 → 校验落盘 → 置完成。
+    """执行 code_scan 全流程：跳序检查 → 分语言扫描 → 校验落盘 → 置完成。
 
     Raises:
         PipelineError: X-CODE-01（仓库硬错误，透传乙段码）或 X-ORCH-03（通信失败）。
@@ -38,8 +40,20 @@ async def run_code_scan(
     engine.check_runnable(state, NODE_NAME)
     engine.mark_running(state, NODE_NAME)
     try:
-        response = await client.scan(state.job_id, repositories)
-        inventory = _extract_inventory(response, state.job_id)
+        java_repos = [r for r in repositories if r.language != "python"]
+        python_repos = [r for r in repositories if r.language == "python"]
+        repository_entries: list[dict[str, Any]] = []
+        if java_repos:
+            response = await client.scan(state.job_id, java_repos)
+            inventory = _extract_inventory(response, state.job_id)
+            repository_entries.extend(inventory.get("repositories", []))
+        for repo in python_repos:  # C-13：Python 内置 AST 扫描（同四态口径）
+            repository_entries.append(scan_repository(repo).inventory_entry)
+        inventory = {
+            "schema_version": "1.0",
+            "job_id": state.job_id,
+            "repositories": repository_entries,
+        }
         _check_repo_errors(inventory)
         path = store.write(state.job_id, "code_inventory.json", inventory)
         engine.mark_completed(state, NODE_NAME)

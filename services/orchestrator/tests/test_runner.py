@@ -450,6 +450,18 @@ async def test_runner_force_node_archives_old_artifacts(tmp_path: Path) -> None:
         ]},
         ensure_ascii=False,
     )
+    # 级联失效后 code_review 重跑：映射须覆盖新增 REQ-002（R-REVW-01 口径）
+    scripts["code_review"] = json.dumps(
+        {"mappings": _REVIEW["mappings"] + [
+            {
+                "requirement_id": "REQ-002",
+                "interface_id": "IF-REST-001",
+                "status": "missing",
+                "evidence": {"note": "force-node 重跑新增需求"},
+            }
+        ]},
+        ensure_ascii=False,
+    )
     llm2 = StubLlm(scripts)
     runner.llm = llm2
     outcome = await runner.run(
@@ -457,13 +469,21 @@ async def test_runner_force_node_archives_old_artifacts(tmp_path: Path) -> None:
     )
 
     assert outcome.ok
-    # 旧产物已归档（留痕红线：禁止原地覆盖）
-    assert (job_dir / "archive" / "req_parse" / "requirement_items.json").is_file()
+    # 旧产物已归档（C-14：时间戳前缀防多次重跑覆盖，禁止原地覆盖）
+    archived = sorted((job_dir / "archive" / "req_parse").glob("*_requirement_items.json"))
+    assert len(archived) == 1, f"应恰有一份带时间戳前缀的归档：{archived}"
     # 新产物是重跑结果（2 条需求项）
     new_items = json.loads((job_dir / "requirement_items.json").read_text(encoding="utf-8"))
     assert len(new_items["items"]) == 2
-    # force 节点被真实重跑（LLM 再次调用 req_parse）
-    assert llm2.calls == ["req_parse"]
+    # force 节点被真实重跑（req_parse 最先），下游 LLM 节点因级联失效全部重跑
+    assert llm2.calls[0] == "req_parse"
+    # C-14 级联失效：下游节点旧产物同时归档、重跑而非跳过
+    assert (job_dir / "archive" / "test_report").is_dir()
+    assert sorted((job_dir / "archive" / "test_report").glob("*_test_report.md"))
+    assert sorted((job_dir / "archive" / "test_report").glob("*_metrics.json"))
+    assert llm2.calls.count("interface_reconstruct") == 1
+    assert llm2.calls.count("code_review") == 1
+    assert llm2.calls.count("testcase_generate") == 1
 
 
 async def test_runner_force_node_rejects_unknown_node(tmp_path: Path) -> None:

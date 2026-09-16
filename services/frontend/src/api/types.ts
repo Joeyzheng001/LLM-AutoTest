@@ -56,6 +56,13 @@ export interface ReviewLogResponse {
   rerun: string | null
 }
 
+// C-14：重跑入队响应（from_node 缺省 = req_parse 全量级联失效）
+export interface RerunResponse {
+  job_id: string
+  status: 'rerun-queued'
+  from_node: string
+}
+
 export interface RepoConfig {
   name: string
   path: string
@@ -63,6 +70,7 @@ export interface RepoConfig {
   baseline_branch?: string // C-09：基线分支（非空 → 双分支 diff 变更范围视图）
   is_fallback: boolean
   include_paths?: string[]
+  language?: 'java' | 'python' // C-13：仓库语言（java → java-parser；python → 内置 AST 扫描）
 }
 
 // C-10：多需求文档（docs 列表；后端兼容旧单文档字段，前端统一走新口径）

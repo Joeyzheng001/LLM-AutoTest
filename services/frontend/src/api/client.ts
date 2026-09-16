@@ -16,6 +16,7 @@ import type {
   RegressionIndexPayload,
   RemovedFile,
   RepoInventory,
+  RerunResponse,
   TestCaseEntry,
   UnmatchedChangedFile,
   RequirementItem,
@@ -57,6 +58,14 @@ export function submitJob(payload: JobSubmitPayload): Promise<JobSubmitResponse>
 
 export function retestFull(jobId: string): Promise<RetestResponse> {
   return request(`/api/v1/jobs/${jobId}/retest`, { method: 'POST', body: '{}' })
+}
+
+// C-14：重跑（fromNode 缺省 = 全量；目标节点及其下游级联失效后重跑）
+export function rerunJob(jobId: string, fromNode?: string): Promise<RerunResponse> {
+  return request(`/api/v1/jobs/${jobId}/rerun`, {
+    method: 'POST',
+    body: JSON.stringify(fromNode ? { from_node: fromNode } : {}),
+  })
 }
 
 export function retestSingle(jobId: string, defectId: string): Promise<RetestResponse> {

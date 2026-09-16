@@ -15,9 +15,10 @@ import logging
 import sys
 from pathlib import Path
 
-from orchestrator.artifacts import ArtifactStore
+from orchestrator.artifacts import ArtifactStore, ensure_job_id
 from orchestrator.config import Settings
 from orchestrator.engine import Engine
+from orchestrator.errors import PipelineError
 from orchestrator.javaparser_client import JavaParserClient
 from orchestrator.pipeline import NodeStatus
 from orchestrator.runner import (
@@ -43,12 +44,11 @@ def _build_runner(settings: Settings) -> PipelineRunner:
 
 async def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
     """run 子命令：跑全流程（状态已存在时自动断点续跑）。"""
-    # 横切 ID 约定（docs/11）：产物 schema 要求 job_id 匹配 ^job-；入口拒绝免级联降级
-    if not args.job_id.startswith("job-"):
-        logger.error(
-            "job_id 须以 job- 开头（横切 ID 约定，产物 schema ^job-）——当前值：%s",
-            args.job_id,
-        )
+    # C-12：完整正则校验（与 ArtifactStore 同源）；入口拒绝免产物校验级联降级
+    try:
+        ensure_job_id(args.job_id)
+    except PipelineError as exc:
+        logger.error(exc.message)
         return 2
     doc_paths = [Path(doc) for doc in args.doc]
     missing = [str(path) for path in doc_paths if not path.is_file()]

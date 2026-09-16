@@ -11,6 +11,7 @@ interface RepoRow {
   path: string
   branch: string
   baselineBranch: string
+  language: 'java' | 'python' // C-13：仓库语言（扫描器分流）
   isFallback: boolean
 }
 
@@ -30,8 +31,22 @@ const form = reactive({
 const docFiles = reactive<DocRow[]>([])
 const docError = ref('')
 const repos = reactive<RepoRow[]>([
-  { name: 'user-service', path: '', branch: 'main', baselineBranch: '', isFallback: false },
-  { name: 'order-center', path: '', branch: 'main', baselineBranch: '', isFallback: false },
+  {
+    name: 'user-service',
+    path: '',
+    branch: 'main',
+    baselineBranch: '',
+    language: 'java',
+    isFallback: false,
+  },
+  {
+    name: 'order-center',
+    path: '',
+    branch: 'main',
+    baselineBranch: '',
+    language: 'java',
+    isFallback: false,
+  },
 ])
 
 const submitting = ref(false)
@@ -39,7 +54,14 @@ const submitError = ref('')
 const submittedJobId = ref('')
 
 function addRepo(): void {
-  repos.push({ name: '', path: '', branch: 'main', baselineBranch: '', isFallback: false })
+  repos.push({
+    name: '',
+    path: '',
+    branch: 'main',
+    baselineBranch: '',
+    language: 'java',
+    isFallback: false,
+  })
 }
 
 function removeRepo(index: number): void {
@@ -119,6 +141,8 @@ async function handleSubmit(): Promise<void> {
         // C-09：基线分支可选（空 = 不比对；非空 → code_review 派生变更范围视图）
         ...(row.baselineBranch.trim() ? { baseline_branch: row.baselineBranch.trim() } : {}),
         is_fallback: row.isFallback,
+        // C-13：仓库语言（java → java-parser；python → 内置 AST 扫描 Django/FastAPI/Flask）
+        language: row.language,
       })),
       rest_url: form.restUrl.trim(),
       resume: form.resume,
@@ -179,8 +203,8 @@ async function handleSubmit(): Promise<void> {
         </header>
 
         <div class="repo-head">
-          <span>仓库名</span><span>本地绝对路径</span><span>分支</span><span>基线分支</span
-          ><span>兜底</span><span />
+          <span>仓库名</span><span>本地绝对路径</span><span>语言</span><span>分支</span
+          ><span>基线分支</span><span>兑底</span><span />
         </div>
 
         <div v-for="(row, index) in repos" :key="index" class="repo-row">
@@ -198,6 +222,14 @@ async function handleSubmit(): Promise<void> {
             placeholder="/Users/zz/code/user-service"
             :aria-label="`仓库 ${index + 1} 路径`"
           />
+          <select
+            v-model="row.language"
+            class="mono repo-language"
+            :aria-label="`仓库 ${index + 1} 语言`"
+          >
+            <option value="java">Java</option>
+            <option value="python">Python</option>
+          </select>
           <input
             v-model="row.branch"
             type="text"
@@ -233,7 +265,8 @@ async function handleSubmit(): Promise<void> {
         </p>
         <p class="switch-note">
           基线分支（C-09，可选）：非空时后端按 merge-base 做双分支 diff，CodeReview
-          页展示变更范围视图；留空 = 不比对。仓库须为本地 Git 仓库且分支须存在。
+          页展示变更范围视图；留空 = 不比对。仓库须为本地 Git 仓库且分支须存在。语言（C-13）：Java
+          仓走 java-parser；Python 仓（Django / FastAPI / Flask）走内置 AST 扫描，同口径产出。
         </p>
       </section>
 
@@ -392,7 +425,7 @@ async function handleSubmit(): Promise<void> {
 .repo-head,
 .repo-row {
   display: grid;
-  grid-template-columns: 150px 1fr 90px 90px 40px 56px;
+  grid-template-columns: 150px 1fr 92px 90px 90px 40px 56px;
   gap: var(--space-2);
   align-items: center;
 }
@@ -429,6 +462,23 @@ async function handleSubmit(): Promise<void> {
 
 .repo-row input[type='checkbox'] {
   accent-color: var(--warning);
+}
+
+/* C-13：语言选择（与文本框同视觉口径） */
+.repo-language {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font-size: var(--text-sm);
+}
+
+.repo-language:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+  outline: none;
 }
 
 @media (max-width: 860px) {

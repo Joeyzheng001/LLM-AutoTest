@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,10 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from orchestrator.errors import X_ORCH_01, PipelineError
+
+# C-12 安全：job_id 完整正则（字符集不含路径分隔符与 ..；长度 ≤64+4）。
+# 单点下沉在 job_dir——CLI/API/内部调用统一兜底，防目录穿越参与 rmtree/写入。
+JOB_ID_RE = re.compile(r"^job-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 # docs/12 §二产物清单与写方（service 级）：甲/乙产出的数据经 orchestrator 落盘，
 # 丙负责的执行侧产物由 test-executor 直接写入产物卷。
@@ -52,12 +57,28 @@ _WRITE_OWNERS: dict[str, str] = {
 _SUBDIRS: tuple[str, ...] = ("scripts", "fixtures", "logs", "archive")
 
 
+def ensure_job_id(job_id: str) -> str:
+    """校验 job_id（C-12）：不合规即拒（宁停不猜），返回原值。
+
+    非法示例：`job-../../x`（目录穿越）、中文/空格/超长——均无法成为产物目录名。
+    """
+    if not JOB_ID_RE.match(job_id):
+        raise PipelineError(
+            code=X_ORCH_01,
+            message=(
+                f"job_id 非法（C-12 安全口径 ^job-[A-Za-z0-9][A-Za-z0-9._-]{{0,63}}）：{job_id!r}；"
+                "留空可自动生成 job-web-…"
+            ),
+        )
+    return job_id
+
+
 class ArtifactStore:
     """产物卷访问器（每个服务实例持有自己的 service 名）。"""
 
     def __init__(self, root: Path, schemas_dir: Path, service: str) -> None:
         """root 为产物卷根；service 用于写权校验（orchestrator / test-executor）。"""
-        self._root = root
+        self._root = root.resolve()
         self._schemas_dir = schemas_dir
         self._service = service
 
@@ -69,8 +90,15 @@ class ArtifactStore:
         return job_dir
 
     def job_dir(self, job_id: str) -> Path:
-        """job 目录路径（不保证存在）。"""
-        return self._root / job_id
+        """job 目录路径（不保证存在）；C-12：入口校验 + 根包含断言（防穿越兑底）。"""
+        ensure_job_id(job_id)
+        candidate = (self._root / job_id).resolve()
+        if candidate != self._root and self._root not in candidate.parents:
+            raise PipelineError(
+                code=X_ORCH_01,
+                message=f"job 目录逸出产物卷根（C-12）：{candidate} 不在 {self._root} 内",
+            )
+        return candidate
 
     def write(self, job_id: str, filename: str, payload: dict[str, Any]) -> Path:
         """写入产物：先过 Schema 校验，再原子落盘（tmp + replace）。

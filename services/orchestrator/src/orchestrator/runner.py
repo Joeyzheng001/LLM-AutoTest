@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import shutil
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -96,7 +97,8 @@ class PipelineRunner:
         """
         state = self._open_or_init(job_id)
         if force_node is not None:
-            self._archive_node_artifacts(state, force_node)
+            # C-14：级联失效——目标节点及全部下游归档重置（防新旧数据混用）
+            self._reset_from_node(state, force_node)
         llm = LlmClient(
             settings=self._settings,
             job_id=job_id,
@@ -228,21 +230,37 @@ class PipelineRunner:
             return self._engine.open_job(job_id)
         return self._engine.init_job(job_id)
 
-    def _archive_node_artifacts(self, state: JobState, node_name: str) -> None:
-        """force-node 前置：旧产物移入 archive/<node>/，节点状态回 pending。"""
-        if node_name not in NODE_ARTIFACTS:
+    def _reset_from_node(self, state: JobState, node_name: str) -> None:
+        """force_node 级联失效（C-14）：从目标节点起归档并重置全部下游。
+
+        - 归档 archive/<node>/<时间戳>_<filename>（多次重跑不互相覆盖）；
+        - status→PENDING、attempts→0、error 清空（重试循环可重新进入）；
+        - 降级清单同步剔除被重置节点（旧降级原因已失效）。
+        只重置目标节点会让下游旧产物被续跑跳过 → 新旧数据混用
+        （如驳回重生成用例后，执行/报告/缺陷仍是旧数据）。
+        """
+        if node_name not in NODE_ORDER:
             raise PipelineError(
                 code="X-ORCH-01", message=f"未知节点：{node_name}", node_id=node_name
             )
         job_dir = self._orch_store.job_dir(state.job_id)
-        archive_dir = job_dir / "archive" / node_name
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        for filename in NODE_ARTIFACTS[node_name]:
-            source = job_dir / filename
-            if source.is_file():
-                shutil.move(str(source), str(archive_dir / filename))
-        node = state.node(node_name)
-        node.status = NodeStatus.PENDING
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        reset_names = NODE_ORDER[NODE_ORDER.index(node_name) :]
+        for name in reset_names:
+            archive_dir = job_dir / "archive" / name
+            for filename in NODE_ARTIFACTS[name]:
+                source = job_dir / filename
+                if source.is_file():
+                    archive_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(source), str(archive_dir / f"{stamp}_{filename}"))
+            node = state.node(name)
+            node.status = NodeStatus.PENDING
+            node.attempts = 0
+            node.error = None
+            node.updated_at = datetime.now(UTC).isoformat()
+        state.degraded = tuple(
+            entry for entry in state.degraded if entry.get("node") not in reset_names
+        )
         self._engine._save(state)  # 归档后立即持久化
 
 
@@ -268,7 +286,8 @@ def repository_inputs_from_config(
     """任务配置（JSON/CLI 参数）→ RepositoryInput 列表。
 
     相对路径按当前工作目录解析为绝对路径（java-parser 侧按绝对路径定位仓库）；
-    baseline_branch 可选（C-09 双分支 diff，空字符串归 None 不比对）。
+    baseline_branch 可选（C-09 双分支 diff，空字符串归 None 不比对）；
+    language 可选（C-13：java/python，缺省 java）。
     """
     inputs: list[RepositoryInput] = []
     for repo in repositories:
@@ -284,6 +303,7 @@ def repository_inputs_from_config(
                 baseline_branch=baseline,
                 is_fallback=bool(repo.get("is_fallback", False)),
                 include_paths=tuple(repo.get("include_paths", ())),
+                language=str(repo.get("language", "java")),
             )
         )
     return inputs

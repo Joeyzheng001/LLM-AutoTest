@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -267,3 +268,90 @@ async def test_code_scan_skip_order_guard(env: tuple[Engine, ArtifactStore]) -> 
     assert err.value.code == X_ORCH_02
     # 未发起远端调用即被拒（code_scan 仍 pending）
     assert state.node("code_scan").status is NodeStatus.PENDING
+
+
+async def test_code_scan_python_only_skips_java_parser(
+    env: tuple[Engine, ArtifactStore], tmp_path: Path
+) -> None:
+    """C-13：纯 Python 仓库不走 java-parser（内置 AST 扫描同口径产出）。"""
+    engine, store = env
+    state = engine.open_job(_JOB)
+
+    def no_call(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"纯 Python 仓库不应调用 java-parser：{request.url.path}")
+
+    py_root = tmp_path / "py-repo"
+    py_root.mkdir()
+    (py_root / "app.py").write_text(
+        'from fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get("/items")\n'
+        "def list_items():\n    return []\n",
+        encoding="utf-8",
+    )
+    py_repos = [
+        RepositoryInput(name="py-repo", path=str(py_root), branch="main", language="python")
+    ]
+
+    path = await run_code_scan(engine, state, store, _client(no_call), py_repos)
+
+    assert path.is_file()
+    payload = store.read_json(_JOB, "code_inventory.json")
+    assert len(payload["repositories"]) == 1
+    entry = payload["repositories"][0]
+    assert entry["language"] == "python"
+    assert entry["status"] == "ok"
+    assert entry["file_count"] == 1
+    assert state.node("code_scan").status is NodeStatus.COMPLETED
+
+
+async def test_code_scan_mixed_languages_merge(
+    env: tuple[Engine, ArtifactStore], tmp_path: Path
+) -> None:
+    """C-13：Java + Python 混合仓库——java-parser 只收 Java 仓，条目分序拼接。"""
+    engine, store = env
+    state = engine.open_job(_JOB)
+    seen_repos: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/v1/scan-jobs":
+            seen_repos.append([r["name"] for r in json.loads(request.content)["repositories"]])
+            return httpx.Response(202, json={"job_id": _SCAN_JOB_ID, "status": "queued"})
+        if request.method == "GET" and request.url.path == f"/api/v1/scan-jobs/{_SCAN_JOB_ID}":
+            return httpx.Response(
+                200,
+                json={
+                    "job_id": _SCAN_JOB_ID,
+                    "status": "completed",
+                    "code_inventory": _GOOD_INVENTORY,
+                },
+            )
+        raise AssertionError(f"非预期请求：{request.method} {request.url.path}")
+
+    py_root = tmp_path / "py-repo"
+    py_root.mkdir()
+    (py_root / "urls.py").write_text(
+        "from django.urls import path\nfrom views import health\n"
+        "urlpatterns = [path('health', health)]\n",
+        encoding="utf-8",
+    )
+    (py_root / "views.py").write_text("def health(request):\n    return None\n", encoding="utf-8")
+    mixed = [
+        RepositoryInput(
+            name="user-service", path="/data/repos/user-service", branch="release/v2.3"
+        ),
+        RepositoryInput(name="py-repo", path=str(py_root), branch="main", language="python"),
+    ]
+
+    path = await run_code_scan(engine, state, store, _client(handler), mixed)
+
+    assert path.is_file()
+    # java-parser 请求体只含 Java 仓（language 不透传，契约不变）
+    assert seen_repos == [["user-service"]]
+    payload = store.read_json(_JOB, "code_inventory.json")
+    assert [repo["name"] for repo in payload["repositories"]] == [
+        "user-service",
+        "fallback-demo",
+        "py-repo",
+    ]
+    py_entry = payload["repositories"][2]
+    assert py_entry["language"] == "python"
+    assert py_entry["status"] == "ok"

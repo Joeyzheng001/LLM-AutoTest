@@ -27,7 +27,11 @@ DEFAULT_MAX_WAIT_S = 600.0  # job 总等待上限（超时算 X-ORCH-03）
 
 @dataclass(frozen=True)
 class RepositoryInput:
-    """契约 RepositoryInput：路径 + 分支（07 遗留事项 #1）；基线分支可选（C-09）。"""
+    """契约 RepositoryInput：路径 + 分支（07 遗留事项 #1）；基线分支可选（C-09）。
+
+    language（C-13）：java → java-parser；python → orchestrator 内置 AST 扫描
+    （to_dict 不含 language——java-parser 契约不变，分流在节点层完成）。
+    """
 
     name: str
     path: str
@@ -35,6 +39,7 @@ class RepositoryInput:
     baseline_branch: str | None = None
     is_fallback: bool = False
     include_paths: tuple[str, ...] = field(default_factory=tuple)
+    language: str = "java"
 
     def to_dict(self) -> dict[str, Any]:
         """请求体序列化（可选字段仅在非默认时出现）。"""

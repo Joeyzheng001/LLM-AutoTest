@@ -16,6 +16,11 @@
         "required": ["name", "path", "branch", "is_fallback", "status", "file_count"],
         "properties": {
           "name": { "type": "string" },
+          "language": {
+            "type": "string",
+            "enum": ["java", "python"],
+            "description": "仓库语言（C-13：java → java-parser；python → 内置 AST 扫描；缺省 java）"
+          },
           "path": { "type": "string", "description": "已检出正确分支的本地路径（07 遗留事项 #1）" },
           "branch": { "type": "string" },
           "baseline_branch": {

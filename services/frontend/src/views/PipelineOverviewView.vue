@@ -3,7 +3,7 @@
 // 运行中每 3s 轮询，离开页面即停）+ 接口还原清单（interfaces.json，代码溯源 F-REV-04）+
 // 自动化率卡片（metrics.json 后端汇总，前端不计算）。
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { getInterfaces, getJobStatus, getMetrics, listJobs } from '../api/client'
+import { getInterfaces, getJobStatus, getMetrics, listJobs, rerunJob } from '../api/client'
 import type { JobListItem, JobStatus, MetricsPayload, NodeState, InterfaceDef } from '../api/types'
 import { NODE_LABELS, STATUS_LABELS } from '../api/labels'
 
@@ -20,6 +20,34 @@ const metrics = ref<MetricsPayload | null>(null)
 const interfaces = ref<InterfaceDef[]>([])
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+
+/* ---- 重跑（C-14） ---- */
+
+const rerunning = ref(false)
+const rerunError = ref('')
+const rerunFromNode = ref('req_parse')
+
+// 重跑起始节点选项（req_parse = 全量；其余从该节点起级联失效下游）
+const rerunOptions = Object.entries(NODE_LABELS).map(([name, label]) => ({
+  name,
+  label: name === 'req_parse' ? '全量（从需求解析起）' : `从「${label}」起`,
+}))
+
+async function handleRerun(): Promise<void> {
+  if (!selectedId.value || rerunning.value || status.value?.running) return
+  rerunning.value = true
+  rerunError.value = ''
+  try {
+    const from = rerunFromNode.value || 'req_parse'
+    await rerunJob(selectedId.value, from === 'req_parse' ? undefined : from)
+    // 入队后立即刷新：级联失效 → 节点状态翻转为运行中 → watch 接管轮询
+    await refreshDetail()
+  } catch (err) {
+    rerunError.value = err instanceof Error ? err.message : '重跑失败'
+  } finally {
+    rerunning.value = false
+  }
+}
 
 async function refreshList(keepSelection: boolean): Promise<void> {
   listError.value = ''
@@ -157,7 +185,27 @@ function locationText(item: InterfaceDef): string {
       <header class="detail-head">
         <h2 class="mono">{{ status.job_id }}</h2>
         <span class="mono detail-meta">{{ formatTime(status.updated_at) }}</span>
+        <div class="rerun-controls">
+          <select v-model="rerunFromNode" class="mono rerun-select" aria-label="重跑起始节点">
+            <option v-for="option in rerunOptions" :key="option.name" :value="option.name">
+              {{ option.label }}
+            </option>
+          </select>
+          <button
+            class="rerun-btn"
+            type="button"
+            :disabled="rerunning || status.running"
+            @click="handleRerun"
+          >
+            {{ rerunning ? '重跑中…' : '重跑' }}
+          </button>
+        </div>
       </header>
+
+      <p v-if="rerunError" class="state-error" role="alert">{{ rerunError }}</p>
+      <p class="rerun-note">
+        重跑会将目标节点及其全部下游旧产物归档（带时间戳防覆盖）并重置后重跑（C-14，避免新旧数据混用）。
+      </p>
 
       <p v-if="statusError" class="state-error" role="alert">{{ statusError }}</p>
 
@@ -377,6 +425,50 @@ function locationText(item: InterfaceDef): string {
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
   color: var(--warning);
+}
+
+/* 重跑（C-14） */
+.rerun-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.rerun-select {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  max-width: 220px;
+}
+
+.rerun-btn {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.rerun-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.rerun-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rerun-note {
+  margin: calc(-1 * var(--space-3)) 0 var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-3);
 }
 
 /* 自动化率 */

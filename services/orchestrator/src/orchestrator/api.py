@@ -29,9 +29,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from orchestrator.artifacts import ArtifactStore
+from orchestrator.artifacts import ArtifactStore, ensure_job_id
 from orchestrator.config import Settings
 from orchestrator.engine import NODE_ARTIFACTS, Engine
+from orchestrator.errors import PipelineError
 from orchestrator.javaparser_client import JavaParserClient
 from orchestrator.nodes.retest_regression import retest_defects
 from orchestrator.pipeline import NODE_ORDER, PipelineState
@@ -46,6 +47,11 @@ _ARTIFACT_WHITELIST: frozenset[str] = frozenset(
 
 _DOC_SUFFIXES = frozenset({".md", ".docx", ".xlsx"})
 
+# C-12 限额：文档数 / 单文档解码后字节 / 请求体字节（base64 膨胀约 4/3）
+MAX_DOCS = 10
+MAX_DOC_BYTES = 10 * 1024 * 1024
+MAX_REQUEST_BYTES = 64 * 1024 * 1024
+
 
 class RepoConfig(BaseModel):
     """仓库配置（与 java-parser RepositoryInput 对齐；path 须为绝对路径）。"""
@@ -56,6 +62,8 @@ class RepoConfig(BaseModel):
     baseline_branch: str | None = None  # C-09：基线分支（可选，指定则产出变更清单）
     is_fallback: bool = False
     include_paths: list[str] = Field(default_factory=list)
+    # C-13：仓库语言（java → java-parser；python → 内置 AST 扫描器）
+    language: str = "java"
 
 
 class DocInput(BaseModel):
@@ -95,6 +103,12 @@ class ReviewLogRequest(BaseModel):
     note: str = ""
 
 
+class RerunRequest(BaseModel):
+    """重跑请求（C-14）：from_node 缺省 = 全量（从 req_parse 级联失效）。"""
+
+    from_node: str | None = None
+
+
 def create_app(settings: Settings, runner: PipelineRunner | None = None) -> FastAPI:
     """构建 FastAPI 应用实例（runner 可注入：测试替身）。"""
     app = FastAPI(title="LLM-AutoTest orchestrator", version="0.2.0")
@@ -115,6 +129,25 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         runner = PipelineRunner(settings, app.state.engine, orch_store, te_store, java_client)
     app.state.runner = runner
 
+    # C-12：ArtifactStore/节点层拍出的 PipelineError 统一映射 400（协议层不炸 500）
+    @app.exception_handler(PipelineError)
+    async def _pipeline_error_handler(
+        _request: Any, exc: PipelineError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": exc.message})
+
+    # C-12：请求体大小限制（超大提交在解析前拒绝，色 413）
+    @app.middleware("http")
+    async def _limit_request_body(request: Any, call_next: Any) -> Any:
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > MAX_REQUEST_BYTES:
+            limit_mb = MAX_REQUEST_BYTES // (1024 * 1024)
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"请求体超过上限 {limit_mb} MB（C-12）"},
+            )
+        return await call_next(request)
+
     # ---- 基础端点 ----
 
     @app.get("/health")
@@ -134,16 +167,11 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
     async def submit_job(request: JobSubmitRequest) -> dict[str, Any]:
         """提交全流程 job：校验 → 落盘输入 → 后台驱动 PipelineRunner。"""
         job_id = request.job_id or f"job-web-{uuid.uuid4().hex[:12]}"
-        # 横切 ID 约定（docs/11）：所有产物 schema 要求 job_id 匹配 ^job-；
-        # 在提交入口拒绝（宁停不猜），避免跑到第 N 个节点才因产物校验级联降级
-        if not job_id.startswith("job-"):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"job_id 须以 job- 开头（横切 ID 约定，产物 schema ^job-）"
-                    f"——当前值：{job_id}；留空可自动生成 job-web-…"
-                ),
-            )
+        # C-12：完整正则校验（ensure_job_id 同源；不合规 400，免产物校验级联降级）
+        try:
+            ensure_job_id(job_id)
+        except PipelineError as exc:
+            raise HTTPException(status_code=400, detail=exc.message) from exc
         if _task_alive(app, job_id):
             raise HTTPException(status_code=409, detail=f"job {job_id} 正在运行中")
         if not request.resume:
@@ -154,6 +182,14 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 shutil.rmtree(existing)
         doc_paths = _save_docs(orch_store, job_id, _request_docs(request))
         for repo in request.repos:
+            if repo.language not in ("java", "python"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"仓库 {repo.name} 的 language 仅支持 java/python（C-13）："
+                        f"{repo.language}"
+                    ),
+                )
             repo_path = Path(repo.path)
             if not repo_path.is_absolute():
                 raise HTTPException(
@@ -287,6 +323,28 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "warnings": result["warnings"],
         }
 
+    # ---- 重跑（C-14）----
+
+    @app.post("/api/v1/jobs/{job_id}/rerun")
+    async def rerun_job(job_id: str, request: RerunRequest) -> dict[str, Any]:
+        """重跑（C-14）：from_node 缺省 = 全量（req_parse 级联失效）；
+
+        级联失效：目标节点及其全部下游产物归档（带时间戳）并重置后重跑，
+        避免新旧数据混用（F-ORCH-02 语义修正，docs/13 C-14）。
+        """
+        _require_job(app, job_id)
+        if _task_alive(app, job_id):
+            raise HTTPException(status_code=409, detail=f"job {job_id} 正在运行中")
+        force_node = request.from_node or "req_parse"
+        if force_node not in NODE_ORDER:
+            raise HTTPException(
+                status_code=400,
+                detail=f"from_node 须为 9 节点之一：{force_node}（可选：{'、'.join(NODE_ORDER)}）",
+            )
+        _load_job_input(orch_store, job_id)  # 非 Web 提交无原始输入 → 409 同复测口径
+        _spawn_run(app, job_id, force_node=force_node)
+        return {"job_id": job_id, "status": "rerun-queued", "from_node": force_node}
+
     # ---- 人工审核（F-REVW-06）----
 
     @app.post("/api/v1/jobs/{job_id}/review-log")
@@ -340,6 +398,24 @@ def _require_job(app: FastAPI, job_id: str) -> Path:
     return job_dir
 
 
+def _check_doc_name(doc_name: str) -> None:
+    """C-12：文档名仅允许纯 basename（拒绝对路径/斜杠/反斜杠/..与控制字符）。"""
+    problems: list[str] = []
+    if not doc_name or len(doc_name) > 128:
+        problems.append("非空且长度 ≤128")
+    if doc_name != Path(doc_name).name or "/" in doc_name or "\\" in doc_name:
+        problems.append("须为纯文件名（禁止路径分隔符/绝对路径）")
+    if ".." in doc_name or doc_name in {".", ".."}:
+        problems.append("禁止 .. 片段")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in doc_name):
+        problems.append("禁止控制字符")
+    if problems:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文档名非法（C-12 安全口径 {'；'.join(problems)}）：{doc_name!r}",
+        )
+
+
 def _request_docs(request: JobSubmitRequest) -> list[DocInput]:
     """归一提交文档：docs 优先；否则旧单文档字段；两组均空 → 400。"""
     if request.docs:
@@ -356,12 +432,19 @@ def _request_docs(request: JobSubmitRequest) -> list[DocInput]:
 def _save_docs(orch_store: ArtifactStore, job_id: str, docs: list[DocInput]) -> list[Path]:
     """逐份校验并落盘上传文档（input/ 子目录），返回路径列表（req_parse 按后缀解析）。
 
+    C-12 安全：文档名仅允许纯 basename（拒绝绝对路径/斜杠/..）；限额：
+    文档数 ≤ MAX_DOCS、单文档解码后 ≤ MAX_DOC_BYTES。
     重名文档自动加序号后缀（不影响后缀识别）；同一请求内两格式同内容时
     以落盘顺序为准（LLM 单次解析全部拼接）。
     """
+    if len(docs) > MAX_DOCS:
+        raise HTTPException(
+            status_code=400, detail=f"需求文档数超过上限 {MAX_DOCS} 份（C-12）"
+        )
     paths: list[Path] = []
     used_names: set[str] = set()
     for doc in docs:
+        _check_doc_name(doc.doc_name)
         suffix = Path(doc.doc_name).suffix.lower()
         if suffix not in _DOC_SUFFIXES:
             raise HTTPException(
@@ -376,6 +459,14 @@ def _save_docs(orch_store: ArtifactStore, job_id: str, docs: list[DocInput]) -> 
             ) from exc
         if not content:
             raise HTTPException(status_code=400, detail=f"文档内容为空：{doc.doc_name}")
+        if len(content) > MAX_DOC_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"文档 {doc.doc_name} 解码后超过上限 "
+                    f"{MAX_DOC_BYTES // (1024 * 1024)} MB（C-12）"
+                ),
+            )
         # 重名去重：a.md + a.md → a.md + a-2.md（逐份落盘不覆盖）
         name = doc.doc_name
         if name in used_names:
