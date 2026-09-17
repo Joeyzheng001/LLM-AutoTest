@@ -55,6 +55,7 @@ async def run_retest_regression(
     rest_base_url: str,
     transport: httpx.AsyncBaseTransport | None = None,
     auth: dict[str, Any] | None = None,
+    insecure_tls: bool = True,
 ) -> Path:
     """复测全量缺陷并沉淀回归资产：defects.json（状态流转）+ regression_index.json。
 
@@ -73,7 +74,14 @@ async def run_retest_regression(
     engine.check_runnable(state, NODE_NAME)
     engine.mark_running(state, NODE_NAME)
     try:
-        result = await retest_defects(store, state.job_id, rest_base_url, transport, auth=auth)
+        result = await retest_defects(
+            store,
+            state.job_id,
+            rest_base_url,
+            transport,
+            auth=auth,
+            insecure_tls=insecure_tls,
+        )
         engine.mark_completed(state, NODE_NAME)
         return Path(str(result["regression_index_path"]))
     except PipelineError as exc:
@@ -88,6 +96,7 @@ async def retest_defects(
     transport: httpx.AsyncBaseTransport | None = None,
     only_defect_ids: set[str] | None = None,
     auth: dict[str, Any] | None = None,
+    insecure_tls: bool = True,
 ) -> dict[str, Any]:
     """复测核心（供 9 节点流水线与 REST API 单条复测共用）。
 
@@ -116,12 +125,11 @@ async def retest_defects(
         str(i.get("id", "")): i for i in interfaces.get("interfaces", []) if i.get("id")
     }
 
-    # C-15：登录注入（与 auto_execute 同口径）
+    # REST 证书策略与登录独立，复测与首次执行同一口径。
     auth_headers: dict[str, str] = {}
-    verify = True
+    verify = not insecure_tls
     if auth:
         auth_headers = await login_for_headers(auth, transport)
-        verify = not bool(auth.get("insecure_tls", True))
 
     rest_ready = await probe_rest(rest_base_url, transport, verify)
     rest_runner = RestRunner(

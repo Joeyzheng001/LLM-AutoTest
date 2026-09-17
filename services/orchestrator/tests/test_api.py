@@ -41,6 +41,7 @@ class FakeRunner:
         doc_paths: list[Path],
         repositories: list[Any],
         rest_base_url: str,
+        rest_insecure_tls: bool = True,
         force_node: str | None = None,
         auth: dict[str, Any] | None = None,
         llm_config: dict[str, Any] | None = None,
@@ -52,6 +53,7 @@ class FakeRunner:
                 "doc_paths": [str(path) for path in doc_paths],
                 "repos": [(r.name, r.path) for r in repositories],
                 "rest_base_url": rest_base_url,
+                "rest_insecure_tls": rest_insecure_tls,
                 "force_node": force_node,
                 "auth": auth,
                 "llm_config": llm_config,
@@ -254,10 +256,12 @@ async def test_submit_job_happy_path(
     assert call["doc_paths"] == [str(job_dir / "input" / "requirements.md")]
     assert call["repos"] == [("repo-a", str(repo_dir))]
     assert call["rest_base_url"] == "http://127.0.0.1:9000"
+    assert call["rest_insecure_tls"] is True
     assert (job_dir / "input" / "requirements.md").read_text(encoding="utf-8") == _DOC
     saved = json.loads((job_dir / "job_input.json").read_text(encoding="utf-8"))
     assert saved["doc_paths"] == [str(job_dir / "input" / "requirements.md")]
     assert saved["rest_url"] == "http://127.0.0.1:9000"
+    assert saved["rest_insecure_tls"] is True
 
 
 async def test_submit_job_multi_docs(
@@ -607,6 +611,7 @@ async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
 
     config = (await client.get("/api/v1/jobs/job-api-edit1/configuration")).json()
     assert config["documents"] == ["requirements.md"]
+    assert config["rest_insecure_tls"] is True
     assert config["auth"]["password_configured"] is True
     assert "password" not in config["auth"]
     assert config["llm"]["api_key_configured"] is True
@@ -617,6 +622,7 @@ async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
         "keep_existing_docs": True,
         "repos": [{"name": "repo-updated", "path": str(repo_dir), "branch": "feature/x"}],
         "rest_url": "https://example.test:8443",
+        "rest_insecure_tls": False,
         "resume": False,
         "auth": {"login_url": "https://example.test/login/", "username": "admin"},
         "llm": {
@@ -630,6 +636,7 @@ async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
     assert response.json()["from_node"] == "req_parse"
     await _await_task(app, "job-api-edit1")
     assert fake.calls[-1]["force_node"] == "req_parse"
+    assert fake.calls[-1]["rest_insecure_tls"] is False
     saved = json.loads(
         (
             Path(str(app.state.settings.artifacts_root)) / "job-api-edit1" / "job_input.json"

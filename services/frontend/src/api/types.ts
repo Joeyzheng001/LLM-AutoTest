@@ -147,6 +147,7 @@ export interface JobSubmitPayload {
   document_pairs?: RequirementDocumentPairInput[]
   repos: RepoConfig[] // C-10：≥1 个仓库（原 ≥2 放宽）
   rest_url: string
+  rest_insecure_tls?: boolean
   resume?: boolean
   auth?: AuthConfig // C-15：鉴权配置（可选）
   llm?: LlmConfig // 运行时模型配置；密钥不在任务产物中保存
@@ -160,6 +161,7 @@ export interface JobConfiguration {
   document_pairs: RequirementDocumentPairView[]
   repos: RepoConfig[]
   rest_url: string
+  rest_insecure_tls: boolean
   resume: boolean
   auth: Omit<AuthConfig, 'password'> & { password_configured: boolean } | null
   llm: Omit<LlmConfig, 'api_key'> & { api_key_configured: boolean } | null
@@ -172,6 +174,7 @@ export interface JobConfigurationUpdatePayload {
   keep_existing_docs: boolean
   repos: RepoConfig[]
   rest_url: string
+  rest_insecure_tls: boolean
   resume: boolean
   auth?: Omit<AuthConfig, 'password'> & { password?: string }
   llm?: Omit<LlmConfig, 'api_key'> & { api_key?: string }

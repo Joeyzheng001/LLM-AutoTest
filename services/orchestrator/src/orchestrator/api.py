@@ -129,6 +129,8 @@ class JobSubmitRequest(BaseModel):
     doc_content_b64: str | None = None  # C-10 前旧字段（兼容保留）
     repos: list[RepoConfig] = Field(min_length=1)  # C-10：≥1 个仓库（原 ≥2 放宽）
     rest_url: str
+    # REST 证书策略独立于鉴权；被测内网常见自签，默认跳过但可由用户关闭。
+    rest_insecure_tls: bool = True
     resume: bool = True
     # C-15：鉴权配置（可选；填写则执行前登录被测服务注入凭据头）
     auth: AuthConfig | None = None
@@ -166,6 +168,7 @@ class JobConfigurationUpdateRequest(BaseModel):
     keep_existing_docs: bool = True
     repos: list[RepoConfig] = Field(min_length=1)
     rest_url: str
+    rest_insecure_tls: bool = True
     resume: bool = True
     auth: EditableAuthConfig | None = None
     llm: EditableLlmConfig | None = None
@@ -338,6 +341,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "doc_paths": [str(path) for path in doc_paths],
             "repos": [repo.model_dump() for repo in request.repos],
             "rest_url": request.rest_url,
+            "rest_insecure_tls": request.rest_insecure_tls,
             "submitted_at": _now_iso(),
         }
         if document_pairs:
@@ -435,6 +439,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "document_pairs": _public_document_pairs(job_input),
             "repos": job_input.get("repos", []),
             "rest_url": job_input.get("rest_url", ""),
+            "rest_insecure_tls": bool(job_input.get("rest_insecure_tls", True)),
             "resume": bool(job_input.get("resume", True)),
             "auth": (
                 {
@@ -539,6 +544,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "doc_paths": doc_paths,
             "repos": [repo.model_dump() for repo in request.repos],
             "rest_url": request.rest_url.rstrip("/"),
+            "rest_insecure_tls": request.rest_insecure_tls,
             "resume": request.resume,
             "submitted_at": previous.get("submitted_at", _now_iso()),
             "updated_at": _now_iso(),
@@ -651,6 +657,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             job_input["rest_url"],
             only_defect_ids={request.defect_id},
             auth=job_input.get("auth"),
+            insecure_tls=bool(job_input.get("rest_insecure_tls", True)),
         )
         return {
             "job_id": job_id,
@@ -999,6 +1006,7 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
                 "doc_paths": doc_paths,
                 "repositories": repositories,
                 "rest_base_url": job_input["rest_url"],
+                "rest_insecure_tls": bool(job_input.get("rest_insecure_tls", True)),
                 "force_node": force_node,
                 "auth": auth,
             }

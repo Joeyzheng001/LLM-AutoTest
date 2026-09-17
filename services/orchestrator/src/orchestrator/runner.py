@@ -87,6 +87,7 @@ class PipelineRunner:
         doc_paths: list[Path],
         repositories: list[RepositoryInput],
         rest_base_url: str,
+        rest_insecure_tls: bool = True,
         document_pairs: list[dict[str, str | None]] | None = None,
         force_node: str | None = None,
         auth: dict[str, Any] | None = None,
@@ -131,6 +132,7 @@ class PipelineRunner:
                 doc_paths,
                 repositories,
                 rest_base_url,
+                rest_insecure_tls,
                 outcome,
                 auth,
                 e2e,
@@ -173,6 +175,7 @@ class PipelineRunner:
         doc_paths: list[Path],
         repositories: list[RepositoryInput],
         rest_base_url: str,
+        rest_insecure_tls: bool,
         outcome: PipelineOutcome,
         auth: dict[str, Any] | None = None,
         e2e: dict[str, Any] | None = None,
@@ -182,57 +185,19 @@ class PipelineRunner:
         attempts = state.node(node_name).attempts
         while attempts < MAX_NODE_ATTEMPTS:
             try:
-                if e2e is None:
-                    # 保留自定义 Runner / 历史集成的调用签名兼容性。
-                    if document_pairs is None:
-                        await self._invoke_node(
-                            node_name,
-                            state,
-                            llm,
-                            prompts_dir,
-                            doc_paths,
-                            repositories,
-                            rest_base_url,
-                            auth,
-                        )
-                    else:
-                        await self._invoke_node(
-                            node_name,
-                            state,
-                            llm,
-                            prompts_dir,
-                            doc_paths,
-                            repositories,
-                            rest_base_url,
-                            auth,
-                            document_pairs=document_pairs,
-                        )
-                else:
-                    if document_pairs is None:
-                        await self._invoke_node(
-                            node_name,
-                            state,
-                            llm,
-                            prompts_dir,
-                            doc_paths,
-                            repositories,
-                            rest_base_url,
-                            auth,
-                            e2e,
-                        )
-                    else:
-                        await self._invoke_node(
-                            node_name,
-                            state,
-                            llm,
-                            prompts_dir,
-                            doc_paths,
-                            repositories,
-                            rest_base_url,
-                            auth,
-                            e2e,
-                            document_pairs=document_pairs,
-                        )
+                await self._invoke_node(
+                    node_name,
+                    state,
+                    llm,
+                    prompts_dir,
+                    doc_paths,
+                    repositories,
+                    rest_base_url,
+                    auth,
+                    e2e,
+                    document_pairs=document_pairs,
+                    rest_insecure_tls=rest_insecure_tls,
+                )
                 outcome.completed.append(node_name)
                 return
             except PipelineError as exc:
@@ -260,6 +225,7 @@ class PipelineRunner:
         auth: dict[str, Any] | None = None,
         e2e: dict[str, Any] | None = None,
         document_pairs: list[dict[str, str | None]] | None = None,
+        rest_insecure_tls: bool = True,
     ) -> None:
         """分派到对应节点实现（甲/乙产物走 orch_store，丙产物走 te_store）。"""
         if node_name == "req_parse":
@@ -294,7 +260,13 @@ class PipelineRunner:
             )
         elif node_name == "auto_execute":
             await run_auto_execute(
-                self._engine, state, self._te_store, rest_base_url, auth=auth, e2e=e2e
+                self._engine,
+                state,
+                self._te_store,
+                rest_base_url,
+                auth=auth,
+                e2e=e2e,
+                insecure_tls=rest_insecure_tls,
             )
         elif node_name == "test_report":
             await run_test_report(self._engine, state, self._orch_store)
@@ -302,7 +274,12 @@ class PipelineRunner:
             await run_defect_list(self._engine, state, self._te_store)
         elif node_name == "retest_regression":
             await run_retest_regression(
-                self._engine, state, self._te_store, rest_base_url, auth=auth
+                self._engine,
+                state,
+                self._te_store,
+                rest_base_url,
+                auth=auth,
+                insecure_tls=rest_insecure_tls,
             )
         else:  # pragma: no cover - NODE_ORDER 固定 9 项，防御性兜底
             raise PipelineError(

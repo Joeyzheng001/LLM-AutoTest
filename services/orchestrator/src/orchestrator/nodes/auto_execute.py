@@ -461,6 +461,7 @@ async def run_auto_execute(
     transport: httpx.AsyncBaseTransport | None = None,
     auth: dict[str, Any] | None = None,
     e2e: dict[str, Any] | None = None,
+    insecure_tls: bool = True,
 ) -> Path:
     """执行 auto_execute 全流程：读用例 → 探测 → 分协议执行 → 落盘。
 
@@ -470,6 +471,8 @@ async def run_auto_execute(
         transport: 测试注入（MockTransport），生产留 None。
         auth: C-15 鉴权配置（login_url/username/password/insecure_tls）；
             非空时先登录拿凭据头注入全部 REST 请求（登录失败 X-EXEC-01 节点重试）。
+        insecure_tls: REST HTTPS 是否跳过证书校验；与登录、E2E 配置独立，确保
+            探活与每一条 REST 请求使用完全一致的策略。
 
     Returns:
         execution.json 产物路径。
@@ -488,12 +491,11 @@ async def run_auto_execute(
         interfaces = _load_json_array(store, state.job_id, "interfaces.json", "interfaces")
         interface_by_id = {str(i.get("id", "")): i for i in interfaces if i.get("id")}
 
-        # C-15：登录注入（凭据由代码提取，不经 LLM）；https 自签同步作用于探活/执行
+        # REST 证书策略独立于登录配置，避免「未配置登录 → 自签环境全量不可达」。
         auth_headers: dict[str, str] = {}
-        verify = True
+        verify = not insecure_tls
         if auth:
             auth_headers = await login_for_headers(auth, transport)
-            verify = not bool(auth.get("insecure_tls", True))
 
         # R-EXEC-02：环境探测优先于执行
         rest_ready = await probe_rest(rest_base_url, transport, verify)

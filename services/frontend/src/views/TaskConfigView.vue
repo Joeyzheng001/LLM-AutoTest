@@ -56,6 +56,7 @@ const llm = reactive({
   maxTokens: 16384,
 })
 const e2eEnabled = ref(false)
+const restInsecureTls = ref(true)
 const e2e = reactive({
   baseUrl: 'http://47.83.181.191:8080',
   generateCases: false,
@@ -242,6 +243,7 @@ async function loadConfiguration(jobId: string): Promise<void> {
     editingJobId.value = config.job_id
     form.jobId = config.job_id
     form.restUrl = config.rest_url
+    restInsecureTls.value = config.rest_insecure_tls
     form.resume = config.resume
     existingDocs.value = config.documents
     documentRows.splice(0, documentRows.length, ...(
@@ -345,6 +347,7 @@ async function handleSubmit(): Promise<void> {
         language: row.language,
       })),
       rest_url: form.restUrl.trim(),
+      rest_insecure_tls: restInsecureTls.value,
       resume: form.resume,
       // C-15：鉴权配置（可选；开启才随提交发送，凭据只落本机 job_input.json）
       ...(authEnabled.value
@@ -444,6 +447,12 @@ async function handleSubmit(): Promise<void> {
         <p class="switch-note">
           同时上传基线与被测文档时，系统先生成“需求版本差异分析”，后续评审、Code Review 和用例生成只处理新增/修改范围；删除项进入影响核查与回归风险。
         </p>
+      </section>
+
+      <section class="field-group">
+        <header class="group-title">接口测试环境</header>
+        <label class="switch-row"><input v-model="restInsecureTls" type="checkbox" /><span>跳过 REST HTTPS 证书校验（测试环境自签名证书）</span></label>
+        <p class="switch-note">此设置同时用于接口连通性探测、接口用例执行和缺陷复测；与登录和 E2E 的证书设置互不影响。</p>
       </section>
 
       <section class="field-group">
