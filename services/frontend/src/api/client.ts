@@ -9,6 +9,9 @@ import type {
   InterfaceDef,
   JobListItem,
   JobStatus,
+  JobConfiguration,
+  JobConfigurationUpdatePayload,
+  JobConfigurationUpdateResponse,
   JobSubmitPayload,
   JobSubmitResponse,
   LlmCallLog,
@@ -58,6 +61,25 @@ export function getJobStatus(jobId: string): Promise<JobStatus> {
 
 export function submitJob(payload: JobSubmitPayload): Promise<JobSubmitResponse> {
   return request('/api/v1/jobs', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+/** 打开运行后端的本机目录选择器；Windows 本地部署可返回真实绝对路径。 */
+export function pickLocalRepositoryDirectory(): Promise<{ path: string; name: string }> {
+  return request('/api/v1/system/pick-directory', { method: 'POST', body: '{}' })
+}
+
+export function getJobConfiguration(jobId: string): Promise<JobConfiguration> {
+  return request(`/api/v1/jobs/${jobId}/configuration`)
+}
+
+export function updateJobConfiguration(
+  jobId: string,
+  payload: JobConfigurationUpdatePayload,
+): Promise<JobConfigurationUpdateResponse> {
+  return request(`/api/v1/jobs/${jobId}/configuration`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function retestFull(jobId: string): Promise<RetestResponse> {

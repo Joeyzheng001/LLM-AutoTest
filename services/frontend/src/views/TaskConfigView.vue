@@ -3,9 +3,17 @@
 // 被测服务地址 + 断点续跑开关 + 鉴权配置（C-15，可选）→ POST /api/v1/jobs（后台驱动同一 PipelineRunner，F-ORCH-01）。
 // 红线：协议范围由源码扫描自动识别（非表单参数）；鉴权走表单兜底（C-15，D8 升版），
 // 其余 fixtures 前置数据仍在流程启动前预置，不在本表单收集。
-import { computed, onMounted, reactive, ref } from 'vue'
-import { submitJob } from '../api/client'
-import type { JobSubmitPayload } from '../api/types'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import {
+  getJobConfiguration,
+  pickLocalRepositoryDirectory,
+  submitJob,
+  updateJobConfiguration,
+} from '../api/client'
+import { navigateTo } from '../api/navigation'
+import type { JobConfigurationUpdatePayload, JobSubmitPayload } from '../api/types'
+
+const props = defineProps<{ initialJobId?: string }>()
 
 interface RepoRow {
   name: string
@@ -16,11 +24,10 @@ interface RepoRow {
   isFallback: boolean
 }
 
-// C-10：多文档（至少 1 份；三格式可混传，LLM 单次解析分节拼接）
-interface DocRow {
-  name: string
-  size: number
-  file: File
+// 每行是一对需求版本：被测版本必填，基线版本可选；单版本保持原文处理。
+interface VersionDocRow {
+  target: File | null
+  baseline: File | null
 }
 
 const form = reactive({
@@ -90,9 +97,9 @@ function saveLlmConfig(): void {
   }
 }
 
-const docFiles = reactive<DocRow[]>([])
 const docError = ref('')
-const docInput = ref<HTMLInputElement | null>(null)
+const documentRows = reactive<VersionDocRow[]>([{ target: null, baseline: null }])
+const selectingRepo = ref<number | null>(null)
 const repos = reactive<RepoRow[]>([
   {
     name: 'user-service',
@@ -115,6 +122,11 @@ const repos = reactive<RepoRow[]>([
 const submitting = ref(false)
 const submitError = ref('')
 const submittedJobId = ref('')
+const editingJobId = ref('')
+const existingDocs = ref<string[]>([])
+const existingAuthPassword = ref(false)
+const existingLlmKey = ref(false)
+const loadingConfiguration = ref(false)
 
 function addRepo(): void {
   repos.push({
@@ -131,14 +143,23 @@ function removeRepo(index: number): void {
   repos.splice(index, 1)
 }
 
-function removeDoc(index: number): void {
-  docFiles.splice(index, 1)
+function addDocumentRow(): void {
+  documentRows.push({ target: null, baseline: null })
+}
+
+function removeDocumentRow(index: number): void {
+  if (documentRows.length > 1) documentRows.splice(index, 1)
+}
+
+function isAbsoluteRepositoryPath(value: string): boolean {
+  // POSIX / macOS / Linux，Windows 盘符路径，以及 UNC 网络共享路径。
+  return /^(\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/.test(value.trim())
 }
 
 const reposValid = computed(
   () =>
     repos.length >= 1 &&
-    repos.every((row) => row.name.trim() !== '' && row.path.trim().startsWith('/')),
+    repos.every((row) => row.name.trim() !== '' && isAbsoluteRepositoryPath(row.path)),
 )
 
 // C-15：开启鉴权时三项必填 + login_url 须为 http(s)
@@ -147,13 +168,13 @@ const authValid = computed(
     !authEnabled.value ||
     (auth.loginUrl.trim().startsWith('http') &&
       auth.username.trim() !== '' &&
-      auth.password !== ''),
+      (auth.password !== '' || (editingJobId.value !== '' && existingAuthPassword.value))),
 )
 
 const llmValid = computed(
   () =>
     !llmEnabled.value ||
-    (llm.apiKey.trim().length >= 8 &&
+    ((llm.apiKey.trim().length >= 8 || (editingJobId.value !== '' && existingLlmKey.value)) &&
       llm.model.trim() !== '' &&
       llm.baseUrl.trim().startsWith('http') &&
       llm.maxTokens >= 1024 &&
@@ -162,7 +183,7 @@ const llmValid = computed(
 
 const formValid = computed(
   () =>
-    docFiles.length >= 1 &&
+    (documentRows.some((row) => row.target) || (editingJobId.value !== '' && existingDocs.value.length >= 1)) &&
     reposValid.value &&
     form.restUrl.startsWith('http') &&
     authValid.value &&
@@ -171,7 +192,9 @@ const formValid = computed(
 
 const formInvalidReasons = computed(() => {
   const reasons: string[] = []
-  if (docFiles.length < 1) reasons.push('请选择至少一份需求文档')
+  if (!documentRows.some((row) => row.target) && existingDocs.value.length < 1) {
+    reasons.push('每行至少选择一份被测版本需求文档')
+  }
   if (!reposValid.value) reasons.push('补全仓库名称和本地绝对路径')
   if (!form.restUrl.trim().startsWith('http')) reasons.push('填写合法的 REST 服务地址')
   if (!authValid.value) reasons.push('补全鉴权地址、用户名和密码')
@@ -181,40 +204,89 @@ const formInvalidReasons = computed(() => {
   return reasons
 })
 
-function pickDocs(event: Event): void {
-  const files = Array.from((event.target as HTMLInputElement).files ?? [])
+function pickDocumentVersion(event: Event, index: number, role: 'target' | 'baseline'): void {
+  const file = (event.target as HTMLInputElement).files?.[0]
   docError.value = ''
   const input = event.target as HTMLInputElement
-  for (const file of files) {
-    const suffix = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
-    if (!['.md', '.docx', '.xlsx'].includes(suffix)) {
-      docError.value = `文档格式不支持（F-REQ-01~03：md/docx/xlsx）：${file.name}`
-      continue
-    }
-    // 重名去重：同名文件不重复入列（后端落盘也会加序号，前端提前拦）
-    if (docFiles.some((row) => row.name === file.name)) {
-      continue
-    }
-    docFiles.push({ name: file.name, size: file.size, file })
+  if (!file) return
+  const suffix = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+  if (!['.md', '.docx', '.xlsx'].includes(suffix)) {
+    docError.value = `文档格式不支持（仅 md/docx/xlsx）：${file.name}`
+  } else {
+    documentRows[index][role] = file
   }
-  input.value = '' // 允许移除后重选同一文件
+  input.value = '' // 允许重选同一文件
 }
 
-function openDocPicker(): void {
-  // showPicker 是 Chromium 的直接用户激活通道；其他浏览器退回原生 click。
-  const input = docInput.value
-  if (!input) {
-    docError.value = '文件选择器尚未就绪，请刷新页面后重试。'
-    return
-  }
+async function chooseRepositoryDirectory(index: number): Promise<void> {
+  if (selectingRepo.value !== null) return
+  selectingRepo.value = index
+  submitError.value = ''
   try {
-    if (typeof input.showPicker === 'function') input.showPicker()
-    else input.click()
-  } catch {
-    // Safari / 受限 WebView 不支持 showPicker 时，click 仍是标准后备。
-    input.click()
+    const selected = await pickLocalRepositoryDirectory()
+    repos[index].path = selected.path
+    if (!repos[index].name.trim()) repos[index].name = selected.name
+  } catch (err) {
+    submitError.value = err instanceof Error ? err.message : '选择本机目录失败'
+  } finally {
+    selectingRepo.value = null
   }
 }
+
+async function loadConfiguration(jobId: string): Promise<void> {
+  if (!jobId || jobId === editingJobId.value || loadingConfiguration.value) return
+  loadingConfiguration.value = true
+  submitError.value = ''
+  try {
+    const config = await getJobConfiguration(jobId)
+    editingJobId.value = config.job_id
+    form.jobId = config.job_id
+    form.restUrl = config.rest_url
+    form.resume = config.resume
+    existingDocs.value = config.documents
+    documentRows.splice(0, documentRows.length, ...(
+      config.document_pairs.length
+        ? config.document_pairs.map(() => ({ target: null, baseline: null }))
+        : [{ target: null, baseline: null }]
+    ))
+    repos.splice(0, repos.length, ...config.repos.map((repo) => ({
+      name: repo.name,
+      path: repo.path,
+      branch: repo.branch || 'main',
+      baselineBranch: repo.baseline_branch || '',
+      language: repo.language || 'java',
+      isFallback: repo.is_fallback,
+    })))
+    authEnabled.value = config.auth !== null
+    existingAuthPassword.value = config.auth?.password_configured ?? false
+    Object.assign(auth, {
+      loginUrl: config.auth?.login_url ?? '',
+      username: config.auth?.username ?? '',
+      password: '',
+      insecureTls: config.auth?.insecure_tls ?? true,
+    })
+    llmEnabled.value = config.llm !== null
+    existingLlmKey.value = config.llm?.api_key_configured ?? false
+    if (config.llm) Object.assign(llm, {
+      model: config.llm.model,
+      baseUrl: config.llm.base_url,
+      maxTokens: config.llm.max_tokens,
+    })
+    e2eEnabled.value = config.e2e !== null
+    Object.assign(e2e, {
+      baseUrl: config.e2e?.base_url ?? e2e.baseUrl,
+      generateCases: config.e2e?.generate_cases ?? false,
+      executeCases: config.e2e?.execute_cases ?? false,
+      insecureTls: config.e2e?.insecure_tls ?? true,
+    })
+  } catch (err) {
+    submitError.value = err instanceof Error ? `加载任务配置失败：${err.message}` : '加载任务配置失败'
+  } finally {
+    loadingConfiguration.value = false
+  }
+}
+
+watch(() => props.initialJobId, (jobId) => void loadConfiguration(jobId ?? ''), { immediate: true })
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -241,15 +313,27 @@ async function handleSubmit(): Promise<void> {
   submittedJobId.value = ''
   try {
     if (llmEnabled.value) saveLlmConfig()
-    // C-10：docs 列表逐份 base64（后端分节拼接单次送 LLM）
-    const docs = await Promise.all(
-      docFiles.map(async (row) => ({
-        doc_name: row.name,
-        doc_content_b64: await readFileAsBase64(row.file),
-      })),
+    const documentPairs = await Promise.all(
+      documentRows
+        .filter((row) => row.target !== null)
+        .map(async (row) => ({
+          target: {
+            doc_name: row.target!.name,
+            doc_content_b64: await readFileAsBase64(row.target!),
+          },
+          ...(row.baseline
+            ? {
+                baseline: {
+                  doc_name: row.baseline.name,
+                  doc_content_b64: await readFileAsBase64(row.baseline),
+                },
+              }
+            : {}),
+        })),
     )
-    const payload: JobSubmitPayload = {
-      docs,
+    const commonPayload = {
+      docs: [],
+      ...(documentPairs.length ? { document_pairs: documentPairs } : {}),
       repos: repos.map((row) => ({
         name: row.name.trim(),
         path: row.path.trim(),
@@ -299,9 +383,20 @@ async function handleSubmit(): Promise<void> {
       submitError.value = '任务 ID 须以 job- 开头（横切 ID 约定）；留空可自动生成'
       return
     }
-    if (trimmedJobId) payload.job_id = trimmedJobId
-    const result = await submitJob(payload)
+    let result: { job_id: string }
+    if (editingJobId.value) {
+      const payload: JobConfigurationUpdatePayload = {
+        ...commonPayload,
+        keep_existing_docs: documentPairs.length === 0,
+      }
+      result = await updateJobConfiguration(editingJobId.value, payload)
+    } else {
+      const payload: JobSubmitPayload = { ...commonPayload }
+      if (trimmedJobId) payload.job_id = trimmedJobId
+      result = await submitJob(payload)
+    }
     submittedJobId.value = result.job_id
+    navigateTo('overview', result.job_id)
   } catch (err) {
     submitError.value = err instanceof Error ? err.message : '提交失败'
   } finally {
@@ -313,37 +408,41 @@ async function handleSubmit(): Promise<void> {
 <template>
   <div class="config">
     <form class="card" @submit.prevent="handleSubmit">
+      <div v-if="editingJobId" class="edit-banner" role="status">
+        <div>
+          <strong>正在编辑完整任务配置</strong>
+          <span class="mono">{{ editingJobId }}</span>
+        </div>
+        <p>保存后会归档旧结果，并从「需求解析」开始重新运行整个流程。</p>
+      </div>
       <!-- 需求文档（三格式 F-REQ-01~03；C-10 可多份） -->
       <section class="field-group">
         <header class="group-title">
-          需求文档
+          需求文档版本
           <span class="group-note"
-            >可多份（C-10）；支持 md / docx / xlsx（F-REQ-01~03），Schema
-            校验由后端统一执行（F-REQ-04）</span
+            >每行一组被测/基线文档；仅上传被测版本时按原需求文档处理</span
           >
         </header>
-        <input
-          id="doc-file"
-          ref="docInput"
-          class="doc-file-input"
-          type="file"
-          accept=".md,.docx,.xlsx"
-          multiple
-          @change="pickDocs"
-        />
-        <button class="doc-upload" type="button" @click="openDocPicker">
-          选择需求文档文件（可多选，至少 1 份）…
-        </button>
-        <ul v-if="docFiles.length" class="doc-list">
-          <li v-for="(row, index) in docFiles" :key="row.name" class="doc-item">
-            <span class="mono">{{ row.name }}</span>
-            <span class="doc-size mono">{{ Math.round(row.size / 1024) }} KB</span>
-            <button class="icon-btn" type="button" @click="removeDoc(index)">移除</button>
-          </li>
-        </ul>
+        <div v-for="(row, index) in documentRows" :key="index" class="doc-version-row">
+          <label class="doc-upload">
+            <span>被测版本（必填）</span>
+            <strong class="mono">{{ row.target?.name ?? '选择文件…' }}</strong>
+            <input class="doc-file-input" type="file" accept=".md,.docx,.xlsx" @change="pickDocumentVersion($event, index, 'target')" />
+          </label>
+          <label class="doc-upload baseline-upload">
+            <span>基线版本（可选）</span>
+            <strong class="mono">{{ row.baseline?.name ?? '不选择则作为新需求处理' }}</strong>
+            <input class="doc-file-input" type="file" accept=".md,.docx,.xlsx" @change="pickDocumentVersion($event, index, 'baseline')" />
+          </label>
+          <button class="icon-btn" type="button" :disabled="documentRows.length <= 1" @click="removeDocumentRow(index)">移除</button>
+        </div>
+        <button class="ghost-btn" type="button" @click="addDocumentRow">+ 添加一行版本文档</button>
+        <p v-if="editingJobId && existingDocs.length" class="preserved-docs">
+          当前保留：<span v-for="name in existingDocs" :key="name" class="mono">{{ name }}</span>
+        </p>
         <p v-if="docError" class="field-error" role="alert">{{ docError }}</p>
         <p class="switch-note">
-          多文档在后端按文件名分节拼接后单次送 LLM 解析（需求条目统一编号）；至少上传 1 份。
+          同时上传基线与被测文档时，系统先生成“需求版本差异分析”，后续评审、Code Review 和用例生成只处理新增/修改范围；删除项进入影响核查与回归风险。
         </p>
       </section>
 
@@ -370,7 +469,7 @@ async function handleSubmit(): Promise<void> {
         </header>
 
         <div class="repo-head">
-          <span>仓库名</span><span>本地绝对路径</span><span>语言</span><span>分支</span
+          <span>仓库名</span><span>本机目录</span><span>语言</span><span>分支</span
           ><span>基线分支</span><span>兑底</span><span />
         </div>
 
@@ -382,13 +481,10 @@ async function handleSubmit(): Promise<void> {
             placeholder="user-service"
             :aria-label="`仓库 ${index + 1} 名称`"
           />
-          <input
-            v-model="row.path"
-            type="text"
-            class="mono"
-            placeholder="/Users/zz/code/user-service"
-            :aria-label="`仓库 ${index + 1} 路径`"
-          />
+          <div class="repo-path-picker">
+            <input v-model="row.path" type="text" class="mono" placeholder="C:\\work\\user-service 或 /workspace/user-service" :aria-label="`仓库 ${index + 1} 路径`" />
+            <button class="icon-btn" type="button" :disabled="selectingRepo !== null" @click="chooseRepositoryDirectory(index)">{{ selectingRepo === index ? '选择中…' : '选择目录' }}</button>
+          </div>
           <select
             v-model="row.language"
             class="mono repo-language"
@@ -512,6 +608,9 @@ async function handleSubmit(): Promise<void> {
           <p v-if="!llmValid" class="field-error">
             请填写有效 API Key、模型、服务地址和 1024–16384 的 Token 上限。
           </p>
+          <p v-if="editingJobId && !llm.apiKey && existingLlmKey" class="switch-note">
+            未重新填写 API Key，将复用本次服务进程中已有的密钥。
+          </p>
           <p class="switch-note">
             勾选“记住”后，密钥仅保存在当前浏览器的本地存储，不会写入 job_input、产物或 LLM 调用留痕；
             取消勾选会立即清除。需求解析、接口还原、Code Review、用例生成会按章节或实体分批调用，再由程序校验并合并。
@@ -547,7 +646,7 @@ async function handleSubmit(): Promise<void> {
                 v-model="auth.password"
                 type="password"
                 autocomplete="new-password"
-                placeholder="••••••••"
+                :placeholder="editingJobId && existingAuthPassword ? '留空则保留原密码' : '••••••••'"
               />
             </label>
           </div>
@@ -557,6 +656,9 @@ async function handleSubmit(): Promise<void> {
           </label>
           <p v-if="!authValid" class="field-error">
             开启鉴权后：登录地址须为 http(s)、用户名与密码必填
+          </p>
+          <p v-if="editingJobId && !auth.password && existingAuthPassword" class="switch-note">
+            密码未展示也不会回传；留空会安全地保留当前任务的密码。
           </p>
           <p class="switch-note">
             登录响应含 token 字段 → Authorization: Token 注入；无 token 则回带 Set-Cookie
@@ -568,10 +670,10 @@ async function handleSubmit(): Promise<void> {
       <!-- 提交 -->
       <div class="submit-row">
         <button class="primary-btn" type="submit" :disabled="!formValid || submitting">
-          {{ submitting ? '提交中…' : '启动全流程（F-ORCH-01）' }}
+          {{ submitting ? '保存并启动中…' : editingJobId ? '保存配置并全量重新运行' : '启动全流程（F-ORCH-01）' }}
         </button>
         <span v-if="submittedJobId" class="submit-ok" role="status">
-          已提交：<span class="mono">{{ submittedJobId }}</span> —— 到「流水线总览」页查看进度
+          已{{ editingJobId ? '保存并重新运行' : '提交' }}：<span class="mono">{{ submittedJobId }}</span> —— 已跳转到「流水线总览」
         </span>
         <span v-else class="submit-note">与 CLI 走同一 PipelineRunner（Web 与命令行入口等价）</span>
       </div>
@@ -595,6 +697,44 @@ async function handleSubmit(): Promise<void> {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   padding: var(--space-5);
+}
+
+.edit-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-glow);
+  border-radius: var(--radius-md);
+}
+
+.edit-banner div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.edit-banner p,
+.preserved-docs {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+
+.preserved-docs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.preserved-docs .mono {
+  padding: 2px 6px;
+  background: var(--surface-2);
+  border-radius: 4px;
 }
 
 .field-group {
@@ -646,7 +786,9 @@ async function handleSubmit(): Promise<void> {
 
 /* 文档上传 */
 .doc-upload {
+  position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-4);
@@ -658,16 +800,63 @@ async function handleSubmit(): Promise<void> {
 }
 
 .doc-file-input {
-  position: fixed;
-  width: 1px;
-  height: 1px;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   opacity: 0;
-  pointer-events: none;
+  cursor: pointer;
+}
+
+.doc-version-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: stretch;
+  margin-bottom: var(--space-2);
+}
+
+.doc-version-row .doc-upload {
+  justify-content: center;
+  min-height: 72px;
+}
+
+.doc-version-row .doc-upload span {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.doc-version-row .doc-upload strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.baseline-upload {
+  background: var(--surface);
+}
+
+.repo-path-picker {
+  display: flex;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.repo-path-picker input {
+  min-width: 0;
 }
 
 .doc-upload:hover,
 .doc-upload:focus-within {
   border-color: var(--accent);
+}
+
+@media (max-width: 760px) {
+  .doc-version-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 

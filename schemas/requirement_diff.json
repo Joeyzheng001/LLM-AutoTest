@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/requirement_diff",
+  "title": "需求版本差异分析",
+  "type": "object",
+  "required": ["schema_version", "job_id", "has_baseline", "summary", "changes"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "job_id": {"type": "string", "pattern": "^job-"},
+    "has_baseline": {"type": "boolean", "const": true},
+    "summary": {"type": "string"},
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "pair_index", "change_type", "title", "target_description", "baseline_description", "change_summary", "source_location"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^DIF-\\d{3}$"},
+          "pair_index": {"type": "integer", "minimum": 1},
+          "change_type": {"type": "string", "enum": ["added", "modified", "removed"]},
+          "title": {"type": "string", "minLength": 1},
+          "target_description": {"type": "string"},
+          "baseline_description": {"type": "string"},
+          "change_summary": {"type": "string", "minLength": 1},
+          "source_location": {"type": "string"}
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

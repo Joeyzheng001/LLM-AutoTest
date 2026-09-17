@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # 产物读取白名单（9 节点产物 + 留痕文件；job_input.json 属服务内部元数据不外露）
 _ARTIFACT_WHITELIST: frozenset[str] = frozenset(
     name for names in NODE_ARTIFACTS.values() for name in names
-) | {"llm_calls.jsonl", "review_log.jsonl"}
+) | {"requirement_diff.json", "llm_calls.jsonl", "review_log.jsonl"}
 
 _DOC_SUFFIXES = frozenset({".md", ".docx", ".xlsx"})
 
@@ -73,6 +73,13 @@ class DocInput(BaseModel):
 
     doc_name: str
     doc_content_b64: str
+
+
+class RequirementDocumentPair(BaseModel):
+    """一行需求版本输入：被测文档必填，基线文档可选。"""
+
+    target: DocInput
+    baseline: DocInput | None = None
 
 
 class AuthConfig(BaseModel):
@@ -117,6 +124,7 @@ class JobSubmitRequest(BaseModel):
 
     job_id: str | None = None
     docs: list[DocInput] = Field(default_factory=list)
+    document_pairs: list[RequirementDocumentPair] = Field(default_factory=list)
     doc_name: str | None = None  # C-10 前旧字段（兼容保留）
     doc_content_b64: str | None = None  # C-10 前旧字段（兼容保留）
     repos: list[RepoConfig] = Field(min_length=1)  # C-10：≥1 个仓库（原 ≥2 放宽）
@@ -125,6 +133,42 @@ class JobSubmitRequest(BaseModel):
     # C-15：鉴权配置（可选；填写则执行前登录被测服务注入凭据头）
     auth: AuthConfig | None = None
     llm: LlmConfig | None = None
+    e2e: E2eConfig | None = None
+
+
+class EditableAuthConfig(BaseModel):
+    """编辑任务时的鉴权配置；空密码表示保留原任务的密码，绝不回传。"""
+
+    login_url: str
+    username: str
+    password: str | None = Field(default=None, max_length=256)
+    insecure_tls: bool = True
+
+
+class EditableLlmConfig(BaseModel):
+    """编辑任务时的模型配置；API Key 可省略以复用仍在内存中的密钥。"""
+
+    api_key: str | None = Field(default=None, min_length=8, max_length=512)
+    model: str = Field(default="MiniMax-M3", min_length=1, max_length=128)
+    base_url: str = Field(default="https://api.minimaxi.com/v1", min_length=8, max_length=256)
+    max_tokens: int = Field(default=16384, ge=1024, le=16384)
+
+
+class JobConfigurationUpdateRequest(BaseModel):
+    """完整任务配置编辑请求。
+
+    未上传 docs 时保留当前需求文档；鉴权密码与模型 Key 为空时仅复用服务仍在
+    内存中的值，接口从不读取或返回它们。
+    """
+
+    docs: list[DocInput] = Field(default_factory=list)
+    document_pairs: list[RequirementDocumentPair] = Field(default_factory=list)
+    keep_existing_docs: bool = True
+    repos: list[RepoConfig] = Field(min_length=1)
+    rest_url: str
+    resume: bool = True
+    auth: EditableAuthConfig | None = None
+    llm: EditableLlmConfig | None = None
     e2e: E2eConfig | None = None
 
 
@@ -196,6 +240,20 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         """健康检查（docker-compose 编排依赖）。"""
         return {"status": "ok"}
 
+    @app.post("/api/v1/system/pick-directory")
+    async def pick_local_directory() -> dict[str, str]:
+        """打开运行 orchestrator 的本机目录选择框（适合 Windows 本地部署）。"""
+        try:
+            selected = await asyncio.to_thread(_pick_native_directory)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="本机目录选择不可用；请在运行服务的机器上手动填写绝对路径",
+            ) from exc
+        if not selected:
+            raise HTTPException(status_code=400, detail="未选择目录")
+        return {"path": selected, "name": Path(selected).name}
+
     @app.get("/api/v1/pipeline/nodes")
     async def list_nodes() -> dict[str, object]:
         """9 节点清单与当前状态（R-MTR-01 九节点固定口径）。"""
@@ -221,7 +279,12 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             existing = orch_store.job_dir(job_id)
             if existing.is_dir():
                 shutil.rmtree(existing)
-        doc_paths = _save_docs(orch_store, job_id, _request_docs(request))
+        document_pairs = _save_document_pairs(orch_store, job_id, request.document_pairs)
+        doc_paths = (
+            [Path(str(pair["target_path"])) for pair in document_pairs]
+            if document_pairs
+            else _save_docs(orch_store, job_id, _request_docs(request))
+        )
         for repo in request.repos:
             if repo.language not in ("java", "python"):
                 raise HTTPException(
@@ -277,6 +340,8 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "rest_url": request.rest_url,
             "submitted_at": _now_iso(),
         }
+        if document_pairs:
+            job_input["document_pairs"] = document_pairs
         if auth_payload is not None:
             # C-15：凭据随 job 落盘（供 rerun/retest 复用原始输入）；
             # job_input.json 属服务内部元数据，不在产物读取白名单内（不外露）
@@ -352,6 +417,153 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             # 任务输入仅暴露 E2E 开关和地址，不暴露鉴权/模型密钥；供前端动态呈现可选子流程。
             "rest_url": _job_rest_url(orch_store, job_id),
             "e2e": _job_e2e_config(orch_store, job_id),
+        }
+
+    @app.get("/api/v1/jobs/{job_id}/configuration")
+    async def get_job_configuration(job_id: str) -> dict[str, Any]:
+        """读取可编辑的完整任务配置，敏感字段只返回“是否已配置”。"""
+        _require_job(app, job_id)
+        job_input = _load_job_input(orch_store, job_id)
+        auth = job_input.get("auth")
+        llm = job_input.get("llm")
+        doc_paths = job_input.get("doc_paths", [])
+        if not doc_paths and job_input.get("doc_path"):
+            doc_paths = [job_input["doc_path"]]
+        return {
+            "job_id": job_id,
+            "documents": [Path(str(path)).name for path in doc_paths],
+            "document_pairs": _public_document_pairs(job_input),
+            "repos": job_input.get("repos", []),
+            "rest_url": job_input.get("rest_url", ""),
+            "resume": bool(job_input.get("resume", True)),
+            "auth": (
+                {
+                    "login_url": auth.get("login_url", ""),
+                    "username": auth.get("username", ""),
+                    "insecure_tls": bool(auth.get("insecure_tls", True)),
+                    "password_configured": bool(auth.get("password")),
+                }
+                if isinstance(auth, dict)
+                else None
+            ),
+            "llm": (
+                {
+                    "model": llm.get("model", "MiniMax-M3"),
+                    "base_url": llm.get("base_url", "https://api.minimaxi.com/v1"),
+                    "max_tokens": llm.get("max_tokens", 16384),
+                    "api_key_configured": job_id in app.state.job_llm_configs,
+                }
+                if isinstance(llm, dict)
+                else None
+            ),
+            "e2e": job_input.get("e2e") if isinstance(job_input.get("e2e"), dict) else None,
+        }
+
+    @app.put("/api/v1/jobs/{job_id}/configuration", status_code=202)
+    async def update_job_configuration(
+        job_id: str, request: JobConfigurationUpdateRequest
+    ) -> dict[str, Any]:
+        """保存整份任务配置，并从需求解析起归档旧产物后全量重新执行。"""
+        _require_job(app, job_id)
+        if _task_alive(app, job_id):
+            raise HTTPException(
+                status_code=409, detail=f"job {job_id} 正在运行中，请先停止后再修改配置"
+            )
+        previous = _load_job_input(orch_store, job_id)
+        for repo in request.repos:
+            if repo.language not in ("java", "python"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"仓库 {repo.name} 的 language 仅支持 java/python：{repo.language}",
+                )
+            repo_path = Path(repo.path)
+            if not repo_path.is_absolute() or not repo_path.is_dir():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"仓库 {repo.name} 路径不存在或不是绝对目录：{repo.path}",
+                )
+        if not request.rest_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="rest_url 须为 http(s) 地址")
+        if request.e2e is not None and not request.e2e.base_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="e2e.base_url 须为 http(s) 地址")
+
+        auth_payload: dict[str, Any] | None = None
+        if request.auth is not None:
+            if (
+                not request.auth.login_url.startswith(("http://", "https://"))
+                or not request.auth.username
+            ):
+                raise HTTPException(
+                    status_code=400, detail="auth.login_url 须为 http(s)，且用户名不能为空"
+                )
+            old_auth = previous.get("auth") if isinstance(previous.get("auth"), dict) else {}
+            password = request.auth.password or old_auth.get("password")
+            if not password:
+                raise HTTPException(
+                    status_code=400, detail="请填写鉴权密码（当前任务没有可复用的密码）"
+                )
+            if len(request.auth.username) > 128 or len(password) > 256:
+                raise HTTPException(
+                    status_code=400, detail="auth.username/password 超长（用户名≤128、密码≤256）"
+                )
+            auth_payload = {**request.auth.model_dump(), "password": password}
+
+        llm_payload: dict[str, Any] | None = None
+        if request.llm is not None:
+            if not request.llm.base_url.startswith(("http://", "https://")):
+                raise HTTPException(status_code=400, detail="llm.base_url 须为 http(s) 地址")
+            old_runtime = app.state.job_llm_configs.get(job_id, {})
+            api_key = request.llm.api_key or old_runtime.get("api_key")
+            if not api_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="请填写 MiniMax API Key（服务重启后无法复用内存中的密钥）",
+                )
+            llm_payload = {**request.llm.model_dump(), "api_key": api_key}
+
+        doc_paths = previous.get("doc_paths", [])
+        document_pairs = previous.get("document_pairs")
+        if request.document_pairs:
+            document_pairs = _replace_document_pairs(orch_store, job_id, request.document_pairs)
+            doc_paths = [str(pair["target_path"]) for pair in document_pairs]
+        elif request.docs:
+            doc_paths = [str(path) for path in _replace_docs(orch_store, job_id, request.docs)]
+            document_pairs = None
+        elif not request.keep_existing_docs:
+            raise HTTPException(status_code=400, detail="未选择新需求文档时必须保留当前需求文档")
+        if not doc_paths:
+            raise HTTPException(status_code=400, detail="当前任务缺少可保留的需求文档，请重新上传")
+
+        job_input: dict[str, Any] = {
+            "job_id": job_id,
+            "doc_paths": doc_paths,
+            "repos": [repo.model_dump() for repo in request.repos],
+            "rest_url": request.rest_url.rstrip("/"),
+            "resume": request.resume,
+            "submitted_at": previous.get("submitted_at", _now_iso()),
+            "updated_at": _now_iso(),
+        }
+        if isinstance(document_pairs, list):
+            job_input["document_pairs"] = document_pairs
+        if auth_payload is not None:
+            job_input["auth"] = auth_payload
+        if llm_payload is not None:
+            job_input["llm"] = {
+                key: llm_payload[key] for key in ("model", "base_url", "max_tokens")
+            }
+            app.state.job_llm_configs[job_id] = llm_payload
+        elif isinstance(previous.get("llm"), dict):
+            job_input["llm"] = previous["llm"]
+        if request.e2e is not None:
+            job_input["e2e"] = request.e2e.model_dump()
+        (orch_store.job_dir(job_id) / "job_input.json").write_text(
+            json.dumps(job_input, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        _spawn_run(app, job_id, force_node="req_parse")
+        return {
+            "job_id": job_id,
+            "status": "configuration-saved-and-rerun-queued",
+            "from_node": "req_parse",
         }
 
     @app.get("/api/v1/jobs/{job_id}/logs")
@@ -531,6 +743,20 @@ def _task_alive(app: FastAPI, job_id: str) -> bool:
     return task is not None and not task.done()
 
 
+def _pick_native_directory() -> str:
+    """标准库 Tk 目录框；不在无图形环境中伪造路径。"""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        return str(filedialog.askdirectory(title="选择被测源码仓库目录"))
+    finally:
+        root.destroy()
+
+
 def _require_job(app: FastAPI, job_id: str) -> Path:
     """job 存在性校验（state.json 为准——产物为唯一事实）。"""
     job_dir: Path = app.state.orch_store.job_dir(job_id)
@@ -570,7 +796,55 @@ def _request_docs(request: JobSubmitRequest) -> list[DocInput]:
     raise HTTPException(status_code=400, detail="至少提交 1 份需求文档（docs 或旧单文档字段）")
 
 
-def _save_docs(orch_store: ArtifactStore, job_id: str, docs: list[DocInput]) -> list[Path]:
+def _public_document_pairs(job_input: dict[str, Any]) -> list[dict[str, str | None]]:
+    """配置读取仅展示文件名，不泄露任务工作目录绝对路径。"""
+    pairs = job_input.get("document_pairs")
+    if not isinstance(pairs, list):
+        return []
+    result: list[dict[str, str | None]] = []
+    for pair in pairs:
+        if not isinstance(pair, dict) or not pair.get("target_path"):
+            continue
+        target = Path(str(pair["target_path"])).name
+        baseline = pair.get("baseline_path")
+        result.append(
+            {"target_name": target, "baseline_name": Path(str(baseline)).name if baseline else None}
+        )
+    return result
+
+
+def _save_document_pairs(
+    orch_store: ArtifactStore,
+    job_id: str,
+    pairs: list[RequirementDocumentPair],
+    target_dir: Path | None = None,
+) -> list[dict[str, str | None]]:
+    """落盘多行版本文档，并将每行的基线/被测关系保存为显式元数据。"""
+    if not pairs:
+        return []
+    flattened: list[DocInput] = []
+    indexes: list[tuple[int, int | None]] = []
+    for pair in pairs:
+        target_index = len(flattened)
+        flattened.append(pair.target)
+        baseline_index: int | None = None
+        if pair.baseline is not None:
+            baseline_index = len(flattened)
+            flattened.append(pair.baseline)
+        indexes.append((target_index, baseline_index))
+    paths = _save_docs(orch_store, job_id, flattened, target_dir=target_dir)
+    return [
+        {
+            "target_path": str(paths[target_index]),
+            "baseline_path": str(paths[baseline_index]) if baseline_index is not None else None,
+        }
+        for target_index, baseline_index in indexes
+    ]
+
+
+def _save_docs(
+    orch_store: ArtifactStore, job_id: str, docs: list[DocInput], target_dir: Path | None = None
+) -> list[Path]:
     """逐份校验并落盘上传文档（input/ 子目录），返回路径列表（req_parse 按后缀解析）。
 
     C-12 安全：文档名仅允许纯 basename（拒绝绝对路径/斜杠/..）；限额：
@@ -615,11 +889,57 @@ def _save_docs(orch_store: ArtifactStore, job_id: str, docs: list[DocInput]) -> 
                 serial += 1
             name = f"{stem}-{serial}{suffix}"
         used_names.add(name)
-        doc_path = orch_store.job_dir(job_id) / "input" / name
+        doc_path = (target_dir or orch_store.job_dir(job_id) / "input") / name
         doc_path.parent.mkdir(parents=True, exist_ok=True)
         doc_path.write_bytes(content)
         paths.append(doc_path)
     return paths
+
+
+def _replace_docs(orch_store: ArtifactStore, job_id: str, docs: list[DocInput]) -> list[Path]:
+    """原子替换任务输入文档：新文件全部校验成功后才删除旧文件。"""
+    job_dir = orch_store.job_dir(job_id)
+    staging = job_dir / f".input-next-{uuid.uuid4().hex}"
+    try:
+        staged_paths = _save_docs(orch_store, job_id, docs, target_dir=staging)
+        input_dir = job_dir / "input"
+        if input_dir.exists():
+            shutil.rmtree(input_dir)
+        staging.rename(input_dir)
+        return [input_dir / path.name for path in staged_paths]
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+
+
+def _replace_document_pairs(
+    orch_store: ArtifactStore, job_id: str, pairs: list[RequirementDocumentPair]
+) -> list[dict[str, str | None]]:
+    """原子替换多行版本文档，并回写重命名后的基线/被测路径。"""
+    job_dir = orch_store.job_dir(job_id)
+    staging = job_dir / f".input-next-{uuid.uuid4().hex}"
+    try:
+        saved = _save_document_pairs(orch_store, job_id, pairs, target_dir=staging)
+        input_dir = job_dir / "input"
+        if input_dir.exists():
+            shutil.rmtree(input_dir)
+        staging.rename(input_dir)
+        return [
+            {
+                "target_path": str(input_dir / Path(str(pair["target_path"])).name),
+                "baseline_path": (
+                    str(input_dir / Path(str(pair["baseline_path"])).name)
+                    if pair.get("baseline_path")
+                    else None
+                ),
+            }
+            for pair in saved
+        ]
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
 
 
 def _load_job_input(orch_store: ArtifactStore, job_id: str) -> dict[str, Any]:
@@ -684,6 +1004,8 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
             }
             if job_input.get("e2e") is not None:
                 run_args["e2e"] = job_input["e2e"]
+            if isinstance(job_input.get("document_pairs"), list):
+                run_args["document_pairs"] = job_input["document_pairs"]
             if llm_config is not None:
                 run_args["llm_config"] = llm_config
             outcome = await runner.run(**run_args)

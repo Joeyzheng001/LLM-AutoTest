@@ -69,6 +69,12 @@ const navSections = computed(() =>
 const activeKey = ref('overview')
 const active = computed(() => views.value.find((view) => view.key === activeKey.value))
 
+/** 左侧“任务配置”始终打开新建模式；只有总览的编辑按钮会携带任务进入编辑模式。 */
+function selectView(key: string): void {
+  if (key === 'config') navigation.jobId = ''
+  activeKey.value = key
+}
+
 // C-16：总览页节点卡跳转（navigation.view 变化 → 切页；jobId 随 prop 下发）
 watch(
   () => navigation.view,
@@ -98,7 +104,7 @@ watch(views, (next) => {
             type="button"
             class="nav-item"
             :class="{ active: view.key === activeKey, child: view.child }"
-            @click="activeKey = view.key"
+            @click="selectView(view.key)"
           >
             <span class="nav-dot" aria-hidden="true" />
             {{ view.label }}

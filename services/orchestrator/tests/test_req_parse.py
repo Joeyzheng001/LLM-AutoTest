@@ -126,8 +126,53 @@ async def test_req_parse_success(env: tuple[Engine, ArtifactStore], doc: Path) -
     assert review["quality_grade"] == "B"
     assert review["source_files"] == [str(doc)]
     # 两个 Prompt 均为真实文件，且使用同一份已文本化的需求文档。
-    assert [ref for ref, _content in llm.received] == ["requirement_review@1.4", "req_parse@1.0"]
+    assert [ref for ref, _content in llm.received] == ["requirement_review@1.5", "req_parse@1.0"]
     assert all("按 ID 查询用户" in content for _ref, content in llm.received)
+
+
+async def test_req_parse_uses_version_diff_as_downstream_scope(
+    env: tuple[Engine, ArtifactStore], tmp_path: Path
+) -> None:
+    """有基线时先产出差异，评审与条目提取只能接收差异范围而不是原文全文。"""
+    engine, store = env
+    state = engine.init_job(_JOB)
+    baseline = tmp_path / "baseline.md"
+    target = tmp_path / "target.md"
+    baseline.write_text("旧：只能按 ID 查询用户", encoding="utf-8")
+    target.write_text("新：可按 ID 或手机号查询用户", encoding="utf-8")
+    diff = json.dumps(
+        {
+            "summary": "新增手机号查询条件",
+            "changes": [
+                {
+                    "change_type": "modified",
+                    "title": "用户查询条件",
+                    "target_description": "支持手机号查询",
+                    "baseline_description": "仅支持 ID 查询",
+                    "change_summary": "新增手机号查询",
+                    "source_location": "用户查询",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    llm = _SequenceLlm([diff, _GOOD_REVIEW_OUTPUT, _GOOD_OUTPUT])
+
+    await run_req_parse(
+        engine,
+        state,
+        store,
+        llm,
+        _PROMPTS,
+        [target],
+        document_pairs=[{"target_path": str(target), "baseline_path": str(baseline)}],
+    )
+
+    stored_diff = store.read_json(_JOB, "requirement_diff.json")
+    assert stored_diff["changes"][0]["id"] == "DIF-001"
+    assert llm.received[0].find("基线版本") >= 0
+    assert "需求版本差异分析" in llm.received[1]
+    assert "只支持 ID 查询用户" not in llm.received[1]
 
 
 async def test_req_parse_tolerates_code_fence(env: tuple[Engine, ArtifactStore], doc: Path) -> None:
@@ -271,6 +316,30 @@ async def test_req_parse_moves_nested_quality_assessment_to_root(
     stored = store.read_json(_JOB, "requirement_review.json")
     assert stored["quality_assessment"]["grade"] == stored["quality_grade"]
     assert "quality_assessment" not in stored["dimension_scores"]
+
+
+async def test_req_parse_drops_nested_quality_grade_and_caps_feature_list(
+    env: tuple[Engine, ArtifactStore], doc: Path
+) -> None:
+    """真实模型的“质量评级”错位及超长可测功能清单不应阻断整份评审。"""
+    engine, store = env
+    state = engine.init_job(_JOB)
+    review = json.loads(_GOOD_REVIEW_OUTPUT)
+    review["dimension_scores"]["质量评级"] = {"grade": "B", "grade_name": "良好"}
+    review["testable_features"] = [f"功能 {index}" for index in range(35)]
+
+    await run_req_parse(
+        engine,
+        state,
+        store,
+        _StubLlm(_GOOD_OUTPUT, json.dumps(review, ensure_ascii=False)),
+        _PROMPTS,
+        [doc],
+    )
+
+    stored = store.read_json(_JOB, "requirement_review.json")
+    assert "质量评级" not in stored["dimension_scores"]
+    assert len(stored["testable_features"]) == 30
 
 
 async def test_req_parse_normalizes_issue_reason_alias_or_missing(

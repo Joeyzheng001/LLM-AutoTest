@@ -110,6 +110,16 @@ export interface DocInput {
   doc_content_b64: string
 }
 
+export interface RequirementDocumentPairInput {
+  target: DocInput
+  baseline?: DocInput
+}
+
+export interface RequirementDocumentPairView {
+  target_name: string
+  baseline_name: string | null
+}
+
 // C-15：鉴权配置（可选；执行前登录被测服务注入凭据头，数值/凭据不经 LLM）
 export interface AuthConfig {
   login_url: string
@@ -134,12 +144,44 @@ export interface E2eConfig {
 export interface JobSubmitPayload {
   job_id?: string
   docs: DocInput[]
+  document_pairs?: RequirementDocumentPairInput[]
   repos: RepoConfig[] // C-10：≥1 个仓库（原 ≥2 放宽）
   rest_url: string
   resume?: boolean
   auth?: AuthConfig // C-15：鉴权配置（可选）
   llm?: LlmConfig // 运行时模型配置；密钥不在任务产物中保存
   e2e?: E2eConfig
+}
+
+/** 完整任务配置读取结果；密码和 API Key 永不返回，只说明能否复用。 */
+export interface JobConfiguration {
+  job_id: string
+  documents: string[]
+  document_pairs: RequirementDocumentPairView[]
+  repos: RepoConfig[]
+  rest_url: string
+  resume: boolean
+  auth: Omit<AuthConfig, 'password'> & { password_configured: boolean } | null
+  llm: Omit<LlmConfig, 'api_key'> & { api_key_configured: boolean } | null
+  e2e: E2eConfig | null
+}
+
+export interface JobConfigurationUpdatePayload {
+  docs: DocInput[]
+  document_pairs?: RequirementDocumentPairInput[]
+  keep_existing_docs: boolean
+  repos: RepoConfig[]
+  rest_url: string
+  resume: boolean
+  auth?: Omit<AuthConfig, 'password'> & { password?: string }
+  llm?: Omit<LlmConfig, 'api_key'> & { api_key?: string }
+  e2e?: E2eConfig
+}
+
+export interface JobConfigurationUpdateResponse {
+  job_id: string
+  status: 'configuration-saved-and-rerun-queued'
+  from_node: 'req_parse'
 }
 
 /* ---- 产物形状（只声明页面用到的字段；后端 Schema 为唯一事实源） ---- */

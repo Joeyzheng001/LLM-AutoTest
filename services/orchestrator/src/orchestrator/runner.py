@@ -87,6 +87,7 @@ class PipelineRunner:
         doc_paths: list[Path],
         repositories: list[RepositoryInput],
         rest_base_url: str,
+        document_pairs: list[dict[str, str | None]] | None = None,
         force_node: str | None = None,
         auth: dict[str, Any] | None = None,
         llm_config: dict[str, Any] | None = None,
@@ -133,6 +134,7 @@ class PipelineRunner:
                 outcome,
                 auth,
                 e2e,
+                document_pairs,
             )
 
         self._refresh_final_metrics(state)
@@ -174,6 +176,7 @@ class PipelineRunner:
         outcome: PipelineOutcome,
         auth: dict[str, Any] | None = None,
         e2e: dict[str, Any] | None = None,
+        document_pairs: list[dict[str, str | None]] | None = None,
     ) -> None:
         """单节点治理：LLM 类失败重试一次，再失败或非 LLM 类失败 → 降级并继续（D1）。"""
         attempts = state.node(node_name).attempts
@@ -181,28 +184,55 @@ class PipelineRunner:
             try:
                 if e2e is None:
                     # 保留自定义 Runner / 历史集成的调用签名兼容性。
-                    await self._invoke_node(
-                        node_name,
-                        state,
-                        llm,
-                        prompts_dir,
-                        doc_paths,
-                        repositories,
-                        rest_base_url,
-                        auth,
-                    )
+                    if document_pairs is None:
+                        await self._invoke_node(
+                            node_name,
+                            state,
+                            llm,
+                            prompts_dir,
+                            doc_paths,
+                            repositories,
+                            rest_base_url,
+                            auth,
+                        )
+                    else:
+                        await self._invoke_node(
+                            node_name,
+                            state,
+                            llm,
+                            prompts_dir,
+                            doc_paths,
+                            repositories,
+                            rest_base_url,
+                            auth,
+                            document_pairs=document_pairs,
+                        )
                 else:
-                    await self._invoke_node(
-                        node_name,
-                        state,
-                        llm,
-                        prompts_dir,
-                        doc_paths,
-                        repositories,
-                        rest_base_url,
-                        auth,
-                        e2e,
-                    )
+                    if document_pairs is None:
+                        await self._invoke_node(
+                            node_name,
+                            state,
+                            llm,
+                            prompts_dir,
+                            doc_paths,
+                            repositories,
+                            rest_base_url,
+                            auth,
+                            e2e,
+                        )
+                    else:
+                        await self._invoke_node(
+                            node_name,
+                            state,
+                            llm,
+                            prompts_dir,
+                            doc_paths,
+                            repositories,
+                            rest_base_url,
+                            auth,
+                            e2e,
+                            document_pairs=document_pairs,
+                        )
                 outcome.completed.append(node_name)
                 return
             except PipelineError as exc:
@@ -229,10 +259,19 @@ class PipelineRunner:
         rest_base_url: str,
         auth: dict[str, Any] | None = None,
         e2e: dict[str, Any] | None = None,
+        document_pairs: list[dict[str, str | None]] | None = None,
     ) -> None:
         """分派到对应节点实现（甲/乙产物走 orch_store，丙产物走 te_store）。"""
         if node_name == "req_parse":
-            await run_req_parse(self._engine, state, self._orch_store, llm, prompts_dir, doc_paths)
+            await run_req_parse(
+                self._engine,
+                state,
+                self._orch_store,
+                llm,
+                prompts_dir,
+                doc_paths,
+                document_pairs=document_pairs,
+            )
         elif node_name == "code_scan":
             await run_code_scan(
                 self._engine, state, self._orch_store, self._java_client, repositories

@@ -44,6 +44,7 @@ class FakeRunner:
         force_node: str | None = None,
         auth: dict[str, Any] | None = None,
         llm_config: dict[str, Any] | None = None,
+        document_pairs: list[dict[str, str | None]] | None = None,
     ) -> PipelineOutcome:
         self.calls.append(
             {
@@ -54,6 +55,7 @@ class FakeRunner:
                 "force_node": force_node,
                 "auth": auth,
                 "llm_config": llm_config,
+                "document_pairs": document_pairs,
             }
         )
         job_dir = self.orch_store.job_dir(job_id)
@@ -68,9 +70,7 @@ class FakeRunner:
         self.orch_store.write(
             job_id, "requirement_items.json", self._payload("requirement_items", job_id)
         )
-        self.orch_store.write(
-            job_id, "requirement_review.json", requirement_review_payload(job_id)
-        )
+        self.orch_store.write(job_id, "requirement_review.json", requirement_review_payload(job_id))
         self.orch_store.write(
             job_id, "code_inventory.json", self._payload("code_inventory", job_id)
         )
@@ -164,8 +164,12 @@ class FakeRunner:
             ]
         elif kind == "execution":
             base["results"] = [
-                {"case_id": "TC-001", "interface_id": "IF-REST-001", "passed": True,
-                 "timestamp": "2026-09-15T00:00:00+00:00"}
+                {
+                    "case_id": "TC-001",
+                    "interface_id": "IF-REST-001",
+                    "passed": True,
+                    "timestamp": "2026-09-15T00:00:00+00:00",
+                }
             ]
             base["summary"] = {
                 "total": 1,
@@ -174,8 +178,12 @@ class FakeRunner:
                 "failed_environment": 0,
             }
         elif kind == "metrics":
-            base["automation_rate"] = {"value": 1.0, "numerator": 9, "denominator": 9,
-                                        "data_complete": True}
+            base["automation_rate"] = {
+                "value": 1.0,
+                "numerator": 9,
+                "denominator": 9,
+                "data_complete": True,
+            }
             base["nodes"] = [{"name": n, "status": "completed"} for n in NODE_ORDER]
         elif kind == "defects":
             base["defects"] = []
@@ -206,9 +214,7 @@ async def env(tmp_path: Path) -> tuple[FastAPI, FakeRunner, httpx.AsyncClient, P
     app = create_app(settings)
     fake = FakeRunner(settings, app.state.engine, app.state.orch_store, app.state.te_store)
     app.state.runner = fake
-    client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    )
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
     yield app, fake, client, repo_dir
     await client.aclose()
 
@@ -276,6 +282,44 @@ async def test_submit_job_multi_docs(
     assert (job_dir / "input" / "extra.md").read_text(encoding="utf-8") == doc_b
     assert len(fake.calls) == 1
     assert len(fake.calls[0]["doc_paths"]) == 2
+
+
+async def test_submit_job_version_document_pairs(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """每行被测/基线文档保存成显式配对元数据，并仅把被测版本传给旧 runner 输入。"""
+    app, fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-pair1")
+    body.pop("doc_name")
+    body.pop("doc_content_b64")
+    body["document_pairs"] = [
+        {
+            "target": {
+                "doc_name": "target.md",
+                "doc_content_b64": base64.b64encode(b"new").decode(),
+            },
+            "baseline": {
+                "doc_name": "baseline.md",
+                "doc_content_b64": base64.b64encode(b"old").decode(),
+            },
+        },
+        {"target": {"doc_name": "single.md", "doc_content_b64": base64.b64encode(b"one").decode()}},
+    ]
+    assert (await client.post("/api/v1/jobs", json=body)).status_code == 202
+    await _await_task(app, "job-api-pair1")
+    saved = json.loads(
+        (
+            Path(str(app.state.settings.artifacts_root)) / "job-api-pair1" / "job_input.json"
+        ).read_text()
+    )
+    assert len(saved["document_pairs"]) == 2
+    assert saved["document_pairs"][0]["baseline_path"].endswith("baseline.md")
+    assert fake.calls[-1]["document_pairs"] == saved["document_pairs"]
+    config = (await client.get("/api/v1/jobs/job-api-pair1/configuration")).json()
+    assert config["document_pairs"] == [
+        {"target_name": "target.md", "baseline_name": "baseline.md"},
+        {"target_name": "single.md", "baseline_name": None},
+    ]
 
 
 async def test_submit_job_docs_and_legacy_validations(
@@ -372,9 +416,7 @@ async def test_submit_job_docs_count_and_size_limits(
     app, _fake, client, repo_dir = env
     artifacts_root = Path(str(app.state.settings.artifacts_root))
     doc_b64 = base64.b64encode(_DOC.encode()).decode()
-    overflow = {"docs": [
-        {"doc_name": f"d{i}.md", "doc_content_b64": doc_b64} for i in range(11)
-    ]}
+    overflow = {"docs": [{"doc_name": f"d{i}.md", "doc_content_b64": doc_b64} for i in range(11)]}
     body = _submit_body(repo_dir, "job-api-sec2", **overflow)
     del body["doc_name"], body["doc_content_b64"]
     response = await client.post("/api/v1/jobs", json=body)
@@ -419,8 +461,9 @@ async def test_submit_job_repo_language_validation(
     assert response.status_code == 202
     await _await_task(app, "job-api-lang1")
     saved = json.loads(
-        (Path(str(app.state.settings.artifacts_root)) / "job-api-lang1" / "job_input.json")
-        .read_text(encoding="utf-8")
+        (
+            Path(str(app.state.settings.artifacts_root)) / "job-api-lang1" / "job_input.json"
+        ).read_text(encoding="utf-8")
     )
     assert saved["repos"][0]["language"] == "python"
 
@@ -542,6 +585,86 @@ async def test_submit_job_llm_key_is_runtime_only(
     assert fake.calls[-1]["llm_config"]["api_key"] == "sk-test-key-123456"
 
 
+async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """完整配置读取脱敏；编辑可保留文档/密码/内存 Key，保存后从 req_parse 全量重跑。"""
+    app, fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-edit1")
+    body["auth"] = {
+        "login_url": "https://example.test/login/",
+        "username": "admin",
+        "password": "secret-password",
+    }
+    body["llm"] = {
+        "api_key": "sk-test-key-123456",
+        "model": "MiniMax-M3",
+        "base_url": "https://api.minimaxi.com/v1",
+        "max_tokens": 8192,
+    }
+    assert (await client.post("/api/v1/jobs", json=body)).status_code == 202
+    await _await_task(app, "job-api-edit1")
+
+    config = (await client.get("/api/v1/jobs/job-api-edit1/configuration")).json()
+    assert config["documents"] == ["requirements.md"]
+    assert config["auth"]["password_configured"] is True
+    assert "password" not in config["auth"]
+    assert config["llm"]["api_key_configured"] is True
+    assert "api_key" not in config["llm"]
+
+    update = {
+        "docs": [],
+        "keep_existing_docs": True,
+        "repos": [{"name": "repo-updated", "path": str(repo_dir), "branch": "feature/x"}],
+        "rest_url": "https://example.test:8443",
+        "resume": False,
+        "auth": {"login_url": "https://example.test/login/", "username": "admin"},
+        "llm": {
+            "model": "MiniMax-M2.5",
+            "base_url": "https://api.minimaxi.com/v1",
+            "max_tokens": 4096,
+        },
+    }
+    response = await client.put("/api/v1/jobs/job-api-edit1/configuration", json=update)
+    assert response.status_code == 202
+    assert response.json()["from_node"] == "req_parse"
+    await _await_task(app, "job-api-edit1")
+    assert fake.calls[-1]["force_node"] == "req_parse"
+    saved = json.loads(
+        (
+            Path(str(app.state.settings.artifacts_root)) / "job-api-edit1" / "job_input.json"
+        ).read_text()
+    )
+    assert saved["auth"]["password"] == body["auth"]["password"]
+    assert saved["llm"]["model"] == "MiniMax-M2.5"
+    assert "api_key" not in saved["llm"]
+    assert saved["doc_paths"][-1].endswith("input/requirements.md")
+
+
+async def test_edit_full_job_configuration_replaces_documents(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """重新上传文档时替换 input 目录，不混入旧需求文档。"""
+    app, _fake, client, repo_dir = env
+    assert (
+        await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-edit2"))
+    ).status_code == 202
+    await _await_task(app, "job-api-edit2")
+    update = {
+        "docs": [{"doc_name": "new.md", "doc_content_b64": base64.b64encode(b"# new").decode()}],
+        "keep_existing_docs": False,
+        "repos": [{"name": "repo-a", "path": str(repo_dir), "branch": "main"}],
+        "rest_url": "http://127.0.0.1:9001",
+        "resume": True,
+    }
+    assert (
+        await client.put("/api/v1/jobs/job-api-edit2/configuration", json=update)
+    ).status_code == 202
+    input_dir = Path(str(app.state.settings.artifacts_root)) / "job-api-edit2" / "input"
+    assert (input_dir / "new.md").is_file()
+    assert not (input_dir / "requirements.md").exists()
+
+
 async def test_job_status_and_artifacts(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:
@@ -605,6 +728,7 @@ async def test_retest_full_and_single(
 ) -> None:
     """全量复测（force_node 队列化）与单条复测（同源核心，环境不可达如实告警）。"""
     app, fake, client, repo_dir = env
+
     # rest_url 用封闭端口；单条复测的环境探测直接桩为不可达——测点是「不可达 →
     # 跳过 + 告警」行为本身，不依赖真实网络拒绝（透明代理环境下 502 响应会被
     # probe_rest 判为存活，真实端口拒绝不可移植）
@@ -637,9 +761,7 @@ async def test_retest_full_and_single(
         }
     ]
     (job_dir / "defects.json").write_text(json.dumps(defects), encoding="utf-8")
-    single = await client.post(
-        "/api/v1/jobs/job-api-0004/retest", json={"defect_id": "DEF-001"}
-    )
+    single = await client.post("/api/v1/jobs/job-api-0004/retest", json={"defect_id": "DEF-001"})
     assert single.status_code == 200
     payload = single.json()
     assert payload["mode"] == "single"
@@ -654,9 +776,7 @@ async def test_review_log_and_reject_rerun(
     app, fake, client, repo_dir = env
     await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-0005"))
     await _await_task(app, "job-api-0005")
-    bad = await client.post(
-        "/api/v1/jobs/job-api-0005/review-log", json={"decision": "maybe"}
-    )
+    bad = await client.post("/api/v1/jobs/job-api-0005/review-log", json={"decision": "maybe"})
     assert bad.status_code == 400
     approved = await client.post(
         "/api/v1/jobs/job-api-0005/review-log",
@@ -672,7 +792,7 @@ async def test_review_log_and_reject_rerun(
     assert rejected.json()["rerun"] == "testcase_generate"
     await _await_task(app, "job-api-0005")
     assert fake.calls[-1]["force_node"] == "testcase_generate"
-    log = (Path(str(app.state.settings.artifacts_root)) / "job-api-0005" / "review_log.jsonl")
+    log = Path(str(app.state.settings.artifacts_root)) / "job-api-0005" / "review_log.jsonl"
     entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert [e["decision"] for e in entries] == ["approved", "rejected"]
 
@@ -685,9 +805,7 @@ async def test_rerun_from_node(
     await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-rr01"))
     await _await_task(app, "job-api-rr01")
 
-    response = await client.post(
-        "/api/v1/jobs/job-api-rr01/rerun", json={"from_node": "code_scan"}
-    )
+    response = await client.post("/api/v1/jobs/job-api-rr01/rerun", json={"from_node": "code_scan"})
     assert response.status_code == 200
     assert response.json() == {
         "job_id": "job-api-rr01",
@@ -721,9 +839,7 @@ async def test_rerun_rejections(
     await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-rr03"))
     await _await_task(app, "job-api-rr03")
 
-    bad_node = await client.post(
-        "/api/v1/jobs/job-api-rr03/rerun", json={"from_node": "bogus"}
-    )
+    bad_node = await client.post("/api/v1/jobs/job-api-rr03/rerun", json={"from_node": "bogus"})
     assert bad_node.status_code == 400
     assert "9 节点之一" in bad_node.json()["detail"]
 

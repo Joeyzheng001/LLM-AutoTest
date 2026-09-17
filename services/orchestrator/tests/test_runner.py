@@ -345,7 +345,7 @@ async def test_runner_full_pipeline_e2e(tmp_path: Path) -> None:
     assert llm.calls == [
         "req_parse", "req_parse", "interface_reconstruct", "code_review", "testcase_generate"
     ]
-    assert llm.prompt_refs[:2] == ["requirement_review@1.3", "req_parse@1.0"]
+    assert llm.prompt_refs[:2] == ["requirement_review@1.5", "req_parse@1.0"]
     # 收尾刷新（docs/13 P-10）：metrics.json 为九节点终态版，自动化率 9/9
     metrics = json.loads((job_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["automation_rate"] == {

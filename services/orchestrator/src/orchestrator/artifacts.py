@@ -27,6 +27,7 @@ JOB_ID_RE = re.compile(r"^job-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # docs/12 §二产物清单与写方（service 级）：甲/乙产出的数据经 orchestrator 落盘，
 # 丙负责的执行侧产物由 test-executor 直接写入产物卷。
 ARTIFACT_FILES: tuple[str, ...] = (
+    "requirement_diff.json",
     "requirement_items.json",
     "requirement_review.json",
     "code_inventory.json",
@@ -42,6 +43,7 @@ ARTIFACT_FILES: tuple[str, ...] = (
 _MD_ARTIFACTS: tuple[str, ...] = ("test_report.md",)
 
 _WRITE_OWNERS: dict[str, str] = {
+    "requirement_diff.json": "orchestrator",
     "requirement_items.json": "orchestrator",
     "requirement_review.json": "orchestrator",
     "code_inventory.json": "orchestrator",

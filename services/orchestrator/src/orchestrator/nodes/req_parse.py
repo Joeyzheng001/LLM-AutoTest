@@ -64,6 +64,7 @@ async def run_req_parse(
     llm: SupportsComplete,
     prompts_dir: Path,
     doc_paths: list[Path],
+    document_pairs: list[dict[str, str | None]] | None = None,
 ) -> Path:
     """执行 req_parse 全流程：跳序检查 → 运行 → 解析 → 校验落盘 → 置完成。
 
@@ -79,7 +80,15 @@ async def run_req_parse(
     engine.check_runnable(state, NODE_NAME)
     engine.mark_running(state, NODE_NAME)
     try:
+        # 双版本输入先形成可审计的差异产物；后续评审与条目提取只接收该差异范围。
+        # 只有单文档/无基线的历史调用保持原始文档解析语义。
         doc_text = _merge_documents(doc_paths)
+        if document_pairs and any(pair.get("baseline_path") for pair in document_pairs):
+            diff_payload = await _build_requirement_diff(
+                store, state.job_id, llm, prompts_dir, document_pairs
+            )
+            _write_llm_artifact(store, state.job_id, "requirement_diff.json", diff_payload)
+            doc_text = _diff_as_requirement_input(diff_payload)
         review_prompt = load_prompt(prompts_dir, "requirement_review")
         review_payload = _build_review_payload(
             await complete_with_json_repair(
@@ -133,6 +142,117 @@ def _build_review_payload(
         "source_files": [str(path) for path in doc_paths],
         **review,
     }
+
+
+async def _build_requirement_diff(
+    store: ArtifactStore,
+    job_id: str,
+    llm: SupportsComplete,
+    prompts_dir: Path,
+    document_pairs: list[dict[str, str | None]],
+) -> dict[str, Any]:
+    """逐对分析需求版本差异并由程序统一编号，避免长 JSON 与跨对串扰。"""
+    prompt = load_prompt(prompts_dir, "requirement_diff")
+    merged_changes: list[dict[str, Any]] = []
+    summaries: list[str] = []
+    paired = [pair for pair in document_pairs if pair.get("baseline_path")]
+    for pair_index, pair in enumerate(paired, start=1):
+        target_path = Path(str(pair["target_path"]))
+        baseline_path = Path(str(pair["baseline_path"]))
+        content = (
+            f"文档对 {pair_index}/{len(paired)}\n\n"
+            f"## 基线版本：{baseline_path.name}\n\n{load_document_text(baseline_path)}\n\n"
+            f"## 被测版本：{target_path.name}\n\n{load_document_text(target_path)}"
+        )
+        raw = await complete_with_json_repair(
+            llm,
+            NODE_NAME,
+            prompt,
+            content,
+            _extract_diff,
+            _validate_diff_shape,
+        )
+        summaries.append(str(raw["summary"]))
+        for change in raw["changes"]:
+            merged_changes.append({"pair_index": pair_index, **change})
+    for index, change in enumerate(merged_changes, start=1):
+        change["id"] = f"DIF-{index:03d}"
+    return {
+        "schema_version": "1.0",
+        "job_id": job_id,
+        "has_baseline": True,
+        "summary": "；".join(summaries) or "未识别到可验证的需求差异",
+        "changes": merged_changes,
+    }
+
+
+def _extract_diff(text: str) -> dict[str, Any]:
+    """解析差异 Prompt 输出；字段和值域由 Schema 前的形状检查约束。"""
+    cleaned = _strip_code_fence(text)
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise PipelineError(
+            code=X_LLM_02,
+            message=f"需求差异分析 LLM 输出不是合法 JSON：{exc}",
+            node_id=NODE_NAME,
+        ) from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("changes"), list):
+        raise PipelineError(
+            code=X_LLM_02,
+            message="需求差异分析 LLM 输出缺少 changes 数组（或结构不符）",
+            node_id=NODE_NAME,
+        )
+    payload.pop("schema_version", None)
+    payload.pop("job_id", None)
+    return payload
+
+
+def _validate_diff_shape(payload: dict[str, Any]) -> None:
+    """让缺 summary/changes 的典型漂移进入一次 JSON 修复轮。"""
+    if not isinstance(payload.get("summary"), str) or not isinstance(payload.get("changes"), list):
+        raise PipelineError(
+            code=X_LLM_02,
+            message="需求差异输出必须是包含 summary 字符串与 changes 数组的 JSON 对象",
+            node_id=NODE_NAME,
+        )
+    required = {
+        "change_type",
+        "title",
+        "target_description",
+        "baseline_description",
+        "change_summary",
+        "source_location",
+    }
+    malformed = any(
+        not isinstance(change, dict) or not required <= set(change)
+        for change in payload["changes"]
+    )
+    if malformed:
+        raise PipelineError(
+            code=X_LLM_02,
+            message="需求差异 changes 每项必须包含变化类型、标题、两侧描述、差异说明和来源定位",
+            node_id=NODE_NAME,
+        )
+
+
+def _diff_as_requirement_input(payload: dict[str, Any]) -> str:
+    """将差异产物变为后续节点唯一需求范围；删除项只保留影响核查，不造成功用例。"""
+    lines = ["# 需求版本差异分析（后续处理范围）", str(payload["summary"])]
+    for change in payload["changes"]:
+        change_type = str(change["change_type"])
+        lines.extend(
+            [
+                f"## {change['id']} · {change_type} · {change['title']}",
+                f"差异：{change['change_summary']}",
+                f"来源：{change['source_location']}",
+            ]
+        )
+        if change_type in {"added", "modified"}:
+            lines.append(f"被测需求：{change['target_description']}")
+        else:
+            lines.append(f"删除需求（仅做实现影响与回归风险核查）：{change['baseline_description']}")
+    return "\n\n".join(lines)
 
 
 def _batch_input(label: str, index: int, total: int, content: str) -> str:
@@ -341,6 +461,14 @@ def _normalize_review_shape(review: dict[str, Any]) -> dict[str, Any]:
             nested_assessment, dict
         ):
             normalized["quality_assessment"] = nested_assessment
+        # “质量评级”与 quality_assessment 是同一展示概念。模型偶尔把前者
+        # 放进 dimension_scores；根级 quality_assessment 已存在时它完全冗余，
+        # 必须移除，避免固定维度对象被 additionalProperties 拒绝。
+        nested_grade = normalized["dimension_scores"].pop("质量评级", None)
+        if not isinstance(normalized.get("quality_assessment"), dict) and isinstance(
+            nested_grade, dict
+        ):
+            normalized["quality_assessment"] = _normalize_quality_assessment(nested_grade)
         normalized["dimension_scores"] = _normalize_dimension_names(normalized["dimension_scores"])
         _complete_review_score_and_grade(normalized)
 
@@ -366,7 +494,46 @@ def _normalize_review_shape(review: dict[str, Any]) -> dict[str, Any]:
     issues = normalized.get("issues")
     if isinstance(issues, list):
         normalized["issues"] = [_normalize_issue(item) for item in issues]
+    _cap_review_collections(normalized)
     return normalized
+
+
+def _normalize_quality_assessment(value: dict[str, Any]) -> dict[str, Any]:
+    """归一“质量评级”这一明确别名；只转换字段名，不猜测业务评级。"""
+    assessment = dict(value)
+    aliases = {"评级": "grade", "等级": "grade", "等级名称": "grade_name", "说明": "summary_reason"}
+    for source, target in aliases.items():
+        if target not in assessment and source in assessment:
+            assessment[target] = assessment.pop(source)
+    return assessment
+
+
+def _cap_review_collections(review: dict[str, Any]) -> None:
+    """持久化 Schema 有硬上限时程序化截断，杜绝长文档因一条超限整体失败。"""
+    limits = {
+        "issues": 20,
+        "readable_issue_points": 10,
+        "completeness_issues": 20,
+        "consistency_issues": 20,
+        "untestable_items": 20,
+        "risk_flags": 10,
+        "testable_features": 30,
+    }
+    for field, limit in limits.items():
+        values = review.get(field)
+        if not isinstance(values, list):
+            continue
+        # 按模型给出的既有优先级保留前 N 条；同文本去重，避免重复项挤占配额。
+        compact: list[Any] = []
+        seen: set[str] = set()
+        for value in values:
+            marker = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            if marker not in seen:
+                compact.append(value)
+                seen.add(marker)
+            if len(compact) == limit:
+                break
+        review[field] = compact
 
 
 def _complete_review_score_and_grade(review: dict[str, Any]) -> None:

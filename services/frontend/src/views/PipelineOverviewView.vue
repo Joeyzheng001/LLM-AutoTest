@@ -295,6 +295,14 @@ function formatLogMessage(entry: LlmCallLog): string {
       </header>
       <div class="action-bar">
         <div class="rerun-controls">
+          <button
+            class="rerun-btn secondary"
+            type="button"
+            :disabled="status.running"
+            @click="navigateTo('config', selectedId)"
+          >
+            编辑完整配置
+          </button>
           <select v-model="rerunFromNode" class="mono rerun-select" aria-label="重跑起始节点">
             <option v-for="option in rerunOptions" :key="option.name" :value="option.name">
               {{ option.label }}
@@ -338,7 +346,7 @@ function formatLogMessage(entry: LlmCallLog): string {
 
       <p v-if="rerunError" class="state-error" role="alert">{{ rerunError }}</p>
       <p class="rerun-note">
-        可修改接口/E2E 目标后重跑：仅改执行地址时请选择「从自动执行起」，不会重新调用 LLM；改需求、仓库或 E2E 生成开关请新建任务，避免混入旧分析产物。
+        仅修改执行地址时可从「自动执行」起重跑；需求、仓库、鉴权、模型或 E2E 开关等完整参数请使用「编辑完整配置」，保存后会从需求解析起全量重跑。
       </p>
 
       <p v-if="statusError" class="state-error" role="alert">{{ statusError }}</p>
