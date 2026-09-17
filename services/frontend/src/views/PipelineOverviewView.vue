@@ -198,6 +198,26 @@ const nodesInOrder = computed<OrderedNode[]>(() => {
   return result
 })
 
+const activeStage = computed(() => status.value?.nodes.find((node) => node.status === 'running'))
+const completedStages = computed(() => status.value?.nodes.filter((node) => node.status === 'completed').length ?? 0)
+const latestRunEvent = computed(() => llmLogs.value.at(-1))
+const stageProgress = computed(() => {
+  const event = latestRunEvent.value
+  const index = event?.event === 'e2e_case_started' ? event.index : event?.batch?.index
+  const total = event?.event === 'e2e_case_started' ? event.total : event?.batch?.total
+  if (typeof index === 'number' && typeof total === 'number' && total > 0) {
+    return { known: true, value: Math.min(100, Math.round((index / total) * 100)), label: `${index}/${total}` }
+  }
+  return { known: false, value: 0, label: activeStage.value ? '处理中' : '—' }
+})
+
+function stageDetail(): string {
+  const event = latestRunEvent.value
+  if (event?.event === 'e2e_case_started') return `E2E ${event.index}/${event.total} · ${event.case_id} 执行中`
+  if (event?.event === 'started') return `第 ${event.batch?.index}/${event.batch?.total} 批模型调用中`
+  return activeStage.value ? `${NODE_LABELS[activeStage.value.name] ?? activeStage.value.name} 正在处理` : '等待任务开始'
+}
+
 /* C-16：节点卡跳转——已完成/降级节点可点（有产物可看），pending/running 灰置 */
 function nodeClickable(entry: OrderedNode): boolean {
   const statusName = entry.node?.status
@@ -210,11 +230,6 @@ function handleNodeClick(entry: OrderedNode): void {
   if (!nodeClickable(entry) || !selectedId.value) return
   const view = NODE_VIEW[entry.name]
   if (view) navigateTo(view, selectedId.value)
-}
-
-function formatRate(value: number | null): string {
-  // 展示口径：后端已汇总的值仅做格式化（百分比），null = 数据不完整（X-MTR-02）
-  return value === null ? '—' : `${Math.round(value * 100)}%`
 }
 
 function formatTime(iso: string | null): string {
@@ -328,6 +343,21 @@ function formatLogMessage(entry: LlmCallLog): string {
 
       <p v-if="statusError" class="state-error" role="alert">{{ statusError }}</p>
 
+      <section class="stage-banner" aria-live="polite">
+        <div>
+          <span class="stage-kicker">当前阶段</span>
+          <strong>{{ activeStage ? (NODE_LABELS[activeStage.name] ?? activeStage.name) : '任务已结束' }}</strong>
+          <span>{{ stageDetail() }}</span>
+        </div>
+        <div class="stage-progress">
+          <span class="mono">{{ stageProgress.label }}</span>
+          <div class="stage-progress-track" :class="{ indeterminate: !stageProgress.known && !!activeStage }" aria-label="当前阶段进度">
+            <i :style="stageProgress.known ? { width: `${stageProgress.value}%` } : undefined" />
+          </div>
+          <span class="mono">节点 {{ completedStages }}/9</span>
+        </div>
+      </section>
+
       <!-- 降级清单（D1：如实标注，分母不缩减） -->
       <div v-for="record in status.degraded" :key="record.node" class="hint hint-warning">
         降级 · {{ NODE_LABELS[record.node] ?? record.node }}：{{ record.reason }}（按人工介入计入）
@@ -356,43 +386,23 @@ function formatLogMessage(entry: LlmCallLog): string {
             </div>
           </div>
         </section>
-        <aside class="progress-panel">
-          <header class="flow-title">核心进度</header>
-          <template v-if="metrics">
-            <span class="rate-value mono">{{ formatRate(metrics.automation_rate.value) }}</span>
-            <span class="rate-label">自动化率 · <span class="mono">{{ metrics.automation_rate.numerator }}/{{ metrics.automation_rate.denominator }}</span>（分母固定 9）</span>
-          </template>
-          <template v-else><span class="rate-value mono">—</span><span class="rate-label">任务尚未完整跑完</span></template>
-          <div v-if="metrics && metrics.automation_rate.value === null" class="hint hint-warning">数据不完整，暂不输出自动化率</div>
-          <div class="progress-divider" />
-          <div class="progress-summary">
-            <span>当前阶段</span>
-            <strong>{{ status.running ? '执行中' : '任务已结束' }}</strong>
-          </div>
-          <div class="progress-summary">
-            <span>E2E 子流程</span>
-            <strong>{{ status.e2e?.execute_cases ? '已启用浏览器执行' : status.e2e?.generate_cases ? '仅生成用例' : '未启用' }}</strong>
-          </div>
-          <p class="progress-note">可选 E2E 不计入核心节点自动化率；结果会在独立 E2E 页面与测试报告中展示。</p>
+        <aside class="progress-panel log-panel">
+          <section class="run-log run-log-side" aria-live="polite">
+            <div class="run-log-head">
+              <h3>运行日志</h3>
+              <span>{{ status.running ? '刷新中' : '已停止' }} · {{ llmLogs.length }}</span>
+            </div>
+            <p v-if="!llmLogs.length" class="run-log-empty">{{ status.running ? '等待首个运行事件…' : '暂无运行记录。' }}</p>
+            <ol v-else class="run-log-list">
+              <li v-for="(entry, index) in llmLogs.slice().reverse()" :key="entry.call_id ?? `${entry.timestamp}-${index}`">
+                <span class="mono">{{ formatTime(entry.timestamp) }}</span>
+                <b>{{ NODE_LABELS[entry.node] ?? entry.node }}</b>
+                <span>{{ formatLogMessage(entry) }}</span>
+              </li>
+            </ol>
+          </section>
         </aside>
       </div>
-
-      <section class="run-log" aria-live="polite">
-        <div class="run-log-head">
-          <h3>运行日志</h3>
-          <span>{{ status.running ? '实时刷新中' : '任务已停止' }} · {{ llmLogs.length }} 条</span>
-        </div>
-        <p v-if="!llmLogs.length" class="run-log-empty">
-          {{ status.running ? '正在准备任务，首个模型调用完成后会显示进度。' : '暂无模型调用记录。' }}
-        </p>
-        <ol v-else class="run-log-list">
-          <li v-for="(entry, index) in llmLogs.slice().reverse()" :key="entry.call_id ?? `${entry.timestamp}-${index}`">
-            <span class="mono">{{ formatTime(entry.timestamp) }}</span>
-            <b>{{ NODE_LABELS[entry.node] ?? entry.node }}</b>
-            <span>{{ formatLogMessage(entry) }}</span>
-          </li>
-        </ol>
-      </section>
     </section>
 
     <section v-else class="detail">
@@ -678,6 +688,9 @@ function formatLogMessage(entry: LlmCallLog): string {
 .run-log-empty { margin: var(--space-2) 0 0; }
 .run-log-list { display: grid; gap: var(--space-2); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
 .run-log-list li { display: grid; grid-template-columns: 150px 130px 1fr; gap: var(--space-2); color: var(--text-2); font-size: var(--text-xs); }
+.run-log-side { margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.run-log-side .run-log-list { max-height: 280px; overflow-y: auto; padding-right: var(--space-1); }
+.run-log-side .run-log-list li { grid-template-columns: 1fr; gap: 2px; padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
 
 /* 自动化率 */
 .rate-row {
@@ -729,6 +742,78 @@ function formatLogMessage(entry: LlmCallLog): string {
   background: var(--warning-dim);
   color: var(--warning);
   border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+}
+
+/* 当前阶段是流程和日志共享的唯一进度入口：有批次时展示真实比例，没有粒度时明确显示处理中。 */
+.stage-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-4) 0 0;
+  border: 1px solid var(--accent-glow);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(90deg, var(--accent-dim), var(--surface));
+}
+
+.stage-banner > div:first-child {
+  display: grid;
+  min-width: min(100%, 300px);
+  gap: 3px;
+}
+
+.stage-kicker {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  letter-spacing: .08em;
+}
+
+.stage-banner strong {
+  color: var(--text-1);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.stage-banner strong + span {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.stage-progress {
+  display: grid;
+  grid-template-columns: auto minmax(100px, 160px) auto;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.stage-progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.stage-progress-track i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width .3s ease;
+}
+
+.stage-progress-track.indeterminate i {
+  width: 38%;
+  animation: stage-loading 1.25s ease-in-out infinite;
+}
+
+@keyframes stage-loading {
+  0% { transform: translateX(-115%); }
+  100% { transform: translateX(300%); }
 }
 
 /* 9 核心节点 + 按配置显示的 E2E 子流程 */
@@ -935,7 +1020,8 @@ function formatLogMessage(entry: LlmCallLog): string {
 
 @media (prefers-reduced-motion: reduce) {
   .node[data-status='running'],
-  .running-dot {
+  .running-dot,
+  .stage-progress-track.indeterminate i {
     animation: none;
   }
 }
@@ -952,5 +1038,6 @@ function formatLogMessage(entry: LlmCallLog): string {
   .node { grid-template-columns: 24px minmax(0, 1fr); }
   .node-status { grid-column: 2; }
   .run-log-list li { grid-template-columns: 1fr; gap: 2px; }
+  .stage-progress { width: 100%; grid-template-columns: auto 1fr auto; }
 }
 </style>

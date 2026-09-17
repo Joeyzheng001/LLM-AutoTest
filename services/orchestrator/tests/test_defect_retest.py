@@ -114,6 +114,8 @@ _EXECUTION: dict[str, Any] = {
             "passed": False,
             "failure_kind": "assertion",
             "failure_reason": "HTTP 500（演示态简化断言：2xx 判通过；语义断言：400）",
+            "actual_status": 500,
+            "actual_body": {"detail": "server error", "token": "must-not-leak"},
             "timeout": False,
             "duration_ms": 8,
             "timestamp": "2026-09-15T00:00:01+00:00",
@@ -343,6 +345,19 @@ async def test_defect_list_only_assertion_failures(
     assert defects[0]["status"] == "discovered"
     # 失败原因透传
     assert "HTTP 500" in defects[0]["failure_reason"]
+    # 缺陷展示上下文：接口、用例、预期、实际均从前置产物回填；敏感值不落盘。
+    assert defects[0]["interface"] == {
+        "protocol": "rest", "method": "GET", "path": "/api/v1/users", "summary": "查用户"
+    }
+    assert defects[0]["testcase"] == {
+        "title": "非法 id",
+        "category": "exception",
+        "expected": "400",
+    }
+    assert defects[0]["actual"] == {
+        "status": 500,
+        "body": {"detail": "server error", "token": "<redacted>"},
+    }
 
 
 async def test_defect_list_skip_order_guard(

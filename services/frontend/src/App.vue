@@ -29,24 +29,34 @@ const coreViews: NavView[] = [
   { key: 'requirements', label: '需求解析', component: RequirementsView, section: '分析与设计' },
   { key: 'scan', label: '源码扫描与接口还原', component: CodeScanView, section: '分析与设计' },
   { key: 'review', label: 'Code Review', component: CodeReviewView, section: '分析与设计' },
-  { key: 'cases', label: '测试点与接口用例', component: TestCasesView, section: '分析与设计' },
-  { key: 'defects', label: '缺陷闭环', component: DefectLoopView, section: '验证与交付' },
-  { key: 'regression', label: '回归沉淀与度量', component: RegressionMetricsView, section: '验证与交付' },
+  { key: 'cases', label: '测试用例', component: TestCasesView, section: '分析与设计' },
 ]
 
 // E2E 是任务级可选子流程：只有当前查看的任务启用时才加入导航，且不改变 9 个核心节点。
 const views = computed<NavView[]>(() => {
   const result = [...coreViews]
-  const insertAt = result.findIndex((view) => view.key === 'defects')
   const optional: NavView[] = []
+  optional.push({ key: 'interface-cases', label: '接口用例', component: TestCasesView, section: '分析与设计', child: true })
   if (navigation.e2e?.generateCases) {
     optional.push({ key: 'e2e-cases', label: 'E2E 用例', component: TestCasesView, section: '分析与设计', child: true })
   }
   // 执行必然依赖生成；不合法历史输入也不展示一个无法解释的独立入口。
   if (navigation.e2e?.generateCases && navigation.e2e.executeCases) {
-    optional.push({ key: 'e2e-execution', label: 'E2E 执行', component: TestReportView, section: '验证与交付', child: true })
+    optional.push({ key: 'e2e-execution', label: 'E2E 测试报告', component: TestReportView, section: '验证与交付', child: true })
   }
-  result.splice(insertAt, 0, ...optional, { key: 'report', label: '测试报告', component: TestReportView, section: '验证与交付' })
+  const validation: NavView[] = [
+    { key: 'report', label: '测试报告', component: TestReportView, section: '验证与交付' as const },
+    { key: 'interface-report', label: '接口测试报告', component: TestReportView, section: '验证与交付' as const, child: true },
+    { key: 'defects', label: '缺陷', component: DefectLoopView, section: '验证与交付' as const },
+    { key: 'interface-defects', label: '接口缺陷', component: DefectLoopView, section: '验证与交付' as const, child: true },
+    { key: 'regression', label: '回归资产与度量', component: RegressionMetricsView, section: '验证与交付' as const },
+  ]
+  if (navigation.e2e?.generateCases) {
+    validation.splice(2, 0, { key: 'e2e-execution', label: 'E2E 测试报告', component: TestReportView, section: '验证与交付', child: true })
+    validation.splice(5, 0, { key: 'e2e-defects', label: 'E2E 缺陷', component: DefectLoopView, section: '验证与交付', child: true })
+  }
+  result.push(...optional.filter((v) => v.section === '分析与设计'))
+  result.push(...validation)
   return result
 })
 const navSections = computed(() =>

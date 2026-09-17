@@ -28,6 +28,7 @@ code_inventory.json 无 changed_files 键（未配基线分支）时两视图为
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -45,6 +46,37 @@ from orchestrator.prompts_loader import PromptSpec, load_prompt
 NODE_NAME = "code_review"
 
 _VALID_STATUSES = ("implemented", "partial", "missing", "undetermined")
+
+# 第一批 Review 加强：只提取可证明服务端行为的局部文本，避免把整仓库、凭据或无关源码送入 LLM。
+_EVIDENCE_RULES: dict[str, re.Pattern[str]] = {
+    "session": re.compile(r"session|jwt|token|expires?|expiry|ttl|max[_-]?age", re.I),
+    "authorization": re.compile(
+        r"preauthorize|permission|role|authorize|isauthenticated|login_required", re.I
+    ),
+    "password": re.compile(
+        r"passwordencoder|bcrypt|argon2|make_password|check_password|hashpw", re.I
+    ),
+    "validation": re.compile(
+        r"@valid|@notnull|@notblank|@size|serializer|validate|validators?", re.I
+    ),
+    "transaction": re.compile(
+        r"@transactional|transaction\.atomic|begin_transaction|commit\(", re.I
+    ),
+    "idempotency": re.compile(
+        r"idempoten|get_or_create|uniqueconstraint|unique_together|duplicate", re.I
+    ),
+    "cache": re.compile(r"@cacheable|cache\.get|cache\.set|redis|expireat", re.I),
+    "async": re.compile(r"@async|celery|kafka|rabbitmq|@scheduled|asyncio", re.I),
+}
+_REVIEWABLE_SUFFIXES = {
+    ".py", ".java", ".kt", ".js", ".ts", ".yml", ".yaml", ".properties", ".xml"
+}
+_MAX_EVIDENCE_FILES = 160
+_MAX_EVIDENCE_ITEMS = 72
+_MAX_EVIDENCE_CHARS = 520
+_SECRET_VALUE = re.compile(
+    r"(?i)(password|secret|api[_-]?key|access[_-]?token)\s*([:=])\s*(['\"]?)[^\s,'\"}]+"
+)
 
 
 class SupportsComplete(Protocol):
@@ -77,6 +109,10 @@ async def run_code_review(
         interfaces = _load_interfaces(store, state.job_id)
         inventory = _load_code_inventory(store, state.job_id)
         behavior_evidence = _behavior_evidence(inventory)
+        code_evidence = _collect_code_evidence(inventory)
+        call_chains = _derive_call_chains(inventory, interfaces)
+        incremental_focus = _collect_incremental_focus(inventory, interfaces)
+        deterministic_checks = _derive_deterministic_checks(requirements, code_evidence)
 
         prompt = load_prompt(prompts_dir, NODE_NAME)
         # 以需求为独立审查单元分批；接口只发送映射所需的紧凑字段，避免源码上下文重复。
@@ -94,9 +130,14 @@ async def run_code_review(
                     "requirements": batch,
                     "interfaces": interface_index,
                     "behavior_evidence": behavior_evidence,
+                    "code_evidence": code_evidence,
+                    "call_chains": call_chains,
+                    "incremental_focus": incremental_focus,
+                    "deterministic_checks": _checks_for_batch(deterministic_checks, batch),
                 },
                 ensure_ascii=False,
             )
+
             mappings.extend(
                 await complete_with_json_repair(
                     llm,
@@ -107,18 +148,27 @@ async def run_code_review(
                 )
             )
 
+        mappings = _apply_deterministic_gates(mappings, deterministic_checks)
+        _annotate_evidence_quality(mappings, deterministic_checks, call_chains)
+
         change_scope, removed_files, unmatched = _derive_change_scope(
             inventory, interfaces, mappings
+        )
+        incremental_findings = _derive_incremental_findings(
+            change_scope, removed_files, unmatched, mappings
         )
         payload: dict[str, Any] = {
             "schema_version": "1.0",
             "job_id": state.job_id,
             "mappings": mappings,
-            "risks": _derive_risks(mappings),
+            "risks": _derive_risks(mappings, deterministic_checks),
             "missing_features": _derive_missing(mappings, requirements),
+            "deterministic_checks": deterministic_checks,
             "change_scope": change_scope,
             "removed_files": removed_files,
             "unmatched_changed_files": unmatched,
+            "call_chains": call_chains,
+            "incremental_findings": incremental_findings,
         }
         try:
             path = store.write(state.job_id, "review_mapping.json", payload)
@@ -231,6 +281,248 @@ def _behavior_evidence(inventory: dict[str, Any]) -> list[dict[str, str]]:
     return evidence[:120]
 
 
+def _collect_code_evidence(inventory: dict[str, Any]) -> list[dict[str, Any]]:
+    """抽取可引用的服务端行为证据片段（确定性、限量、脱敏）。
+
+    code_inventory 只保存文件清单，因此此处仅从本次扫描所记录的仓库路径读取
+    明确允许的源码/配置后缀。找不到文件、越出仓库根目录或无法解码均跳过；
+    评审随后会如实输出“待核查”，而不是猜测实现存在。
+    """
+    evidence: list[dict[str, Any]] = []
+    for repo in inventory.get("repositories") or []:
+        if not isinstance(repo, dict) or len(evidence) >= _MAX_EVIDENCE_ITEMS:
+            continue
+        root = Path(str(repo.get("path", "")))
+        if not root.is_dir():
+            continue
+        root = root.resolve()
+        files = repo.get("files") or []
+        candidates: list[str] = []
+        for item in files[:_MAX_EVIDENCE_FILES]:
+            if isinstance(item, dict) and isinstance(item.get("path"), str):
+                candidates.append(item["path"])
+        # 扫描清单对 Python 仓库只枚举 .py；补充有限的配置文件，才能审查
+        # Session/JWT/缓存等通常落在 settings/application 配置中的服务端行为。
+        if len(candidates) < _MAX_EVIDENCE_FILES:
+            for path in root.rglob("*"):
+                if len(candidates) >= _MAX_EVIDENCE_FILES:
+                    break
+                if not path.is_file() or {".git", "node_modules", ".venv"} & set(path.parts):
+                    continue
+                relative = path.relative_to(root).as_posix()
+                is_config = path.suffix.lower() in {".yml", ".yaml", ".properties", ".xml"}
+                if is_config and relative not in candidates:
+                    candidates.append(relative)
+        for relative_path in candidates:
+            if len(evidence) >= _MAX_EVIDENCE_ITEMS:
+                break
+            path = (root / relative_path).resolve()
+            if root not in path.parents or path.suffix.lower() not in _REVIEWABLE_SUFFIXES:
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            captured_categories: set[str] = set()
+            for line_no, line in enumerate(lines, start=1):
+                if len(evidence) >= _MAX_EVIDENCE_ITEMS:
+                    break
+                category = next(
+                    (name for name, pattern in _EVIDENCE_RULES.items() if pattern.search(line)),
+                    None,
+                )
+                if category is None or category in captured_categories:
+                    continue
+                start = max(1, line_no - 2)
+                end = min(len(lines), line_no + 2)
+                excerpt = "\n".join(lines[start - 1 : end])
+                excerpt = _SECRET_VALUE.sub(r"\1\2<redacted>", excerpt)
+                evidence.append(
+                    {
+                        "category": category,
+                        "repo": str(repo.get("name", "")),
+                        "file": relative_path,
+                        "start_line": start,
+                        "end_line": end,
+                        "excerpt": excerpt[:_MAX_EVIDENCE_CHARS],
+                    }
+                )
+                # 单个文件/类别一个片段足够；避免同一配置重复占满上下文。
+                captured_categories.add(category)
+    return evidence
+
+
+def _derive_call_chains(
+    inventory: dict[str, Any], interfaces: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """从接口定义附近静态提取一跳服务调用，失败即留空而非补造调用链。"""
+    roots = {
+        str(repo.get("name", "")): Path(str(repo.get("path", "")))
+        for repo in inventory.get("repositories") or []
+        if isinstance(repo, dict)
+    }
+    chains: list[dict[str, Any]] = []
+    call_pattern = re.compile(
+        r"\b([A-Za-z_][A-Za-z0-9_]*(?:service|repository|dao|mapper|client))\s*\.", re.I
+    )
+    for interface in interfaces[:120]:
+        location = interface.get("code_location") or {}
+        repo_name = str(location.get("repo", ""))
+        relative = str(location.get("file", ""))
+        root = roots.get(repo_name)
+        if root is None or not root.is_dir() or not relative:
+            continue
+        root = root.resolve()
+        source = (root / relative).resolve()
+        if root not in source.parents:
+            continue
+        try:
+            lines = source.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        start = max(0, int(location.get("start_line", 1)) - 1)
+        fragment = "\n".join(lines[start : start + 160])
+        callees = sorted({match.group(1) for match in call_pattern.finditer(fragment)})[:6]
+        if not callees:
+            continue
+        chains.append(
+            {
+                "interface_id": str(interface.get("id", "")),
+                "entry": {"repo": repo_name, "file": relative},
+                "callees": callees,
+                "confidence": "static_one_hop",
+            }
+        )
+    return chains
+
+
+def _collect_incremental_focus(
+    inventory: dict[str, Any], interfaces: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """在 LLM 审查前提供变更接口焦点；只陈述 diff 已知事实。"""
+    changed: set[tuple[str, str]] = set()
+    for repo in inventory.get("repositories") or []:
+        if not isinstance(repo, dict):
+            continue
+        repo_name = str(repo.get("name", ""))
+        files = repo.get("changed_files") or {}
+        if not isinstance(files, dict):
+            continue
+        for file in (files.get("added") or []) + (files.get("modified") or []):
+            changed.add((repo_name, str(file)))
+    result: list[dict[str, str]] = []
+    for interface in interfaces:
+        location = interface.get("code_location") or {}
+        repo_name = str(location.get("repo", ""))
+        file = str(location.get("file", ""))
+        if (repo_name, file) in changed:
+            result.append(
+                {"interface_id": str(interface.get("id", "")), "repo": repo_name, "file": file}
+            )
+    return result
+
+
+def _required_evidence_categories(requirement: dict[str, Any]) -> set[str]:
+    """由需求文字触发确定性证据门槛；未命中时不额外施加门槛。"""
+    text = " ".join(
+        str(requirement.get(key, "")) for key in ("title", "description", "acceptance_criteria")
+    ).lower()
+    rules = {
+        "session": ("session", "会话", "有效期", "过期", "token", "jwt"),
+        "authorization": ("权限", "鉴权", "授权", "角色", "permission", "authorize"),
+        "password": ("密码", "password", "口令", "哈希"),
+        "validation": ("校验", "必填", "长度", "格式", "validate"),
+        "transaction": ("事务", "一致性", "回滚", "transaction"),
+        "idempotency": ("幂等", "重复提交", "去重", "idempot"),
+        "cache": ("缓存", "cache", "redis"),
+        "async": ("异步", "消息", "队列", "定时", "kafka", "rabbit"),
+    }
+    return {
+        category
+        for category, keywords in rules.items()
+        if any(word in text for word in keywords)
+    }
+
+
+def _derive_deterministic_checks(
+    requirements: list[dict[str, Any]], code_evidence: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """需求级证据门槛检查：无直接证据只能“待核查”，不可判定已实现。"""
+    present = {str(item.get("category", "")) for item in code_evidence}
+    checks: list[dict[str, Any]] = []
+    for requirement in requirements:
+        req_id = str(requirement.get("id", ""))
+        for category in sorted(_required_evidence_categories(requirement)):
+            found = category in present
+            checks.append(
+                {
+                    "requirement_id": req_id,
+                    "rule_id": f"EVID-{category.upper()}",
+                    "category": category,
+                    "status": "evidence_found" if found else "needs_verification",
+                    "description": (
+                        f"已提取到 {category} 相关代码/配置片段，仍需结合需求语义核对"
+                        if found
+                        else f"需求涉及 {category} 行为，但扫描范围未提取到直接代码/配置证据"
+                    ),
+                }
+            )
+    return checks
+
+
+def _checks_for_batch(
+    checks: list[dict[str, Any]], requirements: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    req_ids = {str(item.get("id", "")) for item in requirements}
+    return [check for check in checks if check["requirement_id"] in req_ids]
+
+
+def _apply_deterministic_gates(
+    mappings: list[dict[str, Any]], checks: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """确定性门槛优先于 LLM：缺直接证据的高风险行为不可标为已实现。"""
+    blocked = {
+        str(check["requirement_id"])
+        for check in checks
+        if check["status"] == "needs_verification"
+    }
+    for mapping in mappings:
+        if mapping["requirement_id"] not in blocked or mapping["status"] != "implemented":
+            continue
+        mapping["status"] = "undetermined"
+        evidence = mapping.setdefault("evidence", {})
+        previous = str(evidence.get("note", "")).strip()
+        gate_note = "确定性证据门槛：未提取到该高风险服务端行为的直接代码/配置证据，须人工核查"
+        evidence["note"] = f"{previous}；{gate_note}" if previous else gate_note
+        mapping["confidence"] = min(float(mapping.get("confidence", 0.0)), 0.45)
+    return mappings
+
+
+def _annotate_evidence_quality(
+    mappings: list[dict[str, Any]],
+    checks: list[dict[str, Any]],
+    call_chains: list[dict[str, Any]],
+) -> None:
+    """证据质量分级：不把接口签名或文件名当作完整实现证据。"""
+    missing = {
+        str(check["requirement_id"])
+        for check in checks
+        if check["status"] == "needs_verification"
+    }
+    chained_interfaces = {str(chain["interface_id"]) for chain in call_chains}
+    for mapping in mappings:
+        req_id = str(mapping["requirement_id"])
+        interface_id = str(mapping.get("interface_id", ""))
+        if req_id in missing:
+            mapping["evidence_quality"] = "insufficient"
+        elif interface_id and interface_id in chained_interfaces:
+            mapping["evidence_quality"] = "behavior_path"
+        elif interface_id:
+            mapping["evidence_quality"] = "interface_only"
+        else:
+            mapping["evidence_quality"] = "none"
+
+
 def _append_review_progress(
     store: ArtifactStore, job_id: str, index: int, total: int, count: int
 ) -> None:
@@ -321,6 +613,65 @@ def _derive_change_scope(
             if (repo_name, file) not in matched:
                 unmatched.append({"repo": repo_name, "file": file, "change": change})
     return change_scope, removed, unmatched
+
+
+def _derive_incremental_findings(
+    change_scope: list[dict[str, Any]],
+    removed_files: list[dict[str, Any]],
+    unmatched_files: list[dict[str, Any]],
+    mappings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """增量评审结论完全由 diff 与映射派生，优先暴露无需求覆盖的改动。"""
+    findings: list[dict[str, Any]] = []
+    status_by_interface = {
+        str(item.get("interface_id")): str(item.get("status"))
+        for item in mappings
+        if item.get("interface_id")
+    }
+    for entry in change_scope:
+        interface_id = str(entry["interface_id"])
+        status = status_by_interface.get(interface_id)
+        if not entry["covered_by"]:
+            findings.append(
+                {
+                    "severity": "P1",
+                    "kind": "changed_interface_uncovered",
+                    "description": f"变更接口 {interface_id} 未被任何需求条目覆盖",
+                    "repo": entry["repo"],
+                    "file": entry["file"],
+                }
+            )
+        elif status in {"partial", "missing", "undetermined"}:
+            findings.append(
+                {
+                    "severity": "P1" if status != "undetermined" else "P2",
+                    "kind": "changed_interface_risk",
+                    "description": f"变更接口 {interface_id} 的需求评审状态为 {status}",
+                    "repo": entry["repo"],
+                    "file": entry["file"],
+                }
+            )
+    for entry in unmatched_files:
+        findings.append(
+            {
+                "severity": "P2",
+                "kind": "changed_behavior_file",
+                "description": "业务逻辑文件发生变更，但未命中接口定义，需人工核对影响范围",
+                "repo": entry["repo"],
+                "file": entry["file"],
+            }
+        )
+    for entry in removed_files:
+        findings.append(
+            {
+                "severity": "P1",
+                "kind": "removed_file",
+                "description": "被测分支删除文件，需确认能力回退与调用方影响",
+                "repo": entry["repo"],
+                "file": entry["file"],
+            }
+        )
+    return findings
 
 
 def _merge_llm_mappings(
@@ -430,21 +781,53 @@ def _merge_llm_mappings(
     return mappings
 
 
-def _derive_risks(mappings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """视图二（R-REVW-04）：partial 自动进入风险清单（程序派生）。"""
+def _derive_risks(
+    mappings: list[dict[str, Any]], deterministic_checks: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """视图二：部分实现及证据不足均进入风险清单（程序派生）。"""
     risks: list[dict[str, Any]] = []
+    checks_by_req: dict[str, list[dict[str, Any]]] = {}
+    for check in deterministic_checks:
+        checks_by_req.setdefault(str(check["requirement_id"]), []).append(check)
     for entry in mappings:
-        if entry["status"] != "partial":
+        status = entry["status"]
+        if status not in {"partial", "undetermined"}:
             continue
+        is_undetermined = status == "undetermined"
         risk: dict[str, Any] = {
             "requirement_id": entry["requirement_id"],
-            "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口",
+            "kind": "evidence_gap" if is_undetermined else "partial_implementation",
+            "severity": "P2" if is_undetermined else "P1",
+            "action": (
+                "补充服务端配置或实现证据后复核"
+                if is_undetermined
+                else "补齐实现与对应测试后复核"
+            ),
+            "description": (
+                "证据不足（R-REVW-05）：高风险服务端行为待核查，不能按已实现关闭"
+                if is_undetermined
+                else "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口"
+            ),
         }
         if entry.get("interface_id"):
             risk["interface_id"] = entry["interface_id"]
         note = (entry.get("evidence") or {}).get("note")
         if note:
             risk["description"] += f"；LLM 判定依据：{note}"
+        missing_categories = [
+            str(check["category"])
+            for check in checks_by_req.get(str(entry["requirement_id"]), [])
+            if check["status"] == "needs_verification"
+        ]
+        if missing_categories:
+            risk["description"] += f"；待核对证据：{'、'.join(missing_categories)}"
+            critical = {"authorization", "password", "transaction"} & set(missing_categories)
+            if critical:
+                risk["severity"] = "P1" if is_undetermined else "P0"
+                if not is_undetermined:
+                    risk["action"] = "阻断发布，补齐关键行为实现与安全/一致性回归测试"
+            elif "session" in missing_categories:
+                risk["severity"] = "P1"
         risks.append(risk)
     return risks
 

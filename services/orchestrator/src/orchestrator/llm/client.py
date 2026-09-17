@@ -159,8 +159,11 @@ class LlmClient:
             try:
                 response = await client.post("/chat/completions", json=payload, headers=headers)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                # 网络类：可重试（X-LLM-01）
-                raise _RetryableError(f"LLM 网络调用失败：{exc}") from exc
+                # 网络类：可重试（X-LLM-01）。httpx 异常的 str 可能为空（如
+                # ReadTimeout），须带异常类型名否则报错无法排障（P-16）。
+                raise _RetryableError(
+                    f"LLM 网络调用失败：{type(exc).__name__}: {exc}"
+                ) from exc
         if response.status_code >= 500:
             # 网关 5xx 视为暂时性故障：可重试
             raise _RetryableError(f"LLM 服务端错误：HTTP {response.status_code}")

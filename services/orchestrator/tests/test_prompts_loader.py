@@ -48,7 +48,8 @@ def test_load_prompt_injects_node_skill_and_memory() -> None:
     spec = load_prompt(prompts, "requirement_review")
     assert "受控知识：skills/requirement-output-stability" in spec.body
     assert spec.knowledge_refs == (
-        "skills/requirement-output-stability@1.0",
+        # 与 prompts/skills/requirement-output-stability.md frontmatter 同步
+        "skills/requirement-output-stability@2.0",
         "memory/model-output-drift@1.0",
     )
 

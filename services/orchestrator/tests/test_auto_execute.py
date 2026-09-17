@@ -20,8 +20,8 @@ from orchestrator.nodes import run_auto_execute
 from orchestrator.nodes.auto_execute import (
     InvokeRequest,
     RestRunner,
-    _judge_assertion,
     _expects_404,
+    _judge_assertion,
     login_for_headers,
     mutates_auth_session,
     resolved_auth_mode,
@@ -850,7 +850,10 @@ def test_mutates_auth_session_recognizes_logout_only() -> None:
 
 def test_resolved_auth_mode_supports_explicit_and_legacy_negative_cases() -> None:
     assert resolved_auth_mode({"auth_mode": "invalid"}) == "invalid"
-    assert resolved_auth_mode({"category": "exception", "expected": "HTTP 401；token 无效"}) == "missing"
+    assert (
+        resolved_auth_mode({"category": "exception", "expected": "HTTP 401；token 无效"})
+        == "missing"
+    )
     assert resolved_auth_mode({"category": "normal", "expected": "status=200"}) == "inherit"
 
 

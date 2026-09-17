@@ -69,12 +69,32 @@ async def run_defect_list(
             }
             if params:
                 reproduce["params"] = params
+            raw_signature = interface.get("signature")
+            signature = raw_signature if isinstance(raw_signature, dict) else {}
+            actual: dict[str, Any] = {}
+            if result.get("actual_status") is not None:
+                actual["status"] = result["actual_status"]
+            if result.get("actual_body") is not None:
+                actual["body"] = _safe_actual_body(result["actual_body"])
             defects.append(
                 {
                     "id": f"DEF-{index + 1:03d}",
                     "case_id": case_id,
                     "interface_id": if_id,
                     "failure_reason": str(result.get("failure_reason", "")),
+                    # 缺陷页的定位事实全部从前置产物回填，非 LLM 摘要。
+                    "interface": {
+                        "protocol": str(interface.get("protocol", "")),
+                        "method": str(signature.get("method", "")),
+                        "path": str(signature.get("path", "")),
+                        "summary": str(signature.get("summary", "")),
+                    },
+                    "testcase": {
+                        "title": str(case.get("title", "")),
+                        "category": str(case.get("category", "")),
+                        "expected": str(case.get("expected", result.get("expected", ""))),
+                    },
+                    "actual": actual,
                     "reproduce": reproduce,
                     "status": "discovered",
                     # X-DEF-03：演示埋入缺陷标注随接口兜底标记透传
@@ -117,3 +137,17 @@ def _load_json(store: ArtifactStore, job_id: str, filename: str) -> dict[str, An
 def _now_iso() -> str:
     """UTC ISO-8601 时间戳（横切约定）。"""
     return datetime.now(UTC).isoformat()
+
+
+def _safe_actual_body(value: Any) -> Any:
+    """缺陷展示保留实际响应，同时限制体积并掩盖常见凭据字段。"""
+    sensitive = {"password", "token", "access_token", "refresh_token", "authorization", "cookie"}
+    if isinstance(value, dict):
+        return {
+            str(key): "<redacted>" if str(key).lower() in sensitive else _safe_actual_body(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_safe_actual_body(item) for item in value[:50]]
+    text = str(value)
+    return text if len(text) <= 4_000 else f"{text[:4_000]}…（响应已截断）"

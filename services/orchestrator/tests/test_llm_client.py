@@ -123,6 +123,26 @@ async def test_retry_exhausted_raises_x_llm_01(tmp_path: Path) -> None:
     assert record["output_digest"] is None
 
 
+async def test_timeout_error_message_has_exception_type(tmp_path: Path) -> None:
+    """P-16：httpx 超时异常 str 为空——报错须带异常类型名否则无法排障。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("")  # 真实场景：str(exc) 为空字符串
+
+    trace = tmp_path / "job-abc12345-0" / "llm_calls.jsonl"
+    client = LlmClient(
+        _settings(),
+        "job-abc12345-def-6",
+        trace,
+        transport=httpx.MockTransport(handler),
+        retry_backoff=(0.0, 0.0),
+    )
+    with pytest.raises(PipelineError) as excinfo:
+        await client.complete("req_parse", _PROMPT, "内容")
+    assert excinfo.value.code == "X-LLM-01"
+    assert "ReadTimeout" in excinfo.value.message  # 类型名在场，不再只剩冒号
+
+
 async def test_4xx_no_retry(tmp_path: Path) -> None:
     """4xx（鉴权/参数错误）重试无意义：单次即失败。"""
     attempts: list[int] = []

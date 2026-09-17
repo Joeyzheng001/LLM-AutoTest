@@ -155,9 +155,11 @@ export function getReviewMapping(jobId: string): Promise<{
   mappings: ReviewMapping[]
   risks: DerivedRisk[]
   missing_features: MissingFeature[]
+  deterministic_checks?: import('./types').DeterministicReviewCheck[]
   change_scope?: ChangeScopeEntry[] // C-09：旧产物无此键 → undefined → 页面隐藏视图四
   removed_files?: RemovedFile[]
   unmatched_changed_files?: UnmatchedChangedFile[]
+  incremental_findings?: import('./types').IncrementalFinding[]
 }> {
   return request(`/api/v1/jobs/${jobId}/artifacts/review_mapping.json`)
 }

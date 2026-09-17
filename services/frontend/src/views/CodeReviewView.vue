@@ -12,6 +12,8 @@ import type {
   RequirementItem,
   ReviewMapping,
   DerivedRisk,
+  IncrementalFinding,
+  DeterministicReviewCheck,
   MissingFeature,
   RemovedFile,
   UnmatchedChangedFile,
@@ -27,6 +29,8 @@ const props = defineProps<{ initialJobId?: string }>()
 const items = ref<RequirementItem[]>([])
 const mappings = ref<ReviewMapping[]>([])
 const risks = ref<DerivedRisk[]>([])
+const deterministicChecks = ref<DeterministicReviewCheck[]>([])
+const incrementalFindings = ref<IncrementalFinding[]>([])
 const missing = ref<MissingFeature[]>([])
 const changeScope = ref<ChangeScopeEntry[]>([])
 const removedFiles = ref<RemovedFile[]>([])
@@ -62,6 +66,8 @@ async function load(): Promise<void> {
     items.value = req.items
     mappings.value = review.mappings
     risks.value = review.risks
+    deterministicChecks.value = review.deterministic_checks ?? []
+    incrementalFindings.value = review.incremental_findings ?? []
     missing.value = review.missing_features
     // C-09：旧产物无键 → 空数组（视图四隐藏）；有键但为空 = 配了基线但无变更
     changeScope.value = review.change_scope ?? []
@@ -73,6 +79,8 @@ async function load(): Promise<void> {
     items.value = []
     mappings.value = []
     risks.value = []
+    deterministicChecks.value = []
+    incrementalFindings.value = []
     missing.value = []
     changeScope.value = []
     removedFiles.value = []
@@ -159,6 +167,7 @@ const uncoveredCount = computed(
               <th scope="col">接口</th>
               <th scope="col">代码位置</th>
               <th scope="col">判定</th>
+              <th scope="col">证据质量</th>
               <th scope="col">置信度</th>
             </tr>
           </thead>
@@ -181,6 +190,7 @@ const uncoveredCount = computed(
                   {{ MAPPING_STATUS_LABELS[mapping.status] ?? mapping.status }}
                 </span>
               </td>
+              <td><span class="mono loc">{{ mapping.evidence_quality ?? '—' }}</span></td>
               <td>
                 <span class="mono">{{ formatConfidence(mapping.confidence) }}</span>
               </td>
@@ -192,12 +202,14 @@ const uncoveredCount = computed(
       <!-- 视图二 / 视图三：后端程序化派生（R-REVW-02/04），与视图一同源 -->
       <div class="derived-row">
         <div class="card derived-card">
-          <header class="derived-title">视图二 · 风险清单（部分实现自动进入 · R-REVW-04）</header>
+          <header class="derived-title">视图二 · 风险清单（部分实现 / 证据不足）</header>
           <p v-if="!risks.length" class="derived-empty">无风险条目</p>
           <ul v-else class="derived-list">
             <li v-for="risk in risks" :key="risk.requirement_id" class="derived-item">
               <span class="mono req-id">{{ risk.requirement_id }}</span>
-              <span>{{ risk.description }}</span>
+              <span v-if="risk.severity" class="tag severity-tag">{{ risk.severity }}</span>
+              <span v-if="risk.kind === 'evidence_gap'" class="tag evidence-tag">待核查</span>
+              <span>{{ risk.description }}<template v-if="risk.action">；建议：{{ risk.action }}</template></span>
             </li>
           </ul>
         </div>
@@ -211,6 +223,31 @@ const uncoveredCount = computed(
             </li>
           </ul>
         </div>
+      </div>
+
+      <div v-if="deterministicChecks.length" class="card evidence-card">
+        <header class="derived-title">服务端行为证据检查</header>
+        <p class="panel-note">程序先检查高风险需求是否存在直接代码或配置证据；“待核查”不会被判为已实现。</p>
+        <ul class="derived-list">
+          <li v-for="check in deterministicChecks" :key="`${check.requirement_id}-${check.rule_id}`" class="derived-item">
+            <span class="mono req-id">{{ check.requirement_id }}</span>
+            <span class="tag" :class="check.status === 'needs_verification' ? 'evidence-tag' : 'evidence-ok'">
+              {{ check.status === 'needs_verification' ? '待核查' : '已发现证据' }}
+            </span>
+            <span>{{ check.description }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <div v-if="incrementalFindings.length" class="card evidence-card">
+        <header class="derived-title">增量评审优先项</header>
+        <ul class="derived-list">
+          <li v-for="finding in incrementalFindings" :key="`${finding.kind}-${finding.repo}-${finding.file}`" class="derived-item">
+            <span class="tag severity-tag">{{ finding.severity }}</span>
+            <span>{{ finding.description }}</span>
+            <span class="mono loc">{{ finding.repo }}/{{ finding.file }}</span>
+          </li>
+        </ul>
       </div>
 
       <!-- 视图四：变更范围（C-09 双分支 diff，仅配基线分支的 job 展示） -->
@@ -422,6 +459,29 @@ const uncoveredCount = computed(
   background: var(--accent-dim);
   border-color: var(--accent-glow);
   color: var(--accent-strong);
+}
+
+.evidence-tag {
+  background: var(--warning-dim);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+  color: var(--warning);
+}
+
+.evidence-ok {
+  background: var(--accent-dim);
+  border-color: var(--accent-glow);
+  color: var(--accent-strong);
+}
+
+.severity-tag {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.evidence-card {
+  margin-top: calc(-1 * var(--space-2));
 }
 
 .tag[data-status='implemented'] {

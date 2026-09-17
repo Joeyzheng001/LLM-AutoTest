@@ -57,6 +57,15 @@ function toggleTimeline(defectId: string): void {
   expandedId.value = expandedId.value === defectId ? '' : defectId
 }
 
+function actualText(defect: DefectEntry): string {
+  const actual = defect.actual
+  if (!actual || (actual.status == null && actual.body == null)) return '历史任务未记录实际响应'
+  const status = actual.status == null ? '—' : `HTTP ${actual.status}`
+  if (actual.body == null) return status
+  const body = typeof actual.body === 'string' ? actual.body : JSON.stringify(actual.body, null, 2)
+  return `${status}\n${body}`
+}
+
 async function retestOne(defectId: string): Promise<void> {
   if (!_jobId.value || retesting.value) return
   retesting.value = defectId
@@ -141,6 +150,27 @@ async function retestAll(): Promise<void> {
 
           <div v-if="expandedId === defect.id" class="defect-body">
             <div class="defect-detail-grid">
+              <div class="detail-block">
+                <span class="detail-label">接口</span>
+                <p class="detail-text mono">
+                  {{ defect.interface?.protocol || '—' }}
+                  {{ defect.interface?.method || '' }} {{ defect.interface?.path || defect.interface_id }}
+                </p>
+                <p v-if="defect.interface?.summary" class="detail-subtext">{{ defect.interface.summary }}</p>
+              </div>
+              <div class="detail-block">
+                <span class="detail-label">测试用例</span>
+                <p class="detail-text"><span class="mono">{{ defect.case_id }}</span> {{ defect.testcase?.title || '历史任务未记录用例标题' }}</p>
+                <p v-if="defect.testcase?.category" class="detail-subtext">类型：{{ defect.testcase.category }}</p>
+              </div>
+              <div class="detail-block">
+                <span class="detail-label">预期结果</span>
+                <p class="detail-text pre-wrap">{{ defect.testcase?.expected || '历史任务未记录预期结果' }}</p>
+              </div>
+              <div class="detail-block">
+                <span class="detail-label">实际结果</span>
+                <pre class="detail-code">{{ actualText(defect) }}</pre>
+              </div>
               <div class="detail-block">
                 <span class="detail-label">失败原因</span>
                 <p class="detail-text">{{ defect.failure_reason }}</p>
@@ -348,7 +378,7 @@ async function retestAll(): Promise<void> {
 
 .defect-detail-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
   padding: var(--space-3) 0;
 }
@@ -371,6 +401,28 @@ async function retestAll(): Promise<void> {
   font-size: var(--text-sm);
   color: var(--text-2);
   word-break: break-all;
+}
+
+.detail-subtext {
+  margin: var(--space-1) 0 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.pre-wrap { white-space: pre-wrap; }
+
+.detail-code {
+  max-height: 180px;
+  margin: 0;
+  padding: var(--space-2);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-2);
+  font: var(--text-xs)/1.5 var(--font-mono, monospace);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* 时间线 */

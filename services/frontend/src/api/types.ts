@@ -214,11 +214,31 @@ export interface ReviewMapping {
   interface_id?: string | null
   status: 'implemented' | 'partial' | 'missing' | 'undetermined'
   confidence: number
+  evidence_quality?: 'behavior_path' | 'interface_only' | 'insufficient' | 'none'
   evidence?: { code_location?: CodeLocation; note?: string }
 }
 
 export interface DerivedRisk {
   requirement_id: string
+  description: string
+  kind?: 'partial_implementation' | 'evidence_gap'
+  severity?: 'P0' | 'P1' | 'P2'
+  action?: string
+}
+
+export interface IncrementalFinding {
+  severity: 'P0' | 'P1' | 'P2'
+  kind: string
+  description: string
+  repo: string
+  file: string
+}
+
+export interface DeterministicReviewCheck {
+  requirement_id: string
+  rule_id: string
+  category: string
+  status: 'evidence_found' | 'needs_verification'
   description: string
 }
 
@@ -323,6 +343,9 @@ export interface DefectEntry {
   case_id: string
   interface_id: string
   failure_reason: string
+  interface?: { protocol?: string; method?: string; path?: string; summary?: string }
+  testcase?: { title?: string; category?: string; expected?: string }
+  actual?: { status?: number; body?: unknown }
   reproduce?: { script_path?: string; params?: Record<string, unknown> }
   status: 'discovered' | 'retesting' | 'passed' | 'closed_suggested' | 'retained'
   based_on_new_version?: boolean

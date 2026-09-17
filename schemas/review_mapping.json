@@ -18,6 +18,7 @@
           "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
           "status": { "type": "string", "enum": ["implemented", "partial", "missing", "undetermined"] },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "evidence_quality": { "type": "string", "enum": ["behavior_path", "interface_only", "insufficient", "none"] },
           "evidence": {
             "type": "object",
             "properties": {
@@ -45,6 +46,9 @@
         "properties": {
           "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
           "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
+          "kind": { "type": "string", "enum": ["partial_implementation", "evidence_gap"] },
+          "severity": { "type": "string", "enum": ["P0", "P1", "P2"] },
+          "action": { "type": "string" },
           "description": { "type": "string", "minLength": 1 }
         }
       }
@@ -58,6 +62,21 @@
         "properties": {
           "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
           "title": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "deterministic_checks": {
+      "type": "array",
+      "description": "第一批：高风险服务端行为的确定性证据门槛检查（无直接证据时不得判已实现）",
+      "items": {
+        "type": "object",
+        "required": ["requirement_id", "rule_id", "category", "status", "description"],
+        "properties": {
+          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
+          "rule_id": { "type": "string", "pattern": "^EVID-" },
+          "category": { "type": "string" },
+          "status": { "type": "string", "enum": ["evidence_found", "needs_verification"] },
+          "description": { "type": "string", "minLength": 1 }
         }
       }
     },
@@ -77,6 +96,35 @@
             "description": "映射到该接口的需求条目（空 = 变更接口未被需求覆盖）",
             "items": { "type": "string", "pattern": "^REQ-\\d{3}$" }
           }
+        }
+      }
+    },
+    "call_chains": {
+      "type": "array",
+      "description": "接口实现附近静态提取的一跳调用链；无法提取时为空，不补造",
+      "items": {
+        "type": "object",
+        "required": ["interface_id", "entry", "callees", "confidence"],
+        "properties": {
+          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
+          "entry": { "type": "object" },
+          "callees": { "type": "array", "items": { "type": "string" } },
+          "confidence": { "type": "string", "const": "static_one_hop" }
+        }
+      }
+    },
+    "incremental_findings": {
+      "type": "array",
+      "description": "基线 diff 的增量评审发现，程序化派生",
+      "items": {
+        "type": "object",
+        "required": ["severity", "kind", "description", "repo", "file"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["P0", "P1", "P2"] },
+          "kind": { "type": "string" },
+          "description": { "type": "string" },
+          "repo": { "type": "string" },
+          "file": { "type": "string" }
         }
       }
     },

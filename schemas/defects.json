@@ -23,6 +23,33 @@
       "case_id": { "type": "string", "pattern": "^(TC|E2E)-\\d{3}$", "description": "R-DEF-02 双向关联（接口或前端 E2E）" },
       "interface_id": { "type": "string", "pattern": "^(IF-[A-Z]+-\\d{3}|UI-E2E-001)$" },
           "failure_reason": { "type": "string", "minLength": 1 },
+          "interface": {
+            "type": "object",
+            "description": "从 interfaces.json 回填的接口定位信息",
+            "properties": {
+              "protocol": { "type": "string" },
+              "method": { "type": "string" },
+              "path": { "type": "string" },
+              "summary": { "type": "string" }
+            }
+          },
+          "testcase": {
+            "type": "object",
+            "description": "从 testcases.json 回填的用例事实",
+            "properties": {
+              "title": { "type": "string" },
+              "category": { "type": "string" },
+              "expected": { "type": "string" }
+            }
+          },
+          "actual": {
+            "type": "object",
+            "description": "从 execution.json 回填的实际执行结果；敏感字段已脱敏",
+            "properties": {
+              "status": { "type": "integer" },
+              "body": {}
+            }
+          },
           "reproduce": {
             "type": "object",
             "description": "复现步骤（F-DEF-01：用例脚本引用）",

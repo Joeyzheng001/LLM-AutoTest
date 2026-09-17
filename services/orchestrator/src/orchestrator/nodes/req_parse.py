@@ -246,7 +246,7 @@ def _normalize_items_container(data: Any) -> list[Any] | None:
         return None
     for key in ("items", "requirements", "requirement_items", "需求条目", "需求列表"):
         if isinstance(data.get(key), list):
-            return data[key]
+            return [item for item in data[key]]
     for key in ("data", "result", "output"):
         nested = data.get(key)
         if isinstance(nested, dict):

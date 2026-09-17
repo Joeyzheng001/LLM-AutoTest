@@ -27,7 +27,7 @@ import json
 from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
@@ -170,7 +170,7 @@ async def run_testcase_generate(
         e2e_cases: list[dict[str, Any]] = []
         if e2e and bool(e2e.get("generate_cases")):
             surface = await _inspect_e2e_surface(
-                str(e2e.get("base_url", "")), bool(e2e.get("insecure_tls", True))
+                str(e2e.get("base_url", "")), bool(e2e.get("insecure_tls", True)), auth
             )
             if surface["routes"]:
                 e2e_cases = await _generate_e2e_cases(
@@ -368,11 +368,7 @@ async def _generate_e2e_cases(
 ) -> list[dict[str, Any]]:
     """基于真实页面探测结果生成，禁止模型杜撰路由或 selector。"""
     prompt = load_prompt(prompts_dir, "e2e_testcase_generate")
-    allowed_selectors = {
-        selector
-        for route in surface["routes"]
-        for selector in route["selectors"]
-    }
+    allowed_selectors = {selector for route in surface["routes"] for selector in route["selectors"]}
     allowed_paths = {route["path"] for route in surface["routes"]}
     content = json.dumps(
         {
@@ -405,7 +401,9 @@ async def _generate_e2e_cases(
     return result
 
 
-async def _inspect_e2e_surface(base_url: str, ignore_https_errors: bool) -> dict[str, Any]:
+async def _inspect_e2e_surface(
+    base_url: str, ignore_https_errors: bool, auth: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """只读探测根路径与登录页，产出可验证的路由和语义定位器白名单。"""
     base = base_url.rstrip("/") + "/"
     routes: list[dict[str, Any]] = []
@@ -432,18 +430,86 @@ async def _inspect_e2e_surface(base_url: str, ignore_https_errors: bool) -> dict
                     )
                     selectors = _observed_selectors(elements)
                     if selectors:
-                        routes.append({
-                            "path": path,
-                            "title": await page.title(),
-                            "selectors": selectors,
-                            "visible_text": (await page.locator("body").inner_text())[:800],
-                        })
+                        routes.append(
+                            {
+                                "path": path,
+                                "title": await page.title(),
+                                "selectors": selectors,
+                                "visible_text": (await page.locator("body").inner_text())[:800],
+                            }
+                        )
                 finally:
                     await context.close()
                     await browser.close()
         except PlaywrightError:
             continue
-    return {"base_url": base_url.rstrip("/"), "routes": routes}
+    if auth:
+        routes.extend(await _inspect_authenticated_routes(base_url, ignore_https_errors, auth))
+    unique = {str(route["path"]): route for route in routes}
+    return {"base_url": base_url.rstrip("/"), "routes": list(unique.values())}
+
+
+async def _inspect_authenticated_routes(
+    base_url: str, ignore_https_errors: bool, auth: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """真实登录后探测首页与导航链接；只读访问，不提交任何业务表单。"""
+    base = base_url.rstrip("/") + "/"
+    discovered: list[dict[str, Any]] = []
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            context = await browser.new_context(ignore_https_errors=ignore_https_errors)
+            page = await context.new_page()
+            try:
+                await page.goto(
+                    urljoin(base, "login"), wait_until="domcontentloaded", timeout=15_000
+                )
+                await page.get_by_placeholder("用户名", exact=False).fill(
+                    str(auth.get("username", ""))
+                )
+                await page.get_by_placeholder("密码", exact=False).fill(
+                    str(auth.get("password", ""))
+                )
+                await page.get_by_role("button", name="登 录", exact=False).click()
+                await page.wait_for_timeout(800)
+                paths = {urlparse(page.url).path or "/"}
+                for href in await page.locator("a").evaluate_all(
+                    "nodes => nodes.map(n => n.getAttribute('href'))"
+                ):
+                    if isinstance(href, str) and href.startswith("/") and not href.startswith("//"):
+                        paths.add(href.split("?", 1)[0])
+                for path in sorted(paths)[:10]:
+                    await page.goto(
+                        urljoin(base, path.lstrip("/")),
+                        wait_until="domcontentloaded",
+                        timeout=15_000,
+                    )
+                    await page.wait_for_timeout(200)
+                    elements = await page.locator(
+                        "input, textarea, select, button, a"
+                    ).evaluate_all(
+                        """nodes => nodes.slice(0, 80).map(n => ({
+                        tag:n.tagName.toLowerCase(),
+                        text:(n.innerText || n.textContent || '').trim(),
+                        aria:n.getAttribute('aria-label'),
+                        placeholder:n.getAttribute('placeholder')}))"""
+                    )
+                    selectors = _observed_selectors(elements)
+                    if selectors:
+                        discovered.append(
+                            {
+                                "path": path,
+                                "title": await page.title(),
+                                "selectors": selectors,
+                                "visible_text": (await page.locator("body").inner_text())[:800],
+                            }
+                        )
+            finally:
+                await context.close()
+                await browser.close()
+    except PlaywrightError:
+        return []
+    return discovered
 
 
 def _observed_selectors(elements: list[dict[str, Any]]) -> list[str]:

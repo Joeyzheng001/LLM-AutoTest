@@ -45,6 +45,17 @@ _DEFAULT_TIMEOUT_S = 10.0  # X-EXEC-02：单用例执行超时上限
 _SENSITIVE_RESPONSE_KEYS = {"token", "access_token", "refresh_token", "password", "secret"}
 
 
+def _decode_unknown_body(value: Any) -> Any:
+    """将 LLM 输出的 unknown body JSON 字符串还原为对象；非 JSON 原样保留。"""
+    if not isinstance(value, str):
+        return value
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return parsed if isinstance(parsed, dict) else value
+
+
 @dataclass(frozen=True)
 class InvokeRequest:
     """单用例执行请求：接口定义（签名/参数位置）+ 用例参数。"""
@@ -122,10 +133,13 @@ class RestRunner:
             param_def = param_defs.get(name) or {}
             position = str(param_def.get("in", "query"))
             # 扫描器无法展开 serializer 时，会留下 account_data/filter_params 等
-            # unknown 包装参数。值为对象时按实际 HTTP 载荷扁平传递，不能多包一层。
-            unwrap_container = str(param_def.get("type")) == "unknown" and isinstance(value, dict)
+            # unknown 包装参数。LLM 可能给对象或 JSON 字符串，均应展开真实请求体。
+            decoded_value = _decode_unknown_body(value)
+            unwrap_container = (
+                str(param_def.get("type")) == "unknown" and isinstance(decoded_value, dict)
+            )
             if position == "body":
-                body.update(value) if unwrap_container else body.__setitem__(name, value)
+                body.update(decoded_value) if unwrap_container else body.__setitem__(name, value)
             elif position == "header":
                 headers[name] = str(value)
             elif position == "path":

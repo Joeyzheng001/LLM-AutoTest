@@ -392,3 +392,107 @@ async def test_code_review_change_scope_uncovered(env: tuple[Engine, ArtifactSto
     ]
     assert payload["removed_files"] == []
     assert payload["unmatched_changed_files"] == []
+
+def test_evidence_gate_downgrades_session_requirement_without_direct_evidence() -> None:
+    from orchestrator.nodes.code_review import (
+        _apply_deterministic_gates,
+        _derive_deterministic_checks,
+        _derive_risks,
+    )
+
+    requirements = [
+        {"id": "REQ-001", "title": "登录 Session 有效期", "description": "会话有效期 30 分钟"}
+    ]
+    checks = _derive_deterministic_checks(requirements, [])
+    mappings = _apply_deterministic_gates(
+        [{"requirement_id": "REQ-001", "status": "implemented", "confidence": 0.9}], checks
+    )
+
+    assert mappings[0]["status"] == "undetermined"
+    assert mappings[0]["confidence"] == 0.45
+    assert "确定性证据门槛" in mappings[0]["evidence"]["note"]
+    risks = _derive_risks(mappings, checks)
+    assert risks[0]["kind"] == "evidence_gap"
+
+
+def test_collect_code_evidence_is_scoped_and_redacts_values(tmp_path: Path) -> None:
+    from orchestrator.nodes.code_review import _collect_code_evidence
+
+    source = tmp_path / "settings.py"
+    source.write_text(
+        "SESSION_COOKIE_AGE = 1800\nAPI_KEY = 'should-not-leak'\n", encoding="utf-8"
+    )
+    inventory = {
+        "repositories": [
+            {"name": "demo", "path": str(tmp_path), "files": [{"path": "settings.py"}]}
+        ]
+    }
+
+    evidence = _collect_code_evidence(inventory)
+
+    assert evidence[0]["category"] == "session"
+    assert evidence[0]["file"] == "settings.py"
+    assert "should-not-leak" not in evidence[0]["excerpt"]
+
+
+def test_collect_code_evidence_includes_config_not_listed_by_python_scan(tmp_path: Path) -> None:
+    from orchestrator.nodes.code_review import _collect_code_evidence
+
+    (tmp_path / "application.yml").write_text("jwt:\n  ttl: 1800\n", encoding="utf-8")
+    inventory = {
+        "repositories": [
+            {"name": "demo", "path": str(tmp_path), "files": [{"path": "views.py"}]}
+        ]
+    }
+
+    evidence = _collect_code_evidence(inventory)
+
+    assert any(item["category"] == "session" for item in evidence)
+
+
+def test_call_chain_and_incremental_findings_are_static(tmp_path: Path) -> None:
+    from orchestrator.nodes.code_review import _derive_call_chains, _derive_incremental_findings
+
+    (tmp_path / "UserController.java").write_text(
+        "class UserController { void get() { userService.find(); } }", encoding="utf-8"
+    )
+    inventory = {"repositories": [{"name": "demo", "path": str(tmp_path), "files": []}]}
+    interfaces = [
+        {"id": "IF-REST-001", "code_location": {"repo": "demo", "file": "UserController.java"}}
+    ]
+    chains = _derive_call_chains(inventory, interfaces)
+    findings = _derive_incremental_findings(
+        [
+            {
+                "interface_id": "IF-REST-001",
+                "repo": "demo",
+                "file": "UserController.java",
+                "covered_by": [],
+            }
+        ],
+        [],
+        [],
+        [],
+    )
+
+    assert chains[0]["callees"] == ["userService"]
+    assert findings[0]["kind"] == "changed_interface_uncovered"
+    assert findings[0]["severity"] == "P1"
+
+
+def test_partial_authorization_gap_is_release_blocking() -> None:
+    from orchestrator.nodes.code_review import _derive_risks
+
+    risks = _derive_risks(
+        [{"requirement_id": "REQ-001", "status": "partial", "confidence": 0.7}],
+        [
+            {
+                "requirement_id": "REQ-001",
+                "category": "authorization",
+                "status": "needs_verification",
+            }
+        ],
+    )
+
+    assert risks[0]["severity"] == "P0"
+    assert "阻断发布" in risks[0]["action"]
