@@ -1,0 +1,708 @@
+
+{
+  "schema_version": "1.0",
+  "job_id": "job-web-c3e382183000",
+  "interfaces": [
+    {
+      "id": "IF-REST-001",
+      "candidate_id": "CAND-001",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/auth/login/",
+        "summary": "用户登录认证接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 21,
+        "end_line": 21
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": true,
+          "in": "body",
+          "default": "unknown body params (e.g., username/password)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "登录成功后返回会话凭证或用户信息，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-002",
+      "candidate_id": "CAND-002",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/auth/logout/",
+        "summary": "用户登出接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 22,
+        "end_line": 22
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": false,
+          "in": "body",
+          "default": "unknown body params"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "登出结果，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-003",
+      "candidate_id": "CAND-003",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/auth/user/",
+        "summary": "获取当前登录用户信息接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 23,
+        "end_line": 23
+      },
+      "is_fallback": false,
+      "params": [],
+      "returns": {
+        "type": "unknown",
+        "description": "当前登录用户的资料信息，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-004",
+      "candidate_id": "CAND-004",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/accounts/",
+        "summary": "创建账户接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 29,
+        "end_line": 29
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": true,
+          "in": "body",
+          "default": "unknown body params (account fields)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "新创建账户的详情，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-005",
+      "candidate_id": "CAND-005",
+      "protocol": "rest",
+      "signature": {
+        "method": "PUT",
+        "path": "/api/accounts/{pk}/update/",
+        "summary": "更新指定账户信息接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 30,
+        "end_line": 30
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "pk",
+          "type": "unknown",
+          "required": true,
+          "in": "path",
+          "default": "unknown path param (account primary key)"
+        },
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": true,
+          "in": "body",
+          "default": "unknown body params (account fields)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "更新后的账户详情，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-006",
+      "candidate_id": "CAND-006",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/accounts/{pk}/close/",
+        "summary": "关闭指定账户接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 31,
+        "end_line": 31
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "pk",
+          "type": "unknown",
+          "required": true,
+          "in": "path",
+          "default": "unknown path param (account primary key)"
+        },
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": false,
+          "in": "body",
+          "default": "unknown body params"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "账户关闭操作结果，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-007",
+      "candidate_id": "CAND-007",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/transactions/",
+        "summary": "创建交易/订单接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 34,
+        "end_line": 34
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": true,
+          "in": "body",
+          "default": "unknown body params (transaction fields)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "新建交易的详情，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-008",
+      "candidate_id": "CAND-008",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/transactions/{serial_no}/cancel/",
+        "summary": "按流水号取消指定交易接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 35,
+        "end_line": 35
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "serial_no",
+          "type": "unknown",
+          "required": true,
+          "in": "path",
+          "default": "unknown path param (transaction serial number)"
+        },
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": false,
+          "in": "body",
+          "default": "unknown body params"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "取消交易的结果，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-009",
+      "candidate_id": "CAND-009",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/accounts/query/",
+        "summary": "查询账户列表/筛选接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 38,
+        "end_line": 38
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "query",
+          "type": "unknown",
+          "required": false,
+          "in": "query",
+          "default": "unknown query params (account filters)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "按条件筛选的账户列表，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-010",
+      "candidate_id": "CAND-010",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/transactions/query/",
+        "summary": "查询交易列表/筛选接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 39,
+        "end_line": 39
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "query",
+          "type": "unknown",
+          "required": false,
+          "in": "query",
+          "default": "unknown query params (transaction filters)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "按条件筛选的交易列表，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-011",
+      "candidate_id": "CAND-011",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/transactions/export/",
+        "summary": "导出交易数据接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 40,
+        "end_line": 40
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "query",
+          "type": "unknown",
+          "required": false,
+          "in": "query",
+          "default": "unknown query params (export filters)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "导出文件或导出任务结果，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-012",
+      "candidate_id": "CAND-012",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/reconciliation/run/",
+        "summary": "触发对账任务运行接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 43,
+        "end_line": 43
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": false,
+          "in": "body",
+          "default": "unknown body params (reconciliation task config)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "对账任务启动结果或任务ID，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-013",
+      "candidate_id": "CAND-013",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/reconciliation/",
+        "summary": "查询对账记录列表接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 44,
+        "end_line": 44
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "query",
+          "type": "unknown",
+          "required": false,
+          "in": "query",
+          "default": "unknown query params (reconciliation filters)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "对账记录列表，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-014",
+      "candidate_id": "CAND-014",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/reconciliation/schedule/",
+        "summary": "获取对账调度计划接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 45,
+        "end_line": 45
+      },
+      "is_fallback": false,
+      "params": [],
+      "returns": {
+        "type": "unknown",
+        "description": "当前对账调度计划配置，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-015",
+      "candidate_id": "CAND-015",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/reconciliation/schedule/",
+        "summary": "创建/更新对账调度计划接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 45,
+        "end_line": 45
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": true,
+          "in": "body",
+          "default": "unknown body params (schedule config)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "调度计划保存结果，语义待人工确认"
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "IF-REST-016",
+      "candidate_id": "CAND-016",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/products/",
+        "summary": "查询产品列表接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "query",
+          "type": "unknown",
+          "required": false,
+          "in": "query",
+          "default": "unknown query params (product filters)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "产品列表数据，语义待人工确认"
+      },
+      "confidence": 0.8
+    },
+    {
+      "id": "IF-REST-017",
+      "candidate_id": "CAND-017",
+      "protocol": "rest",
+      "signature": {
+        "method": "POST",
+        "path": "/api/products/",
+        "summary": "创建产品接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": true,
+          "in": "body",
+          "default": "unknown body params (product fields)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "新建产品的详情，语义待人工确认"
+      },
+      "confidence": 0.8
+    },
+    {
+      "id": "IF-REST-018",
+      "candidate_id": "CAND-018",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/products/{pk}/",
+        "summary": "获取指定产品详情接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "pk",
+          "type": "unknown",
+          "required": true,
+          "in": "path",
+          "default": "unknown path param (product primary key)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "指定产品详情，语义待人工确认"
+      },
+      "confidence": 0.8
+    },
+    {
+      "id": "IF-REST-019",
+      "candidate_id": "CAND-019",
+      "protocol": "rest",
+      "signature": {
+        "method": "PUT",
+        "path": "/api/products/{pk}/",
+        "summary": "全量更新指定产品接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "pk",
+          "type": "unknown",
+          "required": true,
+          "in": "path",
+          "default": "unknown path param (product primary key)"
+        },
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": true,
+          "in": "body",
+          "default": "unknown body params (product full fields)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "更新后的产品详情，语义待人工确认"
+      },
+      "confidence": 0.8
+    },
+    {
+      "id": "IF-REST-020",
+      "candidate_id": "CAND-020",
+      "protocol": "rest",
+      "signature": {
+        "method": "PATCH",
+        "path": "/api/products/{pk}/",
+        "summary": "局部更新指定产品接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "pk",
+          "type": "unknown",
+          "required": true,
+          "in": "path",
+          "default": "unknown path param (product primary key)"
+        },
+        {
+          "name": "body",
+          "type": "unknown",
+          "required": true,
+          "in": "body",
+          "default": "unknown body params (product partial fields)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "更新后的产品详情，语义待人工确认"
+      },
+      "confidence": 0.8
+    },
+    {
+      "id": "IF-REST-021",
+      "candidate_id": "CAND-021",
+      "protocol": "rest",
+      "signature": {
+        "method": "DELETE",
+        "path": "/api/products/{pk}/",
+        "summary": "删除指定产品接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "pk",
+          "type": "unknown",
+          "required": true,
+          "in": "path",
+          "default": "unknown path param (product primary key)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "删除操作结果，语义待人工确认"
+      },
+      "confidence": 0.8
+    },
+    {
+      "id": "IF-REST-022",
+      "candidate_id": "CAND-022",
+      "protocol": "rest",
+      "signature": {
+        "method": "GET",
+        "path": "/api/products/active/",
+        "summary": "查询启用状态的产品列表接口"
+      },
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 33,
+        "end_line": 33
+      },
+      "is_fallback": false,
+      "params": [
+        {
+          "name": "query",
+          "type": "unknown",
+          "required": false,
+          "in": "query",
+          "default": "unknown query params (active product filters)"
+        }
+      ],
+      "returns": {
+        "type": "unknown",
+        "description": "启用中的产品列表，语义待人工确认"
+      },
+      "confidence": 0.8
+    }
+  ]
+}

@@ -1,0 +1,4803 @@
+
+{
+  "schema_version": "1.0",
+  "job_id": "job-web-c3e382183000",
+  "cases": [
+    {
+      "id": "TC-001",
+      "interface_id": "IF-REST-001",
+      "category": "normal",
+      "title": "用户登录正常流程：admin 凭据校验通过返回 token",
+      "expected": "status=200；响应体包含非空 token 与 username=admin",
+      "requirement_id": "REQ-001",
+      "params": {
+        "body": {
+          "username": "admin",
+          "password": "***"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_001.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-002",
+      "interface_id": "IF-REST-001",
+      "category": "exception",
+      "title": "登录失败-用户名或密码错误返回 HTTP 401",
+      "expected": "status=401；响应提示\"用户名或密码错误\"",
+      "requirement_id": "REQ-090",
+      "params": {
+        "body": {
+          "username": "admin",
+          "password": "***"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_002.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-003",
+      "interface_id": "IF-REST-001",
+      "category": "boundary",
+      "title": "登录入参边界-用户名为空触发校验拒绝",
+      "expected": "status_class=4xx；响应提示请输入用户名",
+      "requirement_id": "REQ-091",
+      "params": {
+        "body": {
+          "username": "",
+          "password": "***"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_003.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-004",
+      "interface_id": "IF-REST-001",
+      "category": "exception",
+      "title": "登录异常-Session/Token 失效返回 HTTP 401",
+      "expected": "status=401；前端拦截器捕获后重定向至登录页",
+      "requirement_id": "REQ-092",
+      "params": {
+        "body": {
+          "username": "admin",
+          "password": "***"
+        }
+      },
+      "auth_mode": "invalid",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_004.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-005",
+      "interface_id": "IF-REST-001",
+      "category": "exception",
+      "title": "登录异常-连续 5 次失败账号锁定 15 分钟",
+      "expected": "status_class=4xx；响应提示\"账号已锁定，请 15 分钟后重试\"",
+      "requirement_id": "REQ-093",
+      "params": {
+        "body": {
+          "username": "admin",
+          "password": "***"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_005.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-006",
+      "interface_id": "IF-REST-001",
+      "category": "boundary",
+      "title": "登录入参边界-密码超长（>1024 字符）触发校验拒绝",
+      "expected": "status_class=4xx；响应提示字段长度超限",
+      "requirement_id": "REQ-121",
+      "params": {
+        "body": {
+          "username": "admin",
+          "password": "***"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_006.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-007",
+      "interface_id": "IF-REST-002",
+      "category": "normal",
+      "title": "用户已登录状态正常登出返回成功消息",
+      "expected": "status=200；响应 message 表示登出成功",
+      "requirement_id": "REQ-122",
+      "params": {
+        "body": {}
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_007.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-008",
+      "interface_id": "IF-REST-002",
+      "category": "exception",
+      "title": "登出异常-未携带 Token 返回 HTTP 401",
+      "expected": "status=401；响应表示会话缺失",
+      "requirement_id": "REQ-122",
+      "params": {
+        "body": {}
+      },
+      "auth_mode": "missing",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_008.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-009",
+      "interface_id": "IF-REST-002",
+      "category": "exception",
+      "title": "登出异常-伪造/过期 Token 返回 HTTP 401",
+      "expected": "status=401；会话无效被拒绝",
+      "requirement_id": "REQ-122",
+      "params": {
+        "body": {}
+      },
+      "auth_mode": "invalid",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_009.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-010",
+      "interface_id": "IF-REST-003",
+      "category": "normal",
+      "title": "已登录用户获取自身资料返回用户信息",
+      "expected": "status=200；响应包含当前登录用户的 username/user_info",
+      "auth_mode": "inherit",
+      "script_path": "scripts/test_TC_010.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-011",
+      "interface_id": "IF-REST-003",
+      "category": "exception",
+      "title": "获取当前用户-未携带 Token 返回 HTTP 401",
+      "expected": "status=401；需跳转登录页",
+      "auth_mode": "missing",
+      "script_path": "scripts/test_TC_011.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-012",
+      "interface_id": "IF-REST-003",
+      "category": "exception",
+      "title": "获取当前用户-伪造/过期 Token 返回 HTTP 401",
+      "expected": "status=401；会话无效",
+      "auth_mode": "invalid",
+      "script_path": "scripts/test_TC_012.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-013",
+      "interface_id": "IF-REST-004",
+      "category": "normal",
+      "title": "个人开户正常流程：写入 ACCOUNT 并返回交易账号",
+      "expected": "status=201；响应 transaction_account_id 非空",
+      "requirement_id": "REQ-018",
+      "params": {
+        "body": {
+          "investor_name": "张三",
+          "id_type": "0",
+          "id_no": "11010519491231002X",
+          "cellphone": "13800138000"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_013.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-014",
+      "interface_id": "IF-REST-004",
+      "category": "exception",
+      "title": "开户异常-证件类型非法拒绝提交",
+      "expected": "status=400；响应提示\"个人证件类型不合法\"",
+      "requirement_id": "REQ-099",
+      "params": {
+        "body": {
+          "investor_name": "张三",
+          "id_type": "9",
+          "id_no": "11010519491231002X",
+          "cellphone": "13800138000"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_014.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-015",
+      "interface_id": "IF-REST-004",
+      "category": "boundary",
+      "title": "开户异常-投资者名称超长（121 字符）拒绝提交",
+      "expected": "status=400；响应提示\"字段长度超限\"",
+      "requirement_id": "REQ-102",
+      "params": {
+        "body": {
+          "investor_name": "名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名",
+          "id_type": "0",
+          "id_no": "11010519491231002X",
+          "cellphone": "13800138000"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_015.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-016",
+      "interface_id": "IF-REST-004",
+      "category": "exception",
+      "title": "开户异常-证件号已开户返回 HTTP 400",
+      "expected": "status=400；响应提示\"该证件号已开户\"",
+      "requirement_id": "REQ-103",
+      "params": {
+        "body": {
+          "investor_name": "李四",
+          "id_type": "0",
+          "id_no": "11010519491231002X",
+          "cellphone": "13800138001"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_016.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-017",
+      "interface_id": "IF-REST-004",
+      "category": "exception",
+      "title": "开户异常-手机号格式错误（含非数字）拒绝提交",
+      "expected": "status=400；响应提示\"手机号格式错误\"",
+      "requirement_id": "REQ-101",
+      "params": {
+        "body": {
+          "investor_name": "王五",
+          "id_type": "0",
+          "id_no": "11010519800101003X",
+          "cellphone": "1380013800a"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_017.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-018",
+      "interface_id": "IF-REST-005",
+      "category": "normal",
+      "title": "修改客户资料正常流程：更新投资者名称",
+      "expected": "status=200；响应体现更新后的账户详情",
+      "requirement_id": "REQ-079",
+      "params": {
+        "pk": "1001",
+        "body": {
+          "investor_name": "张三（更名）"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_018.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-019",
+      "interface_id": "IF-REST-005",
+      "category": "exception",
+      "title": "修改客户资料-不存在的主键返回 HTTP 404",
+      "expected": "status=404；响应表示账户不存在",
+      "requirement_id": "REQ-079",
+      "params": {
+        "pk": "999999999",
+        "body": {
+          "investor_name": "不存在"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_019.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-020",
+      "interface_id": "IF-REST-005",
+      "category": "boundary",
+      "title": "修改客户资料-请求体为空触发校验拒绝",
+      "expected": "status_class=4xx；响应提示无可更新字段",
+      "requirement_id": "REQ-079",
+      "params": {
+        "pk": "1001",
+        "body": {}
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_020.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-021",
+      "interface_id": "IF-REST-006",
+      "category": "normal",
+      "title": "账户销户正常流程：成功关闭指定账户",
+      "expected": "status=200；响应表示销户成功",
+      "requirement_id": "REQ-078",
+      "params": {
+        "pk": "1001",
+        "body": {}
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_021.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-022",
+      "interface_id": "IF-REST-006",
+      "category": "exception",
+      "title": "账户销户-不存在的主键返回 HTTP 404",
+      "expected": "status=404；响应表示账户不存在",
+      "requirement_id": "REQ-078",
+      "params": {
+        "pk": "999999999",
+        "body": {}
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_022.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-023",
+      "interface_id": "IF-REST-006",
+      "category": "exception",
+      "title": "账户销户-未登录调用返回 HTTP 401",
+      "expected": "status=401；需跳转登录页",
+      "requirement_id": "REQ-078",
+      "params": {
+        "pk": "1001",
+        "body": {}
+      },
+      "auth_mode": "missing",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_023.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-024",
+      "interface_id": "IF-REST-007",
+      "category": "normal",
+      "title": "申购下单正常流程：双表写入成功返回交易流水号",
+      "expected": "status=201；响应包含非空 ec_ap_serial_no 与成功消息",
+      "requirement_id": "REQ-032",
+      "params": {
+        "body": {
+          "fund_code": "000330",
+          "share_type": "A",
+          "application_amount": "10000.00",
+          "currency_type": "156"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_024.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-025",
+      "interface_id": "IF-REST-007",
+      "category": "boundary",
+      "title": "申购下单异常-申请金额为 0 业务校验拒绝",
+      "expected": "status=400；响应提示\"金额必须大于 0\"",
+      "requirement_id": "REQ-104",
+      "params": {
+        "body": {
+          "fund_code": "000330",
+          "share_type": "A",
+          "application_amount": "0.00"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_025.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-026",
+      "interface_id": "IF-REST-007",
+      "category": "boundary",
+      "title": "申购下单异常-申请金额超过上限（99999999999999.99+0.01）拒绝",
+      "expected": "status=400；响应提示\"金额超过上限\"",
+      "requirement_id": "REQ-106",
+      "params": {
+        "body": {
+          "fund_code": "000330",
+          "share_type": "A",
+          "application_amount": "99999999999999.99"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_026.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-027",
+      "interface_id": "IF-REST-007",
+      "category": "exception",
+      "title": "申购下单异常-基金代码已停用拒绝提交",
+      "expected": "status=400；响应提示\"基金代码无效或已停用\"",
+      "requirement_id": "REQ-107",
+      "params": {
+        "body": {
+          "fund_code": "888888",
+          "share_type": "A",
+          "application_amount": "1000.00"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_027.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-028",
+      "interface_id": "IF-REST-007",
+      "category": "exception",
+      "title": "申购下单异常-同一流水号重复提交返回 HTTP 400",
+      "expected": "status=400；响应提示流水号重复",
+      "requirement_id": "REQ-063",
+      "params": {
+        "body": {
+          "fund_code": "000330",
+          "share_type": "A",
+          "application_amount": "1000.00",
+          "ec_ap_serial_no": "DUPLICATE-SERIAL-001"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_028.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-029",
+      "interface_id": "IF-REST-007",
+      "category": "exception",
+      "title": "基金转换下单异常-转出与转入基金相同业务校验拒绝",
+      "expected": "status=400；响应提示转出/转入基金不能相同",
+      "requirement_id": "REQ-044",
+      "params": {
+        "body": {
+          "fund_code": "000330",
+          "target_fund_code": "000330",
+          "application_vol": "1000.00",
+          "business_code": "36"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_029.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-030",
+      "interface_id": "IF-REST-008",
+      "category": "normal",
+      "title": "撤单正常流程：按流水号成功撤销已提交订单",
+      "expected": "status=200；响应表示撤单成功",
+      "requirement_id": "REQ-084",
+      "params": {
+        "serial_no": "AP2025010100000001",
+        "body": {}
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_030.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-031",
+      "interface_id": "IF-REST-008",
+      "category": "exception",
+      "title": "撤单异常-不存在的流水号返回 HTTP 404",
+      "expected": "status=404；响应表示订单不存在",
+      "requirement_id": "REQ-084",
+      "params": {
+        "serial_no": "NOT-EXIST-9999",
+        "body": {}
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_031.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-032",
+      "interface_id": "IF-REST-008",
+      "category": "exception",
+      "title": "撤单异常-未登录调用返回 HTTP 401",
+      "expected": "status=401；需跳转登录页",
+      "requirement_id": "REQ-084",
+      "params": {
+        "serial_no": "AP2025010100000001",
+        "body": {}
+      },
+      "auth_mode": "missing",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_032.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-033",
+      "interface_id": "IF-REST-009",
+      "category": "normal",
+      "title": "账户查询-按投资者名称筛选返回账户列表",
+      "expected": "status=200；响应为非空账户数组",
+      "params": {
+        "query": "investor_name=张三"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_033.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-034",
+      "interface_id": "IF-REST-009",
+      "category": "boundary",
+      "title": "账户查询-空筛选条件返回全部账户（分页）",
+      "expected": "status=200；响应包含分页列表",
+      "params": {
+        "query": ""
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_034.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-035",
+      "interface_id": "IF-REST-009",
+      "category": "exception",
+      "title": "账户查询-未登录调用返回 HTTP 401",
+      "expected": "status=401；需登录",
+      "params": {
+        "query": "investor_name=张三"
+      },
+      "auth_mode": "missing",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_035.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-036",
+      "interface_id": "IF-REST-010",
+      "category": "normal",
+      "title": "交易查询-按客户号精确匹配返回分页结果",
+      "expected": "status=200；响应包含 count 与 results 数组，分页默认 20 条",
+      "requirement_id": "REQ-045",
+      "params": {
+        "query": "ec_cust_no=EC-CUST-2025-0001&page=1"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_036.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-037",
+      "interface_id": "IF-REST-010",
+      "category": "exception",
+      "title": "交易查询异常-起始日期晚于结束日期返回 HTTP 400",
+      "expected": "status=400；响应提示\"起始日期不能晚于结束日期\"",
+      "requirement_id": "REQ-115",
+      "params": {
+        "query": "start_date=20251231&end_date=20250101"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_037.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-038",
+      "interface_id": "IF-REST-010",
+      "category": "exception",
+      "title": "交易查询异常-日期格式非法返回 HTTP 400",
+      "expected": "status=400；响应提示\"日期格式错误\"",
+      "requirement_id": "REQ-116",
+      "params": {
+        "query": "start_date=2025-01-01&end_date=2025-01-31"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_038.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-039",
+      "interface_id": "IF-REST-010",
+      "category": "boundary",
+      "title": "交易查询异常-所有筛选条件均为空触发校验拒绝",
+      "expected": "status_class=4xx；响应提示\"请至少输入一个查询条件\"",
+      "requirement_id": "REQ-114",
+      "params": {
+        "query": ""
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_039.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-040",
+      "interface_id": "IF-REST-010",
+      "category": "exception",
+      "title": "交易查询异常-无匹配记录返回空列表",
+      "expected": "status=200；响应 results 为空数组",
+      "requirement_id": "REQ-117",
+      "params": {
+        "query": "ec_ap_serial_no=NEVER-EXIST-SERIAL-9999"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_040.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-041",
+      "interface_id": "IF-REST-011",
+      "category": "normal",
+      "title": "交易记录导出-按日期区间正常导出文件",
+      "expected": "status=200；响应为可下载的导出文件",
+      "requirement_id": "REQ-086",
+      "params": {
+        "query": "start_date=20250101&end_date=20250131"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_041.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-042",
+      "interface_id": "IF-REST-011",
+      "category": "boundary",
+      "title": "交易记录导出-无筛选条件导出全部数据",
+      "expected": "status=200；响应为可下载的导出文件",
+      "requirement_id": "REQ-086",
+      "params": {
+        "query": ""
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_042.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-043",
+      "interface_id": "IF-REST-011",
+      "category": "exception",
+      "title": "交易记录导出-未登录调用返回 HTTP 401",
+      "expected": "status=401；需登录",
+      "requirement_id": "REQ-086",
+      "params": {
+        "query": "start_date=20250101&end_date=20250131"
+      },
+      "auth_mode": "missing",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_043.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-044",
+      "interface_id": "IF-REST-012",
+      "category": "normal",
+      "title": "手动触发对账-返回 recon_id 与对账摘要",
+      "expected": "status=200；响应包含非空 recon_id 与 summary",
+      "requirement_id": "REQ-142",
+      "params": {
+        "body": {
+          "trigger_type": "manual"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_044.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-045",
+      "interface_id": "IF-REST-012",
+      "category": "exception",
+      "title": "对账异常-下单或落库表为空阻止执行",
+      "expected": "status=400；响应提示\"下单/落库数据为空，无法对账\"",
+      "requirement_id": "REQ-118",
+      "params": {
+        "body": {
+          "trigger_type": "manual"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_045.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-046",
+      "interface_id": "IF-REST-012",
+      "category": "exception",
+      "title": "对账异常-数据库连接失败中止执行",
+      "expected": "status_class=5xx；响应提示\"对账执行异常，请重试\"",
+      "requirement_id": "REQ-120",
+      "params": {
+        "body": {
+          "trigger_type": "manual"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_046.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-047",
+      "interface_id": "IF-REST-012",
+      "category": "boundary",
+      "title": "对账触发-请求体为空采用默认参数执行",
+      "expected": "status=200；响应返回对账任务结果",
+      "requirement_id": "REQ-142",
+      "params": {
+        "body": {}
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_047.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-048",
+      "interface_id": "IF-REST-013",
+      "category": "normal",
+      "title": "对账记录列表查询-返回匹配总数与差异统计",
+      "expected": "status=200；响应包含 summary（匹配数/差异数）",
+      "requirement_id": "REQ-054",
+      "params": {
+        "query": "page=1"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_048.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-049",
+      "interface_id": "IF-REST-013",
+      "category": "boundary",
+      "title": "对账记录列表-差异明细以 JSON 结构存储",
+      "expected": "status=200；响应 differences 字段为 JSON 数组",
+      "requirement_id": "REQ-060",
+      "params": {
+        "query": "diff_type=amount_mismatch"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_049.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-050",
+      "interface_id": "IF-REST-013",
+      "category": "exception",
+      "title": "对账记录列表-无匹配记录返回空列表",
+      "expected": "status=200；响应 results 为空数组",
+      "requirement_id": "REQ-117",
+      "params": {
+        "query": "recon_id=NEVER-EXIST-RECON-9999"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_050.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-051",
+      "interface_id": "IF-REST-013",
+      "category": "exception",
+      "title": "对账记录列表-未登录调用返回 HTTP 401",
+      "expected": "status=401；需登录",
+      "requirement_id": "REQ-054",
+      "params": {
+        "query": "page=1"
+      },
+      "auth_mode": "missing",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_051.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-052",
+      "interface_id": "IF-REST-014",
+      "category": "normal",
+      "title": "获取对账调度计划-返回当前 cron 与容差配置",
+      "expected": "status=200；响应包含 cron 与 amount_tolerance 配置",
+      "auth_mode": "inherit",
+      "script_path": "scripts/test_TC_052.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-053",
+      "interface_id": "IF-REST-014",
+      "category": "exception",
+      "title": "获取对账调度计划-未登录调用返回 HTTP 401",
+      "expected": "status=401；需登录",
+      "auth_mode": "missing",
+      "script_path": "scripts/test_TC_053.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-054",
+      "interface_id": "IF-REST-014",
+      "category": "boundary",
+      "title": "获取对账调度计划-尚未初始化返回默认计划",
+      "expected": "status=200；响应为默认调度配置",
+      "auth_mode": "inherit",
+      "script_path": "scripts/test_TC_054.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-055",
+      "interface_id": "IF-REST-015",
+      "category": "normal",
+      "title": "创建/更新对账调度计划-设置金额容差 0.01 成功保存",
+      "expected": "status=200；响应表示调度计划保存成功",
+      "requirement_id": "REQ-057",
+      "params": {
+        "body": {
+          "cron": "0 2 * * *",
+          "amount_tolerance": "0.01",
+          "vol_tolerance": "0.01"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_055.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-056",
+      "interface_id": "IF-REST-015",
+      "category": "boundary",
+      "title": "调度计划-金额容差为 0 边界值校验拒绝",
+      "expected": "status_class=4xx；响应表示容差必须大于 0",
+      "requirement_id": "REQ-062",
+      "params": {
+        "body": {
+          "cron": "0 2 * * *",
+          "amount_tolerance": "0",
+          "vol_tolerance": "0"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_056.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-057",
+      "interface_id": "IF-REST-015",
+      "category": "exception",
+      "title": "调度计划-cron 表达式非法校验拒绝",
+      "expected": "status=400；响应表示调度配置无效",
+      "requirement_id": "REQ-057",
+      "params": {
+        "body": {
+          "cron": "INVALID_CRON",
+          "amount_tolerance": "0.01",
+          "vol_tolerance": "0.01"
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_057.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-058",
+      "interface_id": "IF-REST-016",
+      "category": "normal",
+      "title": "产品列表查询-第 1 页返回 20 条基金分页结果",
+      "expected": "status=200；响应包含 count 与 results 数组（默认 20 条/页）",
+      "requirement_id": "REQ-123",
+      "params": {
+        "query": "page=1"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_058.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-059",
+      "interface_id": "IF-REST-016",
+      "category": "boundary",
+      "title": "产品列表-超出总页数的 page=9999 返回空页",
+      "expected": "status=200；响应 results 为空数组",
+      "requirement_id": "REQ-008",
+      "params": {
+        "query": "page=9999"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_059.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-060",
+      "interface_id": "IF-REST-016",
+      "category": "exception",
+      "title": "产品列表-未登录调用返回 HTTP 401",
+      "expected": "status=401；需登录",
+      "requirement_id": "REQ-123",
+      "params": {
+        "query": "page=1"
+      },
+      "auth_mode": "missing",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_060.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-061",
+      "interface_id": "IF-REST-017",
+      "category": "normal",
+      "title": "新增产品配置-正常保存并默认启用",
+      "expected": "status=201；响应 fund_code=000330 且 is_active=true",
+      "requirement_id": "REQ-009",
+      "params": {
+        "body": {
+          "fund_code": "000330",
+          "fund_name": "景顺长城新兴成长混合A",
+          "share_type": "A",
+          "is_active": true
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_061.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-062",
+      "interface_id": "IF-REST-017",
+      "category": "exception",
+      "title": "新增产品-基金代码非 6 位数字校验拒绝",
+      "expected": "status=400；响应提示\"基金代码必须为 6 位数字\"",
+      "requirement_id": "REQ-094",
+      "params": {
+        "body": {
+          "fund_code": "abc123",
+          "fund_name": "测试基金",
+          "share_type": "A",
+          "is_active": true
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_062.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-063",
+      "interface_id": "IF-REST-017",
+      "category": "exception",
+      "title": "新增产品-基金代码重复返回 HTTP 400",
+      "expected": "status=400；响应提示\"该基金代码已存在\"",
+      "requirement_id": "REQ-095",
+      "params": {
+        "body": {
+          "fund_code": "000330",
+          "fund_name": "重复代码基金",
+          "share_type": "A",
+          "is_active": true
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_063.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-064",
+      "interface_id": "IF-REST-017",
+      "category": "boundary",
+      "title": "新增产品-基金名称为空校验拒绝",
+      "expected": "status=400；响应提示\"基金名称不能为空\"",
+      "requirement_id": "REQ-096",
+      "params": {
+        "body": {
+          "fund_code": "000999",
+          "fund_name": "",
+          "share_type": "A",
+          "is_active": true
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_064.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-065",
+      "interface_id": "IF-REST-017",
+      "category": "exception",
+      "title": "新增产品-份额类型非法（C/D）校验拒绝",
+      "expected": "status=400；响应提示份额类型仅允许 A 或 B",
+      "requirement_id": "REQ-011",
+      "params": {
+        "body": {
+          "fund_code": "000998",
+          "fund_name": "测试基金B",
+          "share_type": "C",
+          "is_active": true
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_065.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-066",
+      "interface_id": "IF-REST-018",
+      "category": "normal",
+      "title": "产品详情查询-按基金代码返回产品资料",
+      "expected": "status=200；响应包含 fund_code=000330 与产品字段",
+      "requirement_id": "REQ-125",
+      "params": {
+        "pk": "000330"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_066.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-067",
+      "interface_id": "IF-REST-018",
+      "category": "exception",
+      "title": "产品详情-基金代码不存在返回 HTTP 404",
+      "expected": "status=404；响应表示产品不存在",
+      "requirement_id": "REQ-014",
+      "params": {
+        "pk": "999999"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_067.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-068",
+      "interface_id": "IF-REST-018",
+      "category": "exception",
+      "title": "产品详情-未登录调用返回 HTTP 401",
+      "expected": "status=401；需登录",
+      "requirement_id": "REQ-125",
+      "params": {
+        "pk": "000330"
+      },
+      "auth_mode": "missing",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_068.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-069",
+      "interface_id": "IF-REST-019",
+      "category": "normal",
+      "title": "全量更新产品-PUT 替换全部字段成功",
+      "expected": "status=200；响应体现更新后的全部字段",
+      "requirement_id": "REQ-126",
+      "params": {
+        "pk": "000330",
+        "body": {
+          "fund_code": "000330",
+          "fund_name": "景顺长城新兴成长混合A-更新",
+          "share_type": "B",
+          "is_active": true
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_069.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-070",
+      "interface_id": "IF-REST-019",
+      "category": "exception",
+      "title": "全量更新产品-基金代码不存在返回 HTTP 404",
+      "expected": "status=404；响应表示产品不存在",
+      "requirement_id": "REQ-126",
+      "params": {
+        "pk": "999999",
+        "body": {
+          "fund_code": "999999",
+          "fund_name": "不存在",
+          "share_type": "A",
+          "is_active": true
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_070.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-071",
+      "interface_id": "IF-REST-019",
+      "category": "boundary",
+      "title": "全量更新产品-请求体为空触发校验拒绝",
+      "expected": "status_class=4xx；响应提示缺少必填字段",
+      "requirement_id": "REQ-126",
+      "params": {
+        "pk": "000330",
+        "body": {}
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_071.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-072",
+      "interface_id": "IF-REST-020",
+      "category": "normal",
+      "title": "局部更新产品-PATCH 将基金停用并返回警告信息",
+      "expected": "status=200；响应 is_active=false 且提示关联交易警告",
+      "requirement_id": "REQ-097",
+      "params": {
+        "pk": "000330",
+        "body": {
+          "is_active": false
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_072.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-073",
+      "interface_id": "IF-REST-020",
+      "category": "exception",
+      "title": "局部更新产品-基金代码不存在返回 HTTP 404",
+      "expected": "status=404；响应表示产品不存在",
+      "requirement_id": "REQ-097",
+      "params": {
+        "pk": "999999",
+        "body": {
+          "is_active": false
+        }
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_073.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-074",
+      "interface_id": "IF-REST-020",
+      "category": "boundary",
+      "title": "局部更新产品-请求体为空触发校验拒绝",
+      "expected": "status_class=4xx；响应提示无可更新字段",
+      "requirement_id": "REQ-097",
+      "params": {
+        "pk": "000330",
+        "body": {}
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_074.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-075",
+      "interface_id": "IF-REST-021",
+      "category": "normal",
+      "title": "删除产品-成功删除指定基金",
+      "expected": "status=204；响应表示删除成功",
+      "requirement_id": "REQ-127",
+      "params": {
+        "pk": "000330"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_075.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-076",
+      "interface_id": "IF-REST-021",
+      "category": "exception",
+      "title": "删除产品-基金代码不存在返回 HTTP 404",
+      "expected": "status=404；响应表示产品不存在",
+      "requirement_id": "REQ-127",
+      "params": {
+        "pk": "999999"
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_076.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-077",
+      "interface_id": "IF-REST-021",
+      "category": "exception",
+      "title": "删除产品-未登录调用返回 HTTP 401",
+      "expected": "status=401；需登录",
+      "requirement_id": "REQ-127",
+      "params": {
+        "pk": "000330"
+      },
+      "auth_mode": "missing",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_077.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-078",
+      "interface_id": "IF-REST-022",
+      "category": "normal",
+      "title": "启用产品列表-返回 is_active=true 的基金数组",
+      "expected": "status=200；响应为非空 [{fund_code, fund_name}, ...] 数组",
+      "requirement_id": "REQ-128",
+      "params": {
+        "query": ""
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_078.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-079",
+      "interface_id": "IF-REST-022",
+      "category": "boundary",
+      "title": "启用产品列表-无可用基金返回空数组",
+      "expected": "status=200；响应为空数组",
+      "requirement_id": "REQ-013",
+      "params": {
+        "query": ""
+      },
+      "auth_mode": "inherit",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_079.py",
+      "loadable": true
+    },
+    {
+      "id": "TC-080",
+      "interface_id": "IF-REST-022",
+      "category": "exception",
+      "title": "启用产品列表-未登录调用返回 HTTP 401",
+      "expected": "status=401；需登录",
+      "requirement_id": "REQ-128",
+      "params": {
+        "query": ""
+      },
+      "auth_mode": "missing",
+      "low_confidence": true,
+      "script_path": "scripts/test_TC_080.py",
+      "loadable": true
+    }
+  ],
+  "testpoints": [
+    {
+      "id": "TP-001",
+      "requirement_id": "REQ-001",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-001 ↔ 接口 IF-REST-001",
+      "scenario": "验证“用户登录正常流程”主业务流程：用户访问系统首页，自动跳转至登录页；输入用户名和密码，点击\"登录\"按钮；后端校验通过，创建 Session，返回 Token；前端存储 Token 到 localStorage，跳转到首页导航菜单。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-002",
+      "requirement_id": "REQ-001",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“用户登录正常流程”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-003",
+      "requirement_id": "REQ-002",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-002 ↔ 接口 IF-REST-001",
+      "scenario": "验证“Session 有效期默认 24 小时”主业务流程：Session 有效期默认 24 小时，超时需重新登录。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-004",
+      "requirement_id": "REQ-002",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“Session 有效期默认 24 小时”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-005",
+      "requirement_id": "REQ-003",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-003 ↔ 接口 IF-REST-001",
+      "scenario": "验证“密码使用 PBKDF2 哈希存储”主业务流程：密码使用 PBKDF2 哈希存储，禁止明文保存。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-006",
+      "requirement_id": "REQ-003",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“密码使用 PBKDF2 哈希存储”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-007",
+      "requirement_id": "REQ-004",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-004 ↔ 接口 IF-REST-001",
+      "scenario": "验证“登录失败计数维护在 Redis”主业务流程：登录失败计数在 Redis 中维护，避免数据库压力。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-008",
+      "requirement_id": "REQ-004",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“登录失败计数维护在 Redis”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-009",
+      "requirement_id": "REQ-008",
+      "interface_id": "IF-REST-016",
+      "source": "REQ",
+      "source_ref": "需求 REQ-008 ↔ 接口 IF-REST-016",
+      "scenario": "验证“产品配置页基金列表分页展示”主业务流程：进入\"产品配置\"页面，展示基金列表（分页，每页 20 条）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-010",
+      "requirement_id": "REQ-008",
+      "interface_id": "IF-REST-016",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“产品配置页基金列表分页展示”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-011",
+      "requirement_id": "REQ-009",
+      "interface_id": "IF-REST-017",
+      "source": "REQ",
+      "source_ref": "需求 REQ-009 ↔ 接口 IF-REST-017",
+      "scenario": "验证“新增基金”主业务流程：点击\"新增基金\"按钮，填写基金代码（6位数字，如 000330）、基金名称（如\"景顺长城新兴成长混合A\"）、份额类型（A类/B类）、状态（启用/停用，默认启用）；点击\"确定\"，后端校验通过后保存到 PRODUCT_CONFIG 表；列表自动刷新，展示新增的基金。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-012",
+      "requirement_id": "REQ-009",
+      "interface_id": "IF-REST-017",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“新增基金”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-013",
+      "requirement_id": "REQ-010",
+      "interface_id": "IF-REST-017",
+      "source": "REQ",
+      "source_ref": "需求 REQ-010 ↔ 接口 IF-REST-017",
+      "scenario": "验证“基金代码固定 6 位数字”主业务流程：基金代码固定 6 位数字，正则验证 /^\\d{6}$/。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-014",
+      "requirement_id": "REQ-010",
+      "interface_id": "IF-REST-017",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“基金代码固定 6 位数字”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-015",
+      "requirement_id": "REQ-011",
+      "interface_id": "IF-REST-017",
+      "source": "REQ",
+      "source_ref": "需求 REQ-011 ↔ 接口 IF-REST-017",
+      "scenario": "验证“份额类型仅允许 A 或 B”主业务流程：份额类型仅允许 A 或 B。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-016",
+      "requirement_id": "REQ-011",
+      "interface_id": "IF-REST-017",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“份额类型仅允许 A 或 B”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-017",
+      "requirement_id": "REQ-012",
+      "interface_id": "IF-REST-017",
+      "source": "REQ",
+      "source_ref": "需求 REQ-012 ↔ 接口 IF-REST-017",
+      "scenario": "验证“新增基金状态默认启用”主业务流程：新增时状态默认\"启用\"。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-018",
+      "requirement_id": "REQ-012",
+      "interface_id": "IF-REST-017",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“新增基金状态默认启用”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-019",
+      "requirement_id": "REQ-013",
+      "interface_id": "IF-REST-022",
+      "source": "REQ",
+      "source_ref": "需求 REQ-013 ↔ 接口 IF-REST-022",
+      "scenario": "验证“交易页面下拉框仅展示启用基金”主业务流程：交易页面下拉框仅展示 is_active=true 的基金。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-020",
+      "requirement_id": "REQ-013",
+      "interface_id": "IF-REST-022",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“交易页面下拉框仅展示启用基金”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-021",
+      "requirement_id": "REQ-014",
+      "interface_id": "IF-REST-018",
+      "source": "REQ",
+      "source_ref": "需求 REQ-014 ↔ 接口 IF-REST-018",
+      "scenario": "验证“产品配置 API 接口”主业务流程：提供产品配置 REST 接口：GET /api/products/（列表分页）、POST /api/products/（新增）、GET /api/products/{fund_code}/（详情，使用 fund_code 而非 id）、PUT /api/products/{fund_code}/（更新）、DELETE /api/products/{fund_code}/（删除）、GET /api/products/active/（获取启用状态的基金，下拉用）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-022",
+      "requirement_id": "REQ-014",
+      "interface_id": "IF-REST-018",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“产品配置 API 接口”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-023",
+      "requirement_id": "REQ-015",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-015 ↔ 接口 IF-REST-004",
+      "scenario": "验证“个人投资者开户表单填写”主业务流程：进入\"个人开户\"页面，填写表单：投资者名称（如\"张三\"）、证件类型（下拉选择：身份证/港澳通行证/户口本等）、证件号码（如身份证号）、手机号（11位数字）、销售商代码（可选）、网点代码（可选）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-024",
+      "requirement_id": "REQ-015",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“个人投资者开户表单填写”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-025",
+      "requirement_id": "REQ-016",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-016 ↔ 接口 IF-REST-004",
+      "scenario": "验证“系统自动生成账户标识与时间字段”主业务流程：系统自动生成 ec_app_serial_no（申请序列号，32位 UUID）、ec_cust_no（客户号，64位 UUID）、transaction_account_id（交易账号，64位 UUID）、order_date（开户日期，YYYYMMDD）、order_time（开户时间，HHMMSS）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-026",
+      "requirement_id": "REQ-016",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“系统自动生成账户标识与时间字段”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-027",
+      "requirement_id": "REQ-017",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-017 ↔ 接口 IF-REST-004",
+      "scenario": "验证“设置投资者类型与业务代码”主业务流程：设置 investor_type=1（个人）、business_code=01（开户）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-028",
+      "requirement_id": "REQ-017",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“设置投资者类型与业务代码”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-029",
+      "requirement_id": "REQ-018",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-018 ↔ 接口 IF-REST-004",
+      "scenario": "验证“个人开户提交写入 ACCOUNT 表”主业务流程：提交，后端校验通过，写入 ACCOUNT 表；返回成功消息，展示生成的交易账号。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-030",
+      "requirement_id": "REQ-018",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“个人开户提交写入 ACCOUNT 表”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-031",
+      "requirement_id": "REQ-019",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-019 ↔ 接口 IF-REST-004",
+      "scenario": "验证“investor_type 固定为 \"1\"（个人）”主业务流程：FS-EP1-1 业务规则：investor_type 字段固定为 \"1\"（个人）。约束：开户场景仅允许个人投资者。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-032",
+      "requirement_id": "REQ-019",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“investor_type 固定为 \"1\"（个人）”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-033",
+      "requirement_id": "REQ-020",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-020 ↔ 接口 IF-REST-004",
+      "scenario": "验证“business_code 固定为 \"01\"（开户）”主业务流程：FS-EP1-1 业务规则：business_code 字段固定为 \"01\"，标识开户业务。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-034",
+      "requirement_id": "REQ-020",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“business_code 固定为 \"01\"（开户）”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-035",
+      "requirement_id": "REQ-021",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-021 ↔ 接口 IF-REST-004",
+      "scenario": "验证“个人允许证件类型枚举”主业务流程：FS-EP1-1 业务规则：个人允许的证件类型包括 0=身份证、4=港澳通行证、5=户口本、A=台胞证、B=外国人永久居留证、C=港澳台居民居住证。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-036",
+      "requirement_id": "REQ-021",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“个人允许证件类型枚举”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-037",
+      "requirement_id": "REQ-022",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-022 ↔ 接口 IF-REST-004",
+      "scenario": "验证“字段长度限制”主业务流程：FS-EP1-1 业务规则：字段长度上限 investor_name ≤ 120、id_no ≤ 30、cellphone ≤ 20、ec_app_serial_no ≤ 32、ec_cust_no ≤ 64、transaction_account_id ≤ 64。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-038",
+      "requirement_id": "REQ-022",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“字段长度限制”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-039",
+      "requirement_id": "REQ-023",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-023 ↔ 接口 IF-REST-004",
+      "scenario": "验证“日期格式约束”主业务流程：FS-EP1-1 业务规则：order_date 格式 YYYYMMDD（8 位）；order_time 格式 HHMMSS（6 位）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-040",
+      "requirement_id": "REQ-023",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“日期格式约束”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-041",
+      "requirement_id": "REQ-026",
+      "interface_id": "IF-REST-022",
+      "source": "REQ",
+      "source_ref": "需求 REQ-026 ↔ 接口 IF-REST-022",
+      "scenario": "验证“申购选择基金代码（仅启用状态）”主业务流程：FS-EP2-1 正常流程：进入\"申购\"页面，从下拉框选择基金代码，下拉框仅展示启用状态的基金。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-042",
+      "requirement_id": "REQ-026",
+      "interface_id": "IF-REST-022",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“申购选择基金代码（仅启用状态）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-043",
+      "requirement_id": "REQ-028",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-028 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购填写申请金额”主业务流程：FS-EP2-1 正常流程：填写申请金额（如 10000.00）。输入：金额数值；输出：提交时携带 application_amount。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-044",
+      "requirement_id": "REQ-028",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“申购填写申请金额”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-045",
+      "requirement_id": "REQ-030",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-030 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购提交触发后端校验”主业务流程：FS-EP2-1 正常流程：点击\"提交\"，后端校验通过后进入写库流程。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-046",
+      "requirement_id": "REQ-030",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“申购提交触发后端校验”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-047",
+      "requirement_id": "REQ-031",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-031 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购事务写入 ORDER_RECORD 与 SETTLEMENT_RECORD”主业务流程：FS-EP2-1 正常流程：事务写入两张表——ORDER_RECORD（下单记录）与 SETTLEMENT_RECORD（落库记录）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-048",
+      "requirement_id": "REQ-031",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“申购事务写入 ORDER_RECORD 与 SETTLEMENT_RECORD”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-049",
+      "requirement_id": "REQ-032",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-032 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购返回成功消息并展示交易流水号”主业务流程：FS-EP2-1 正常流程：写入成功后返回成功消息，并展示交易流水号。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-050",
+      "requirement_id": "REQ-032",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“申购返回成功消息并展示交易流水号”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-051",
+      "requirement_id": "REQ-033",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-033 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购 business_code = \"22\"（申购）”主业务流程：FS-EP2-1 业务规则：business_code 固定为 \"22\"，标识申购业务。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-052",
+      "requirement_id": "REQ-033",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“申购 business_code = \"22\"（申购）”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-053",
+      "requirement_id": "REQ-034",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-034 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购金额大于 0、份额为 0”主业务流程：FS-EP2-1 业务规则：申购录入时 application_amount > 0，application_vol = 0。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-054",
+      "requirement_id": "REQ-034",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“申购金额大于 0、份额为 0”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-055",
+      "requirement_id": "REQ-035",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-035 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购金额格式 NUMBER(16,2)”主业务流程：FS-EP2-1 业务规则：金额字段格式为整数 14 位 + 小数 2 位（数据库类型 NUMBER(16,2)）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-056",
+      "requirement_id": "REQ-035",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“申购金额格式 NUMBER(16,2)”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-057",
+      "requirement_id": "REQ-036",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-036 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购双表写入使用数据库事务保证一致性”主业务流程：FS-EP2-1 业务规则：同时写入 ORDER_RECORD + SETTLEMENT_RECORD，使用数据库事务保证一致性；任一失败则自动回滚。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-058",
+      "requirement_id": "REQ-036",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“申购双表写入使用数据库事务保证一致性”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-059",
+      "requirement_id": "REQ-037",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-037 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购 currency_type 默认 \"156\"”主业务流程：FS-EP2-1 业务规则：currency_type 默认 \"156\"（人民币）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-060",
+      "requirement_id": "REQ-037",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“申购 currency_type 默认 \"156\"”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-061",
+      "requirement_id": "REQ-038",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-038 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购交易状态由 pending 变更为 submitted”主业务流程：FS-EP2-1 业务规则：交易状态初始为 \"pending\"（待提交），提交后变更为 \"submitted\"（已提交）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-062",
+      "requirement_id": "REQ-038",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“申购交易状态由 pending 变更为 submitted”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-063",
+      "requirement_id": "REQ-039",
+      "interface_id": "IF-REST-022",
+      "source": "REQ",
+      "source_ref": "需求 REQ-039 ↔ 接口 IF-REST-022",
+      "scenario": "验证“基金转换选择转出/转入基金（仅启用状态）”主业务流程：FS-EP2-4 正常流程：进入\"基金转换\"页面，从下拉框选择转出基金与转入基金，下拉框仅展示启用状态。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-064",
+      "requirement_id": "REQ-039",
+      "interface_id": "IF-REST-022",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“基金转换选择转出/转入基金（仅启用状态）”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-065",
+      "requirement_id": "REQ-040",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-040 ↔ 接口 IF-REST-007",
+      "scenario": "验证“基金转换填写转换份额”主业务流程：FS-EP2-4 正常流程：填写转换份额（如 1000.00）。输入：份额数值。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-066",
+      "requirement_id": "REQ-040",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“基金转换填写转换份额”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-067",
+      "requirement_id": "REQ-041",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-041 ↔ 接口 IF-REST-007",
+      "scenario": "验证“基金转换提交与双表写入”主业务流程：FS-EP2-4 正常流程：点击\"提交\"，后端校验通过，双表写入，business_code=36，target_fund_code 存转入基金代码。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-068",
+      "requirement_id": "REQ-041",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“基金转换提交与双表写入”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-069",
+      "requirement_id": "REQ-042",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-042 ↔ 接口 IF-REST-007",
+      "scenario": "验证“基金转换 business_code = \"36\"”主业务流程：FS-EP2-4 业务规则：business_code 固定为 \"36\"，标识基金转换业务。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-070",
+      "requirement_id": "REQ-042",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“基金转换 business_code = \"36\"”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-071",
+      "requirement_id": "REQ-043",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-043 ↔ 接口 IF-REST-007",
+      "scenario": "验证“基金转换数据模型扩展”主业务流程：FS-EP2-4 业务规则：fund_code 存转出基金代码；target_fund_code 存转入基金代码；其他交易类型此字段为空。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-072",
+      "requirement_id": "REQ-043",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“基金转换数据模型扩展”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-073",
+      "requirement_id": "REQ-044",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-044 ↔ 接口 IF-REST-007",
+      "scenario": "验证“基金转换转出与转入基金必须不同”主业务流程：FS-EP2-4 业务规则：转出/转入基金必须不同，不允许自身转换。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-074",
+      "requirement_id": "REQ-044",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“基金转换转出与转入基金必须不同”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-075",
+      "requirement_id": "REQ-045",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-045 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询输入查询条件（至少一个）”主业务流程：FS-EP3-1 正常流程：进入\"交易查询\"页面，输入查询条件，至少一个——账号（如 ec_cust_no）、流水号（如 ec_ap_serial_no）或交易日期区间（起止日期，YYYYMMDD 格式）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-076",
+      "requirement_id": "REQ-045",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询输入查询条件（至少一个）”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-077",
+      "requirement_id": "REQ-046",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-046 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询返回分页结果”主业务流程：FS-EP3-1 正常流程：点击\"查询\"，返回匹配结果，分页每页 20 条。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-078",
+      "requirement_id": "REQ-046",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询返回分页结果”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-079",
+      "requirement_id": "REQ-047",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-047 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询展示全部交易字段”主业务流程：FS-EP3-1 正常流程：展示全部交易字段（基金代码、业务代码、金额、份额、状态等）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-080",
+      "requirement_id": "REQ-047",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询展示全部交易字段”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-081",
+      "requirement_id": "REQ-048",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-048 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询不支持模糊搜索”主业务流程：FS-EP3-1 业务规则：不支持模糊搜索，账号和流水号为精确匹配。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-082",
+      "requirement_id": "REQ-048",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询不支持模糊搜索”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-083",
+      "requirement_id": "REQ-049",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-049 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询日期区间支持起止范围”主业务流程：FS-EP3-1 业务规则：日期区间查询支持起止日期范围。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-084",
+      "requirement_id": "REQ-049",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询日期区间支持起止范围”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-085",
+      "requirement_id": "REQ-050",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-050 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询分页默认 20 条并支持翻页”主业务流程：FS-EP3-1 业务规则：分页默认每页 20 条，支持翻页。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-086",
+      "requirement_id": "REQ-050",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询分页默认 20 条并支持翻页”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-087",
+      "requirement_id": "REQ-051",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-051 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询展示字段与交易下单字段一致”主业务流程：FS-EP3-1 业务规则：展示全部字段，与交易下单的全部字段一致。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-088",
+      "requirement_id": "REQ-051",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询展示字段与交易下单字段一致”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-089",
+      "requirement_id": "REQ-052",
+      "interface_id": "IF-REST-012",
+      "source": "REQ",
+      "source_ref": "需求 REQ-052 ↔ 接口 IF-REST-012",
+      "scenario": "验证“对账管理页面与执行触发”主业务流程：FS-EP4-1 正常流程：进入\"对账管理\"页面，点击\"执行对账\"按钮触发对账。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-090",
+      "requirement_id": "REQ-052",
+      "interface_id": "IF-REST-012",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“对账管理页面与执行触发”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-091",
+      "requirement_id": "REQ-053",
+      "interface_id": "IF-REST-012",
+      "source": "REQ",
+      "source_ref": "需求 REQ-053 ↔ 接口 IF-REST-012",
+      "scenario": "验证“对账按 5 字段匹配（含容差）”主业务流程：FS-EP4-1 正常流程：系统读取 ORDER_RECORD 表和 SETTLEMENT_RECORD 表，按 5 个字段匹配——流水号（ec_ap_serial_no）、金额（application_amount，容差 ±0.01）、份额（application_vol，容差 ±0.01）、时间（order_date + order_time）、账号（cust_no）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-092",
+      "requirement_id": "REQ-053",
+      "interface_id": "IF-REST-012",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“对账按 5 字段匹配（含容差）”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-093",
+      "requirement_id": "REQ-054",
+      "interface_id": "IF-REST-013",
+      "source": "REQ",
+      "source_ref": "需求 REQ-054 ↔ 接口 IF-REST-013",
+      "scenario": "验证“对账统计匹配与差异数量”主业务流程：FS-EP4-1 正常流程：统计匹配总数、差异总数，以及各差异类型数量（金额不一致、份额不一致、缺失下单、缺失落库）。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-094",
+      "requirement_id": "REQ-054",
+      "interface_id": "IF-REST-013",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“对账统计匹配与差异数量”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-095",
+      "requirement_id": "REQ-055",
+      "interface_id": "IF-REST-013",
+      "source": "REQ",
+      "source_ref": "需求 REQ-055 ↔ 接口 IF-REST-013",
+      "scenario": "验证“对账摘要展示与差异明细展开”主业务流程：FS-EP4-1 正常流程：展示对账摘要，差异明细可展开查看。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-096",
+      "requirement_id": "REQ-055",
+      "interface_id": "IF-REST-013",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“对账摘要展示与差异明细展开”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-097",
+      "requirement_id": "REQ-056",
+      "interface_id": "IF-REST-012",
+      "source": "REQ",
+      "source_ref": "需求 REQ-056 ↔ 接口 IF-REST-012",
+      "scenario": "验证“匹配字段：流水号 + 金额 + 份额 + 时间 + 账号”主业务流程：对账匹配的字段为：流水号 + 金额 + 份额 + 时间 + 账号",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-098",
+      "requirement_id": "REQ-056",
+      "interface_id": "IF-REST-012",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“匹配字段：流水号 + 金额 + 份额 + 时间 + 账号”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-099",
+      "requirement_id": "REQ-057",
+      "interface_id": "IF-REST-015",
+      "source": "REQ",
+      "source_ref": "需求 REQ-057 ↔ 接口 IF-REST-015",
+      "scenario": "验证“金额容差可配置（默认 0.01 元），在容差内视为匹配”主业务流程：对账匹配时金额容差可配置，默认 0.01 元；在容差内视为匹配",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-100",
+      "requirement_id": "REQ-057",
+      "interface_id": "IF-REST-015",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“金额容差可配置（默认 0.01 元），在容差内视为匹配”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-101",
+      "requirement_id": "REQ-058",
+      "interface_id": "IF-REST-013",
+      "source": "REQ",
+      "source_ref": "需求 REQ-058 ↔ 接口 IF-REST-013",
+      "scenario": "验证“差异类型定义”主业务流程：差异类型包括：amount_mismatch（金额不一致）、vol_mismatch（份额不一致）、missing_order（缺失下单记录）、missing_settlement（缺失落库记录）",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-102",
+      "requirement_id": "REQ-058",
+      "interface_id": "IF-REST-013",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“差异类型定义”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-103",
+      "requirement_id": "REQ-059",
+      "interface_id": "IF-REST-013",
+      "source": "REQ",
+      "source_ref": "需求 REQ-059 ↔ 接口 IF-REST-013",
+      "scenario": "验证“对账结果写入 RECONCILIATION_RESULT 表，差异明细以 JSON 格式存储”主业务流程：对账结果写入 RECONCILIATION_RESULT 表，差异明细以 JSON 格式存储",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-104",
+      "requirement_id": "REQ-059",
+      "interface_id": "IF-REST-013",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“对账结果写入 RECONCILIATION_RESULT 表，差异明细以 JSON 格式存储”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-105",
+      "requirement_id": "REQ-060",
+      "interface_id": "IF-REST-013",
+      "source": "REQ",
+      "source_ref": "需求 REQ-060 ↔ 接口 IF-REST-013",
+      "scenario": "验证“差异明细 JSON 结构”主业务流程：差异明细 JSON 结构字段定义：diff_type（差异类型）、ec_ap_serial_no（流水号）、order_amount（下单金额）、settlement_amount（落库金额）、diff_value（差值）、fund_code（基金代码）、business_code（业务代码）；不同 diff_type 包含的字段集合不同",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-106",
+      "requirement_id": "REQ-060",
+      "interface_id": "IF-REST-013",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“差异明细 JSON 结构”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-107",
+      "requirement_id": "REQ-061",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-061 ↔ 接口 IF-REST-007",
+      "scenario": "验证“交易下单双表写入使用数据库事务”主业务流程：交易下单时双表写入使用数据库事务（@transaction.atomic）保证数据一致性",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-108",
+      "requirement_id": "REQ-061",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易下单双表写入使用数据库事务”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-109",
+      "requirement_id": "REQ-062",
+      "interface_id": "IF-REST-015",
+      "source": "REQ",
+      "source_ref": "需求 REQ-062 ↔ 接口 IF-REST-015",
+      "scenario": "验证“对账匹配金额/份额容差可配置（默认 ±0.01）”主业务流程：对账匹配的金额/份额容差可配置，默认 ±0.01",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-110",
+      "requirement_id": "REQ-062",
+      "interface_id": "IF-REST-015",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“对账匹配金额/份额容差可配置（默认 ±0.01）”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-111",
+      "requirement_id": "REQ-063",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-063 ↔ 接口 IF-REST-007",
+      "scenario": "验证“同一流水号不可重复提交（唯一约束）”主业务流程：同一流水号不可重复提交，通过唯一约束保证幂等性",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-112",
+      "requirement_id": "REQ-063",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“同一流水号不可重复提交（唯一约束）”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-113",
+      "requirement_id": "REQ-064",
+      "interface_id": "IF-REST-017",
+      "source": "REQ",
+      "source_ref": "需求 REQ-064 ↔ 接口 IF-REST-017",
+      "scenario": "验证“新增产品配置日志记录”主业务流程：新增产品配置时输出日志条目，格式为：'时间戳 [INFO] orders.views.product: 新增产品配置: {\"fund_code\": \"基金代码\", \"fund_name\": \"基金名称\"}'，日志包含 fund_code 与 fund_name 两个字段。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-114",
+      "requirement_id": "REQ-064",
+      "interface_id": "IF-REST-017",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“新增产品配置日志记录”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-115",
+      "requirement_id": "REQ-066",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-066 ↔ 接口 IF-REST-007",
+      "scenario": "验证“数据一致性要求”主业务流程：交易下单双表写入事务成功率 100%",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-116",
+      "requirement_id": "REQ-066",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“数据一致性要求”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-117",
+      "requirement_id": "REQ-068",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-068 ↔ 接口 IF-REST-001",
+      "scenario": "验证“安全性要求”主业务流程：实现用户登录认证，密码以哈希方式存储，并提供 Session 管理",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-118",
+      "requirement_id": "REQ-068",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“安全性要求”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-119",
+      "requirement_id": "REQ-072",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-072 ↔ 接口 IF-REST-001",
+      "scenario": "验证“用户登录（FS-EP0-1）”主业务流程：模块：用户认证；面向管理员、操作员、审计员提供登录能力",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-120",
+      "requirement_id": "REQ-072",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“用户登录（FS-EP0-1）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-121",
+      "requirement_id": "REQ-073",
+      "interface_id": "IF-REST-017",
+      "source": "REQ",
+      "source_ref": "需求 REQ-073 ↔ 接口 IF-REST-017",
+      "scenario": "验证“产品配置管理（FS-EP0-2）”主业务流程：模块：产品配置；仅管理员可使用",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-122",
+      "requirement_id": "REQ-073",
+      "interface_id": "IF-REST-017",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“产品配置管理（FS-EP0-2）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-123",
+      "requirement_id": "REQ-074",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-074 ↔ 接口 IF-REST-004",
+      "scenario": "验证“个人投资者开户（FS-EP1-1）”主业务流程：模块：账户管理；面向个人投资者开通账户",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-124",
+      "requirement_id": "REQ-074",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“个人投资者开户（FS-EP1-1）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-125",
+      "requirement_id": "REQ-075",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-075 ↔ 接口 IF-REST-004",
+      "scenario": "验证“机构投资者开户（FS-EP1-2）”主业务流程：模块：账户管理；面向机构投资者开通账户",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-126",
+      "requirement_id": "REQ-075",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“机构投资者开户（FS-EP1-2）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-127",
+      "requirement_id": "REQ-076",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-076 ↔ 接口 IF-REST-004",
+      "scenario": "验证“产品客户开户（FS-EP1-3）”主业务流程：模块：账户管理；面向产品客户开通账户",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-128",
+      "requirement_id": "REQ-076",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“产品客户开户（FS-EP1-3）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-129",
+      "requirement_id": "REQ-077",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-077 ↔ 接口 IF-REST-004",
+      "scenario": "验证“增开交易账号（FS-EP1-4）”主业务流程：模块：账户管理；在已有客户下增开交易账号",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-130",
+      "requirement_id": "REQ-077",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“增开交易账号（FS-EP1-4）”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-131",
+      "requirement_id": "REQ-078",
+      "interface_id": "IF-REST-006",
+      "source": "REQ",
+      "source_ref": "需求 REQ-078 ↔ 接口 IF-REST-006",
+      "scenario": "验证“账户销户（FS-EP1-5）”主业务流程：模块：账户管理；执行账户销户",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-132",
+      "requirement_id": "REQ-078",
+      "interface_id": "IF-REST-006",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“账户销户（FS-EP1-5）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-133",
+      "requirement_id": "REQ-079",
+      "interface_id": "IF-REST-005",
+      "source": "REQ",
+      "source_ref": "需求 REQ-079 ↔ 接口 IF-REST-005",
+      "scenario": "验证“修改客户资料（FS-EP1-6）”主业务流程：模块：账户管理；修改客户资料信息",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-134",
+      "requirement_id": "REQ-079",
+      "interface_id": "IF-REST-005",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“修改客户资料（FS-EP1-6）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-135",
+      "requirement_id": "REQ-080",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-080 ↔ 接口 IF-REST-007",
+      "scenario": "验证“申购下单（FS-EP2-1）”主业务流程：模块：交易管理；执行基金申购下单",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-136",
+      "requirement_id": "REQ-080",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“申购下单（FS-EP2-1）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-137",
+      "requirement_id": "REQ-081",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-081 ↔ 接口 IF-REST-007",
+      "scenario": "验证“赎回下单（FS-EP2-2）”主业务流程：模块：交易管理；执行基金赎回下单",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-138",
+      "requirement_id": "REQ-081",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“赎回下单（FS-EP2-2）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-139",
+      "requirement_id": "REQ-082",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-082 ↔ 接口 IF-REST-007",
+      "scenario": "验证“快取下单（FS-EP2-3）”主业务流程：模块：交易管理；执行基金快取下单",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-140",
+      "requirement_id": "REQ-082",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“快取下单（FS-EP2-3）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-141",
+      "requirement_id": "REQ-083",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-083 ↔ 接口 IF-REST-007",
+      "scenario": "验证“基金转换下单（FS-EP2-4）”主业务流程：模块：交易管理；执行基金转换下单",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-142",
+      "requirement_id": "REQ-083",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“基金转换下单（FS-EP2-4）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-143",
+      "requirement_id": "REQ-084",
+      "interface_id": "IF-REST-008",
+      "source": "REQ",
+      "source_ref": "需求 REQ-084 ↔ 接口 IF-REST-008",
+      "scenario": "验证“撤单（FS-EP2-5）”主业务流程：模块：交易管理；撤销已提交的交易订单",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-144",
+      "requirement_id": "REQ-084",
+      "interface_id": "IF-REST-008",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“撤单（FS-EP2-5）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-145",
+      "requirement_id": "REQ-085",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-085 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易记录查询（FS-EP3-1）”主业务流程：模块：查询统计；面向管理员、操作员、审计员提供交易记录查询",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-146",
+      "requirement_id": "REQ-085",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“交易记录查询（FS-EP3-1）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-147",
+      "requirement_id": "REQ-086",
+      "interface_id": "IF-REST-011",
+      "source": "REQ",
+      "source_ref": "需求 REQ-086 ↔ 接口 IF-REST-011",
+      "scenario": "验证“交易记录导出（FS-EP3-2）”主业务流程：模块：查询统计；面向管理员、操作员、审计员提供交易记录导出",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-148",
+      "requirement_id": "REQ-086",
+      "interface_id": "IF-REST-011",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“交易记录导出（FS-EP3-2）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-149",
+      "requirement_id": "REQ-087",
+      "interface_id": "IF-REST-012",
+      "source": "REQ",
+      "source_ref": "需求 REQ-087 ↔ 接口 IF-REST-012",
+      "scenario": "验证“手动对账执行（FS-EP4-1）”主业务流程：模块：对账管理；由管理员手动触发对账",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-150",
+      "requirement_id": "REQ-087",
+      "interface_id": "IF-REST-012",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“手动对账执行（FS-EP4-1）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-151",
+      "requirement_id": "REQ-088",
+      "interface_id": "IF-REST-013",
+      "source": "REQ",
+      "source_ref": "需求 REQ-088 ↔ 接口 IF-REST-013",
+      "scenario": "验证“对账差异报告（FS-EP4-2）”主业务流程：模块：对账管理；输出对账差异报告，面向管理员、操作员、审计员",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-152",
+      "requirement_id": "REQ-088",
+      "interface_id": "IF-REST-013",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“对账差异报告（FS-EP4-2）”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-153",
+      "requirement_id": "REQ-089",
+      "interface_id": "IF-REST-015",
+      "source": "REQ",
+      "source_ref": "需求 REQ-089 ↔ 接口 IF-REST-015",
+      "scenario": "验证“定时自动对账（FS-EP4-3）”主业务流程：模块：对账管理；按计划定时执行对账任务（当前状态：待实现）",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-154",
+      "requirement_id": "REQ-089",
+      "interface_id": "IF-REST-015",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“定时自动对账（FS-EP4-3）”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-155",
+      "requirement_id": "REQ-090",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-090 ↔ 接口 IF-REST-001",
+      "scenario": "验证“用户登录异常-用户名或密码错误”主业务流程：触发条件：数据库校验不通过；系统行为：返回 HTTP 401，不返回具体字段错误；用户提示：\"用户名或密码错误\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-156",
+      "requirement_id": "REQ-090",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“用户登录异常-用户名或密码错误”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-157",
+      "requirement_id": "REQ-091",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-091 ↔ 接口 IF-REST-001",
+      "scenario": "验证“用户登录异常-输入为空”主业务流程：触发条件：前端校验失败（用户名为空或密码为空）；系统行为：阻止提交并标红对应字段；用户提示：\"请输入用户名/密码\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-158",
+      "requirement_id": "REQ-091",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“用户登录异常-输入为空”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-159",
+      "requirement_id": "REQ-092",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-092 ↔ 接口 IF-REST-001",
+      "scenario": "验证“用户登录异常-Session过期”主业务流程：触发条件：Token 失效（24h）；系统行为：返回 HTTP 401，由前端拦截器捕获；用户提示：自动重定向到登录页",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-160",
+      "requirement_id": "REQ-092",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“用户登录异常-Session过期”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-161",
+      "requirement_id": "REQ-093",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-093 ↔ 接口 IF-REST-001",
+      "scenario": "验证“用户登录异常-连续登录失败锁定”主业务流程：触发条件：同一用户连续 5 次登录失败；系统行为：锁定账号 15 分钟；用户提示：\"账号已锁定，请 15 分钟后重试\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-162",
+      "requirement_id": "REQ-093",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“用户登录异常-连续登录失败锁定”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-163",
+      "requirement_id": "REQ-094",
+      "interface_id": "IF-REST-017",
+      "source": "REQ",
+      "source_ref": "需求 REQ-094 ↔ 接口 IF-REST-017",
+      "scenario": "验证“产品配置异常-基金代码格式错误”主业务流程：触发条件：基金代码非 6 位数字；系统行为：前端+后端双重校验拒绝；用户提示：\"基金代码必须为 6 位数字\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-164",
+      "requirement_id": "REQ-094",
+      "interface_id": "IF-REST-017",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“产品配置异常-基金代码格式错误”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-165",
+      "requirement_id": "REQ-095",
+      "interface_id": "IF-REST-017",
+      "source": "REQ",
+      "source_ref": "需求 REQ-095 ↔ 接口 IF-REST-017",
+      "scenario": "验证“产品配置异常-基金代码重复”主业务流程：触发条件：违反基金代码唯一约束；系统行为：返回 HTTP 400；用户提示：\"该基金代码已存在\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-166",
+      "requirement_id": "REQ-095",
+      "interface_id": "IF-REST-017",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“产品配置异常-基金代码重复”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-167",
+      "requirement_id": "REQ-096",
+      "interface_id": "IF-REST-017",
+      "source": "REQ",
+      "source_ref": "需求 REQ-096 ↔ 接口 IF-REST-017",
+      "scenario": "验证“产品配置异常-基金名称为空”主业务流程：触发条件：基金名称必填校验失败；系统行为：阻止提交；用户提示：\"基金名称不能为空\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-168",
+      "requirement_id": "REQ-096",
+      "interface_id": "IF-REST-017",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“产品配置异常-基金名称为空”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-169",
+      "requirement_id": "REQ-097",
+      "interface_id": "IF-REST-020",
+      "source": "REQ",
+      "source_ref": "需求 REQ-097 ↔ 接口 IF-REST-020",
+      "scenario": "验证“产品配置异常-停用被引用的基金”主业务流程：触发条件：该基金存在关联交易记录；系统行为：允许停用，但弹出警告；用户提示：\"该基金存在关联交易，停用后不可用于新下单\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-170",
+      "requirement_id": "REQ-097",
+      "interface_id": "IF-REST-020",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“产品配置异常-停用被引用的基金”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-171",
+      "requirement_id": "REQ-098",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-098 ↔ 接口 IF-REST-004",
+      "scenario": "验证“开户异常-必填字段为空”主业务流程：触发条件：必填字段未填写；系统行为：前端+后端校验拒绝，标红字段；用户提示：\"请填写必填项\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-172",
+      "requirement_id": "REQ-098",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“开户异常-必填字段为空”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-173",
+      "requirement_id": "REQ-099",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-099 ↔ 接口 IF-REST-004",
+      "scenario": "验证“开户异常-证件类型非法”主业务流程：触发条件：证件类型不在 [0,4,5,A,B,C] 范围；系统行为：拒绝提交；用户提示：\"个人证件类型不合法\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-174",
+      "requirement_id": "REQ-099",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“开户异常-证件类型非法”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-175",
+      "requirement_id": "REQ-100",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-100 ↔ 接口 IF-REST-004",
+      "scenario": "验证“开户异常-身份证号格式错误”主业务流程：触发条件：18 位校验码验证失败；系统行为：拒绝提交；用户提示：\"身份证号格式错误\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-176",
+      "requirement_id": "REQ-100",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“开户异常-身份证号格式错误”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-177",
+      "requirement_id": "REQ-101",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-101 ↔ 接口 IF-REST-004",
+      "scenario": "验证“开户异常-手机号格式错误”主业务流程：触发条件：手机号含非数字或长度 ≠11；系统行为：拒绝提交；用户提示：\"手机号格式错误\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-178",
+      "requirement_id": "REQ-101",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“开户异常-手机号格式错误”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-179",
+      "requirement_id": "REQ-102",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-102 ↔ 接口 IF-REST-004",
+      "scenario": "验证“开户异常-字段超长”主业务流程：触发条件：字段长度超过限制（如姓名 >120 字符）；系统行为：拒绝提交；用户提示：\"字段长度超限\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-180",
+      "requirement_id": "REQ-102",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“开户异常-字段超长”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-181",
+      "requirement_id": "REQ-103",
+      "interface_id": "IF-REST-004",
+      "source": "REQ",
+      "source_ref": "需求 REQ-103 ↔ 接口 IF-REST-004",
+      "scenario": "验证“开户异常-证件号重复开户”主业务流程：触发条件：违反唯一约束 (id_type, id_no)；系统行为：返回 HTTP 400；用户提示：\"该证件号已开户\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-182",
+      "requirement_id": "REQ-103",
+      "interface_id": "IF-REST-004",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“开户异常-证件号重复开户”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-183",
+      "requirement_id": "REQ-104",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-104 ↔ 接口 IF-REST-007",
+      "scenario": "验证“交易下单异常-金额≤0”主业务流程：触发条件：交易金额不大于 0；系统行为：业务校验拒绝提交；用户提示：\"金额必须大于 0\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-184",
+      "requirement_id": "REQ-104",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易下单异常-金额≤0”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-185",
+      "requirement_id": "REQ-105",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-105 ↔ 接口 IF-REST-007",
+      "scenario": "验证“交易下单异常-金额小数位>2”主业务流程：触发条件：金额小数位数超过 2 位；系统行为：格式校验拒绝提交；用户提示：\"金额最多 2 位小数\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-186",
+      "requirement_id": "REQ-105",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易下单异常-金额小数位>2”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-187",
+      "requirement_id": "REQ-106",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-106 ↔ 接口 IF-REST-007",
+      "scenario": "验证“交易下单异常-金额超过上限”主业务流程：触发条件：金额 > 99999999999999.99；系统行为：拒绝提交；用户提示：\"金额超过上限\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-188",
+      "requirement_id": "REQ-106",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易下单异常-金额超过上限”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-189",
+      "requirement_id": "REQ-107",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-107 ↔ 接口 IF-REST-007",
+      "scenario": "验证“交易下单异常-基金代码无效”主业务流程：触发条件：基金代码在配置表不存在或 is_active=false；系统行为：拒绝提交；用户提示：\"基金代码无效或已停用\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-190",
+      "requirement_id": "REQ-107",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易下单异常-基金代码无效”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-191",
+      "requirement_id": "REQ-108",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-108 ↔ 接口 IF-REST-007",
+      "scenario": "验证“交易下单异常-必填字段缺失”主业务流程：触发条件：fund_code 或 share_type 为空；系统行为：拒绝提交并标红对应字段；用户提示：标红对应字段",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-192",
+      "requirement_id": "REQ-108",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易下单异常-必填字段缺失”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-193",
+      "requirement_id": "REQ-109",
+      "interface_id": "IF-REST-007",
+      "source": "REQ",
+      "source_ref": "需求 REQ-109 ↔ 接口 IF-REST-007",
+      "scenario": "验证“交易下单异常-数据库写入失败”主业务流程：触发条件：数据库异常；系统行为：事务回滚并记录日志；用户提示：\"系统异常，请重试\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-194",
+      "requirement_id": "REQ-109",
+      "interface_id": "IF-REST-007",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易下单异常-数据库写入失败”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-195",
+      "requirement_id": "REQ-114",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-114 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询异常-查询条件全为空”主业务流程：触发条件：用户未输入任何筛选条件；系统行为：返回全部（分页）或提示；用户提示：\"请至少输入一个查询条件\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-196",
+      "requirement_id": "REQ-114",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询异常-查询条件全为空”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-197",
+      "requirement_id": "REQ-115",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-115 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询异常-日期区间非法”主业务流程：触发条件：起始日期 > 结束日期；系统行为：拒绝查询；用户提示：\"起始日期不能晚于结束日期\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-198",
+      "requirement_id": "REQ-115",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询异常-日期区间非法”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-199",
+      "requirement_id": "REQ-116",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-116 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询异常-日期格式非法”主业务流程：触发条件：日期格式非 YYYYMMDD；系统行为：拒绝查询；用户提示：\"日期格式错误\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-200",
+      "requirement_id": "REQ-116",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询异常-日期格式非法”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-201",
+      "requirement_id": "REQ-117",
+      "interface_id": "IF-REST-010",
+      "source": "REQ",
+      "source_ref": "需求 REQ-117 ↔ 接口 IF-REST-010",
+      "scenario": "验证“交易查询异常-查询结果为空”主业务流程：触发条件：无匹配记录；系统行为：返回空列表；用户提示：\"无匹配记录\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-202",
+      "requirement_id": "REQ-117",
+      "interface_id": "IF-REST-010",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“交易查询异常-查询结果为空”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-203",
+      "requirement_id": "REQ-118",
+      "interface_id": "IF-REST-012",
+      "source": "REQ",
+      "source_ref": "需求 REQ-118 ↔ 接口 IF-REST-012",
+      "scenario": "验证“对账异常-任一表数据为空”主业务流程：触发条件：下单记录或落库记录无数据可对账；系统行为：阻止执行；用户提示：\"下单/落库数据为空，无法对账\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-204",
+      "requirement_id": "REQ-118",
+      "interface_id": "IF-REST-012",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“对账异常-任一表数据为空”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-205",
+      "requirement_id": "REQ-119",
+      "interface_id": "IF-REST-012",
+      "source": "REQ",
+      "source_ref": "需求 REQ-119 ↔ 接口 IF-REST-012",
+      "scenario": "验证“对账异常-对账执行超时”主业务流程：触发条件：对账数据量过大（>10万条）；系统行为：异步执行并提供进度提示；用户提示：\"对账正在执行，请稍候查看结果\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-206",
+      "requirement_id": "REQ-119",
+      "interface_id": "IF-REST-012",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“对账异常-对账执行超时”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-207",
+      "requirement_id": "REQ-120",
+      "interface_id": "IF-REST-012",
+      "source": "REQ",
+      "source_ref": "需求 REQ-120 ↔ 接口 IF-REST-012",
+      "scenario": "验证“对账异常-数据库异常”主业务流程：触发条件：数据库连接失败；系统行为：中止并记录日志；用户提示：\"对账执行异常，请重试\"",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-208",
+      "requirement_id": "REQ-120",
+      "interface_id": "IF-REST-012",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“对账异常-数据库异常”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-209",
+      "requirement_id": "REQ-121",
+      "interface_id": "IF-REST-001",
+      "source": "REQ",
+      "source_ref": "需求 REQ-121 ↔ 接口 IF-REST-001",
+      "scenario": "验证“用户登录接口”主业务流程：方法：POST；路径：/api/auth/login/；输入：{username, password}；输出：{token, user_info}",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-210",
+      "requirement_id": "REQ-121",
+      "interface_id": "IF-REST-001",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“用户登录接口”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-211",
+      "requirement_id": "REQ-122",
+      "interface_id": "IF-REST-002",
+      "source": "REQ",
+      "source_ref": "需求 REQ-122 ↔ 接口 IF-REST-002",
+      "scenario": "验证“退出登录接口”主业务流程：方法：POST；路径：/api/auth/logout/；输入：无；输出：{message}",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-212",
+      "requirement_id": "REQ-122",
+      "interface_id": "IF-REST-002",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“退出登录接口”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-213",
+      "requirement_id": "REQ-123",
+      "interface_id": "IF-REST-016",
+      "source": "REQ",
+      "source_ref": "需求 REQ-123 ↔ 接口 IF-REST-016",
+      "scenario": "验证“产品列表接口”主业务流程：方法：GET；路径：/api/products/；输入：分页参数 ?page=1；输出：{count, results[]}",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-214",
+      "requirement_id": "REQ-123",
+      "interface_id": "IF-REST-016",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“产品列表接口”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-215",
+      "requirement_id": "REQ-124",
+      "interface_id": "IF-REST-017",
+      "source": "REQ",
+      "source_ref": "需求 REQ-124 ↔ 接口 IF-REST-017",
+      "scenario": "验证“新增产品接口”主业务流程：方法：POST；路径：/api/products/；输入：{fund_code, fund_name, share_type, is_active}；输出：{...}",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-216",
+      "requirement_id": "REQ-124",
+      "interface_id": "IF-REST-017",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“新增产品接口”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-217",
+      "requirement_id": "REQ-125",
+      "interface_id": "IF-REST-018",
+      "source": "REQ",
+      "source_ref": "需求 REQ-125 ↔ 接口 IF-REST-018",
+      "scenario": "验证“产品详情接口”主业务流程：方法：GET；路径：/api/products/{fund_code}/；输入：无；输出：{...}",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-218",
+      "requirement_id": "REQ-125",
+      "interface_id": "IF-REST-018",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“产品详情接口”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-219",
+      "requirement_id": "REQ-126",
+      "interface_id": "IF-REST-019",
+      "source": "REQ",
+      "source_ref": "需求 REQ-126 ↔ 接口 IF-REST-019",
+      "scenario": "验证“更新产品接口”主业务流程：方法：PUT；路径：/api/products/{fund_code}/；输入：{...}；输出：{...}",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-220",
+      "requirement_id": "REQ-126",
+      "interface_id": "IF-REST-019",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“更新产品接口”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-221",
+      "requirement_id": "REQ-127",
+      "interface_id": "IF-REST-021",
+      "source": "REQ",
+      "source_ref": "需求 REQ-127 ↔ 接口 IF-REST-021",
+      "scenario": "验证“删除产品接口”主业务流程：方法：DELETE；路径：/api/products/{fund_code}/；输入：无；输出：{message}",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-222",
+      "requirement_id": "REQ-127",
+      "interface_id": "IF-REST-021",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：partial",
+      "scenario": "确认“删除产品接口”在实现状态为 partial 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-223",
+      "requirement_id": "REQ-128",
+      "interface_id": "IF-REST-022",
+      "source": "REQ",
+      "source_ref": "需求 REQ-128 ↔ 接口 IF-REST-022",
+      "scenario": "验证“启用产品列表”主业务流程：通过 GET /api/products/active/ 获取启用产品列表，无请求体，响应为 [{fund_code, fund_name}] 数组。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-224",
+      "requirement_id": "REQ-128",
+      "interface_id": "IF-REST-022",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“启用产品列表”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-225",
+      "requirement_id": "REQ-142",
+      "interface_id": "IF-REST-012",
+      "source": "REQ",
+      "source_ref": "需求 REQ-142 ↔ 接口 IF-REST-012",
+      "scenario": "验证“手动执行对账”主业务流程：通过 POST /api/reconciliation/run/ 提交请求体 {trigger_type: \"manual\"}，响应返回 {recon_id, summary}。",
+      "case_split_hints": [
+        "正常主流程",
+        "输入边界与空值",
+        "异常/权限/业务拒绝"
+      ]
+    },
+    {
+      "id": "TP-226",
+      "requirement_id": "REQ-142",
+      "interface_id": "IF-REST-012",
+      "source": "RISK",
+      "source_ref": "代码评审映射状态：undetermined",
+      "scenario": "确认“手动执行对账”在实现状态为 undetermined 时的遗漏、降级或不一致行为",
+      "case_split_hints": [
+        "关键业务路径",
+        "异常提示与数据一致性",
+        "配置/会话/权限等服务端行为"
+      ]
+    },
+    {
+      "id": "TP-227",
+      "requirement_id": "REQ-005",
+      "source": "RISK",
+      "source_ref": "需求 REQ-005 无接口映射",
+      "scenario": "需求“登录页居中简洁风格”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-228",
+      "requirement_id": "REQ-006",
+      "source": "RISK",
+      "source_ref": "需求 REQ-006 无接口映射",
+      "scenario": "需求“密码输入框支持显示/隐藏切换”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-229",
+      "requirement_id": "REQ-007",
+      "source": "RISK",
+      "source_ref": "需求 REQ-007 无接口映射",
+      "scenario": "需求“登录按钮 loading 状态防重复提交”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-230",
+      "requirement_id": "REQ-024",
+      "source": "RISK",
+      "source_ref": "需求 REQ-024 无接口映射",
+      "scenario": "需求“证件类型选择后 placeholder 动态提示”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-231",
+      "requirement_id": "REQ-025",
+      "source": "RISK",
+      "source_ref": "需求 REQ-025 无接口映射",
+      "scenario": "需求“提交按钮 loading 与开户结果弹窗”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-232",
+      "requirement_id": "REQ-027",
+      "source": "RISK",
+      "source_ref": "需求 REQ-027 无接口映射",
+      "scenario": "需求“申购选择份额类型（A 类/B 类）”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-233",
+      "requirement_id": "REQ-029",
+      "source": "RISK",
+      "source_ref": "需求 REQ-029 无接口映射",
+      "scenario": "需求“申购公共字段自动填充”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-234",
+      "requirement_id": "REQ-065",
+      "source": "RISK",
+      "source_ref": "需求 REQ-065 无接口映射",
+      "scenario": "需求“性能要求”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-235",
+      "requirement_id": "REQ-067",
+      "source": "RISK",
+      "source_ref": "需求 REQ-067 无接口映射",
+      "scenario": "需求“可用性要求”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-236",
+      "requirement_id": "REQ-069",
+      "source": "RISK",
+      "source_ref": "需求 REQ-069 无接口映射",
+      "scenario": "需求“管理员角色”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-237",
+      "requirement_id": "REQ-070",
+      "source": "RISK",
+      "source_ref": "需求 REQ-070 无接口映射",
+      "scenario": "需求“操作员角色”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-238",
+      "requirement_id": "REQ-071",
+      "source": "RISK",
+      "source_ref": "需求 REQ-071 无接口映射",
+      "scenario": "需求“审计员角色”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-239",
+      "requirement_id": "REQ-110",
+      "source": "RISK",
+      "source_ref": "需求 REQ-110 无接口映射",
+      "scenario": "需求“基金转换异常-转出转入同一基金”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-240",
+      "requirement_id": "REQ-111",
+      "source": "RISK",
+      "source_ref": "需求 REQ-111 无接口映射",
+      "scenario": "需求“基金转换异常-转入基金未选择”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-241",
+      "requirement_id": "REQ-112",
+      "source": "RISK",
+      "source_ref": "需求 REQ-112 无接口映射",
+      "scenario": "需求“基金转换异常-份额≤0”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-242",
+      "requirement_id": "REQ-113",
+      "source": "RISK",
+      "source_ref": "需求 REQ-113 无接口映射",
+      "scenario": "需求“基金转换异常-任一基金已停用”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-243",
+      "requirement_id": "REQ-129",
+      "source": "RISK",
+      "source_ref": "需求 REQ-129 无接口映射",
+      "scenario": "需求“个人开户”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-244",
+      "requirement_id": "REQ-130",
+      "source": "RISK",
+      "source_ref": "需求 REQ-130 无接口映射",
+      "scenario": "需求“机构开户”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-245",
+      "requirement_id": "REQ-131",
+      "source": "RISK",
+      "source_ref": "需求 REQ-131 无接口映射",
+      "scenario": "需求“产品开户”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-246",
+      "requirement_id": "REQ-132",
+      "source": "RISK",
+      "source_ref": "需求 REQ-132 无接口映射",
+      "scenario": "需求“增开交易账号”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-247",
+      "requirement_id": "REQ-133",
+      "source": "RISK",
+      "source_ref": "需求 REQ-133 无接口映射",
+      "scenario": "需求“账户销户”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-248",
+      "requirement_id": "REQ-134",
+      "source": "RISK",
+      "source_ref": "需求 REQ-134 无接口映射",
+      "scenario": "需求“修改客户资料”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-249",
+      "requirement_id": "REQ-135",
+      "source": "RISK",
+      "source_ref": "需求 REQ-135 无接口映射",
+      "scenario": "需求“申购下单”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-250",
+      "requirement_id": "REQ-136",
+      "source": "RISK",
+      "source_ref": "需求 REQ-136 无接口映射",
+      "scenario": "需求“赎回下单”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-251",
+      "requirement_id": "REQ-137",
+      "source": "RISK",
+      "source_ref": "需求 REQ-137 无接口映射",
+      "scenario": "需求“快取下单”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-252",
+      "requirement_id": "REQ-138",
+      "source": "RISK",
+      "source_ref": "需求 REQ-138 无接口映射",
+      "scenario": "需求“基金转换”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-253",
+      "requirement_id": "REQ-139",
+      "source": "RISK",
+      "source_ref": "需求 REQ-139 无接口映射",
+      "scenario": "需求“撤单”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-254",
+      "requirement_id": "REQ-140",
+      "source": "RISK",
+      "source_ref": "需求 REQ-140 无接口映射",
+      "scenario": "需求“交易记录查询”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-255",
+      "requirement_id": "REQ-141",
+      "source": "RISK",
+      "source_ref": "需求 REQ-141 无接口映射",
+      "scenario": "需求“导出 Excel/CSV”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-256",
+      "requirement_id": "REQ-143",
+      "source": "RISK",
+      "source_ref": "需求 REQ-143 无接口映射",
+      "scenario": "需求“对账结果列表”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-257",
+      "requirement_id": "REQ-144",
+      "source": "RISK",
+      "source_ref": "需求 REQ-144 无接口映射",
+      "scenario": "需求“对账差异明细”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-258",
+      "requirement_id": "REQ-145",
+      "source": "RISK",
+      "source_ref": "需求 REQ-145 无接口映射",
+      "scenario": "需求“导出对账报告”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-259",
+      "requirement_id": "REQ-146",
+      "source": "RISK",
+      "source_ref": "需求 REQ-146 无接口映射",
+      "scenario": "需求“单接口响应时间约束”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-260",
+      "requirement_id": "REQ-147",
+      "source": "RISK",
+      "source_ref": "需求 REQ-147 无接口映射",
+      "scenario": "需求“对账任务执行时间约束”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-261",
+      "requirement_id": "REQ-148",
+      "source": "RISK",
+      "source_ref": "需求 REQ-148 无接口映射",
+      "scenario": "需求“并发用户数约束”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-262",
+      "requirement_id": "REQ-149",
+      "source": "RISK",
+      "source_ref": "需求 REQ-149 无接口映射",
+      "scenario": "需求“数据库查询优化要求”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    },
+    {
+      "id": "TP-263",
+      "requirement_id": "REQ-150",
+      "source": "RISK",
+      "source_ref": "需求 REQ-150 无接口映射",
+      "scenario": "需求“日志文件配置”尚未映射到接口，需通过页面流程或人工确认实现证据",
+      "case_split_hints": [
+        "端到端主路径",
+        "用户可见反馈",
+        "实现与需求的可追溯性"
+      ]
+    }
+  ],
+  "e2e_cases": [
+    {
+      "id": "E2E-001",
+      "case_type": "e2e",
+      "requirement_id": "REQ-001",
+      "title": "用户登录正常流程",
+      "preconditions": [],
+      "steps": [
+        {
+          "action": "goto",
+          "value": "/login"
+        },
+        {
+          "action": "fill",
+          "selector": "placeholder=用户名",
+          "value": "{{AUTH_USERNAME}}"
+        },
+        {
+          "action": "fill",
+          "selector": "placeholder=密码",
+          "value": "{{AUTH_PASSWORD}}"
+        },
+        {
+          "action": "click",
+          "selector": "role=button[name=登 录]"
+        }
+      ],
+      "expected": "登录流程触发，浏览器跳转至登录后页面"
+    },
+    {
+      "id": "E2E-002",
+      "case_type": "e2e",
+      "requirement_id": "REQ-091",
+      "title": "用户登录异常-用户名为空",
+      "preconditions": [],
+      "steps": [
+        {
+          "action": "goto",
+          "value": "/login"
+        },
+        {
+          "action": "click",
+          "selector": "role=button[name=登 录]"
+        }
+      ],
+      "expected": "用户名为空时阻止提交，前端校验提示请输入用户名"
+    },
+    {
+      "id": "E2E-003",
+      "case_type": "e2e",
+      "requirement_id": "REQ-091",
+      "title": "用户登录异常-密码为空",
+      "preconditions": [],
+      "steps": [
+        {
+          "action": "goto",
+          "value": "/login"
+        },
+        {
+          "action": "fill",
+          "selector": "placeholder=用户名",
+          "value": "{{AUTH_USERNAME}}"
+        },
+        {
+          "action": "click",
+          "selector": "role=button[name=登 录]"
+        }
+      ],
+      "expected": "密码为空时阻止提交，前端校验提示请输入密码"
+    },
+    {
+      "id": "E2E-004",
+      "case_type": "e2e",
+      "requirement_id": "REQ-090",
+      "title": "用户登录异常-用户名或密码错误",
+      "preconditions": [],
+      "steps": [
+        {
+          "action": "goto",
+          "value": "/login"
+        },
+        {
+          "action": "fill",
+          "selector": "placeholder=用户名",
+          "value": "{{AUTH_USERNAME}}"
+        },
+        {
+          "action": "fill",
+          "selector": "placeholder=密码",
+          "value": "invalid_password_for_e2e"
+        },
+        {
+          "action": "click",
+          "selector": "role=button[name=登 录]"
+        }
+      ],
+      "expected": "登录失败提示用户名或密码错误，不暴露具体字段错误"
+    }
+  ]
+}

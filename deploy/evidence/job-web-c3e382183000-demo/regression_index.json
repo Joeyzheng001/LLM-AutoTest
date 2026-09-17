@@ -1,0 +1,411 @@
+
+{
+  "schema_version": "1.0",
+  "job_id": "job-web-c3e382183000",
+  "suites": [
+    {
+      "protocol": "rest",
+      "scripts": [
+        {
+          "case_id": "TC-001",
+          "script_path": "scripts/regression/rest/test_TC_001.py",
+          "requirement_id": "REQ-001",
+          "interface_id": "IF-REST-001",
+          "archived_at": "2026-09-17T07:51:51.793967+00:00"
+        },
+        {
+          "case_id": "TC-002",
+          "script_path": "scripts/regression/rest/test_TC_002.py",
+          "requirement_id": "REQ-090",
+          "interface_id": "IF-REST-001",
+          "archived_at": "2026-09-17T07:51:51.794213+00:00"
+        },
+        {
+          "case_id": "TC-003",
+          "script_path": "scripts/regression/rest/test_TC_003.py",
+          "requirement_id": "REQ-091",
+          "interface_id": "IF-REST-001",
+          "archived_at": "2026-09-17T07:51:51.794273+00:00"
+        },
+        {
+          "case_id": "TC-005",
+          "script_path": "scripts/regression/rest/test_TC_005.py",
+          "requirement_id": "REQ-093",
+          "interface_id": "IF-REST-001",
+          "archived_at": "2026-09-17T07:51:51.794313+00:00"
+        },
+        {
+          "case_id": "TC-006",
+          "script_path": "scripts/regression/rest/test_TC_006.py",
+          "requirement_id": "REQ-121",
+          "interface_id": "IF-REST-001",
+          "archived_at": "2026-09-17T07:51:51.794348+00:00"
+        },
+        {
+          "case_id": "TC-007",
+          "script_path": "scripts/regression/rest/test_TC_007.py",
+          "requirement_id": "REQ-122",
+          "interface_id": "IF-REST-002",
+          "archived_at": "2026-09-17T07:51:51.794384+00:00"
+        },
+        {
+          "case_id": "TC-008",
+          "script_path": "scripts/regression/rest/test_TC_008.py",
+          "requirement_id": "REQ-122",
+          "interface_id": "IF-REST-002",
+          "archived_at": "2026-09-17T07:51:51.794419+00:00"
+        },
+        {
+          "case_id": "TC-009",
+          "script_path": "scripts/regression/rest/test_TC_009.py",
+          "requirement_id": "REQ-122",
+          "interface_id": "IF-REST-002",
+          "archived_at": "2026-09-17T07:51:51.794452+00:00"
+        },
+        {
+          "case_id": "TC-014",
+          "script_path": "scripts/regression/rest/test_TC_014.py",
+          "requirement_id": "REQ-099",
+          "interface_id": "IF-REST-004",
+          "archived_at": "2026-09-17T07:51:51.794497+00:00"
+        },
+        {
+          "case_id": "TC-015",
+          "script_path": "scripts/regression/rest/test_TC_015.py",
+          "requirement_id": "REQ-102",
+          "interface_id": "IF-REST-004",
+          "archived_at": "2026-09-17T07:51:51.794531+00:00"
+        },
+        {
+          "case_id": "TC-016",
+          "script_path": "scripts/regression/rest/test_TC_016.py",
+          "requirement_id": "REQ-103",
+          "interface_id": "IF-REST-004",
+          "archived_at": "2026-09-17T07:51:51.794564+00:00"
+        },
+        {
+          "case_id": "TC-017",
+          "script_path": "scripts/regression/rest/test_TC_017.py",
+          "requirement_id": "REQ-101",
+          "interface_id": "IF-REST-004",
+          "archived_at": "2026-09-17T07:51:51.794606+00:00"
+        },
+        {
+          "case_id": "TC-019",
+          "script_path": "scripts/regression/rest/test_TC_019.py",
+          "requirement_id": "REQ-079",
+          "interface_id": "IF-REST-005",
+          "archived_at": "2026-09-17T07:51:51.794641+00:00"
+        },
+        {
+          "case_id": "TC-020",
+          "script_path": "scripts/regression/rest/test_TC_020.py",
+          "requirement_id": "REQ-079",
+          "interface_id": "IF-REST-005",
+          "archived_at": "2026-09-17T07:51:51.794674+00:00"
+        },
+        {
+          "case_id": "TC-022",
+          "script_path": "scripts/regression/rest/test_TC_022.py",
+          "requirement_id": "REQ-078",
+          "interface_id": "IF-REST-006",
+          "archived_at": "2026-09-17T07:51:51.794736+00:00"
+        },
+        {
+          "case_id": "TC-023",
+          "script_path": "scripts/regression/rest/test_TC_023.py",
+          "requirement_id": "REQ-078",
+          "interface_id": "IF-REST-006",
+          "archived_at": "2026-09-17T07:51:51.794771+00:00"
+        },
+        {
+          "case_id": "TC-025",
+          "script_path": "scripts/regression/rest/test_TC_025.py",
+          "requirement_id": "REQ-104",
+          "interface_id": "IF-REST-007",
+          "archived_at": "2026-09-17T07:51:51.794806+00:00"
+        },
+        {
+          "case_id": "TC-026",
+          "script_path": "scripts/regression/rest/test_TC_026.py",
+          "requirement_id": "REQ-106",
+          "interface_id": "IF-REST-007",
+          "archived_at": "2026-09-17T07:51:51.794841+00:00"
+        },
+        {
+          "case_id": "TC-027",
+          "script_path": "scripts/regression/rest/test_TC_027.py",
+          "requirement_id": "REQ-107",
+          "interface_id": "IF-REST-007",
+          "archived_at": "2026-09-17T07:51:51.794874+00:00"
+        },
+        {
+          "case_id": "TC-028",
+          "script_path": "scripts/regression/rest/test_TC_028.py",
+          "requirement_id": "REQ-063",
+          "interface_id": "IF-REST-007",
+          "archived_at": "2026-09-17T07:51:51.794907+00:00"
+        },
+        {
+          "case_id": "TC-029",
+          "script_path": "scripts/regression/rest/test_TC_029.py",
+          "requirement_id": "REQ-044",
+          "interface_id": "IF-REST-007",
+          "archived_at": "2026-09-17T07:51:51.794939+00:00"
+        },
+        {
+          "case_id": "TC-031",
+          "script_path": "scripts/regression/rest/test_TC_031.py",
+          "requirement_id": "REQ-084",
+          "interface_id": "IF-REST-008",
+          "archived_at": "2026-09-17T07:51:51.794974+00:00"
+        },
+        {
+          "case_id": "TC-032",
+          "script_path": "scripts/regression/rest/test_TC_032.py",
+          "requirement_id": "REQ-084",
+          "interface_id": "IF-REST-008",
+          "archived_at": "2026-09-17T07:51:51.795020+00:00"
+        },
+        {
+          "case_id": "TC-037",
+          "script_path": "scripts/regression/rest/test_TC_037.py",
+          "requirement_id": "REQ-115",
+          "interface_id": "IF-REST-010",
+          "archived_at": "2026-09-17T07:51:51.795059+00:00"
+        },
+        {
+          "case_id": "TC-038",
+          "script_path": "scripts/regression/rest/test_TC_038.py",
+          "requirement_id": "REQ-116",
+          "interface_id": "IF-REST-010",
+          "archived_at": "2026-09-17T07:51:51.795093+00:00"
+        },
+        {
+          "case_id": "TC-039",
+          "script_path": "scripts/regression/rest/test_TC_039.py",
+          "requirement_id": "REQ-114",
+          "interface_id": "IF-REST-010",
+          "archived_at": "2026-09-17T07:51:51.795126+00:00"
+        },
+        {
+          "case_id": "TC-041",
+          "script_path": "scripts/regression/rest/test_TC_041.py",
+          "requirement_id": "REQ-086",
+          "interface_id": "IF-REST-011",
+          "archived_at": "2026-09-17T07:51:51.795161+00:00"
+        },
+        {
+          "case_id": "TC-042",
+          "script_path": "scripts/regression/rest/test_TC_042.py",
+          "requirement_id": "REQ-086",
+          "interface_id": "IF-REST-011",
+          "archived_at": "2026-09-17T07:51:51.795194+00:00"
+        },
+        {
+          "case_id": "TC-043",
+          "script_path": "scripts/regression/rest/test_TC_043.py",
+          "requirement_id": "REQ-086",
+          "interface_id": "IF-REST-011",
+          "archived_at": "2026-09-17T07:51:51.795225+00:00"
+        },
+        {
+          "case_id": "TC-044",
+          "script_path": "scripts/regression/rest/test_TC_044.py",
+          "requirement_id": "REQ-142",
+          "interface_id": "IF-REST-012",
+          "archived_at": "2026-09-17T07:51:51.795257+00:00"
+        },
+        {
+          "case_id": "TC-047",
+          "script_path": "scripts/regression/rest/test_TC_047.py",
+          "requirement_id": "REQ-142",
+          "interface_id": "IF-REST-012",
+          "archived_at": "2026-09-17T07:51:51.795291+00:00"
+        },
+        {
+          "case_id": "TC-048",
+          "script_path": "scripts/regression/rest/test_TC_048.py",
+          "requirement_id": "REQ-054",
+          "interface_id": "IF-REST-013",
+          "archived_at": "2026-09-17T07:51:51.795322+00:00"
+        },
+        {
+          "case_id": "TC-049",
+          "script_path": "scripts/regression/rest/test_TC_049.py",
+          "requirement_id": "REQ-060",
+          "interface_id": "IF-REST-013",
+          "archived_at": "2026-09-17T07:51:51.795353+00:00"
+        },
+        {
+          "case_id": "TC-050",
+          "script_path": "scripts/regression/rest/test_TC_050.py",
+          "requirement_id": "REQ-117",
+          "interface_id": "IF-REST-013",
+          "archived_at": "2026-09-17T07:51:51.795384+00:00"
+        },
+        {
+          "case_id": "TC-051",
+          "script_path": "scripts/regression/rest/test_TC_051.py",
+          "requirement_id": "REQ-054",
+          "interface_id": "IF-REST-013",
+          "archived_at": "2026-09-17T07:51:51.795429+00:00"
+        },
+        {
+          "case_id": "TC-055",
+          "script_path": "scripts/regression/rest/test_TC_055.py",
+          "requirement_id": "REQ-057",
+          "interface_id": "IF-REST-015",
+          "archived_at": "2026-09-17T07:51:51.795477+00:00"
+        },
+        {
+          "case_id": "TC-058",
+          "script_path": "scripts/regression/rest/test_TC_058.py",
+          "requirement_id": "REQ-123",
+          "interface_id": "IF-REST-016",
+          "archived_at": "2026-09-17T07:51:51.795510+00:00"
+        },
+        {
+          "case_id": "TC-059",
+          "script_path": "scripts/regression/rest/test_TC_059.py",
+          "requirement_id": "REQ-008",
+          "interface_id": "IF-REST-016",
+          "archived_at": "2026-09-17T07:51:51.795542+00:00"
+        },
+        {
+          "case_id": "TC-060",
+          "script_path": "scripts/regression/rest/test_TC_060.py",
+          "requirement_id": "REQ-123",
+          "interface_id": "IF-REST-016",
+          "archived_at": "2026-09-17T07:51:51.795573+00:00"
+        },
+        {
+          "case_id": "TC-062",
+          "script_path": "scripts/regression/rest/test_TC_062.py",
+          "requirement_id": "REQ-094",
+          "interface_id": "IF-REST-017",
+          "archived_at": "2026-09-17T07:51:51.795604+00:00"
+        },
+        {
+          "case_id": "TC-063",
+          "script_path": "scripts/regression/rest/test_TC_063.py",
+          "requirement_id": "REQ-095",
+          "interface_id": "IF-REST-017",
+          "archived_at": "2026-09-17T07:51:51.795635+00:00"
+        },
+        {
+          "case_id": "TC-064",
+          "script_path": "scripts/regression/rest/test_TC_064.py",
+          "requirement_id": "REQ-096",
+          "interface_id": "IF-REST-017",
+          "archived_at": "2026-09-17T07:51:51.795666+00:00"
+        },
+        {
+          "case_id": "TC-065",
+          "script_path": "scripts/regression/rest/test_TC_065.py",
+          "requirement_id": "REQ-011",
+          "interface_id": "IF-REST-017",
+          "archived_at": "2026-09-17T07:51:51.795697+00:00"
+        },
+        {
+          "case_id": "TC-066",
+          "script_path": "scripts/regression/rest/test_TC_066.py",
+          "requirement_id": "REQ-125",
+          "interface_id": "IF-REST-018",
+          "archived_at": "2026-09-17T07:51:51.795728+00:00"
+        },
+        {
+          "case_id": "TC-067",
+          "script_path": "scripts/regression/rest/test_TC_067.py",
+          "requirement_id": "REQ-014",
+          "interface_id": "IF-REST-018",
+          "archived_at": "2026-09-17T07:51:51.795759+00:00"
+        },
+        {
+          "case_id": "TC-068",
+          "script_path": "scripts/regression/rest/test_TC_068.py",
+          "requirement_id": "REQ-125",
+          "interface_id": "IF-REST-018",
+          "archived_at": "2026-09-17T07:51:51.795794+00:00"
+        },
+        {
+          "case_id": "TC-069",
+          "script_path": "scripts/regression/rest/test_TC_069.py",
+          "requirement_id": "REQ-126",
+          "interface_id": "IF-REST-019",
+          "archived_at": "2026-09-17T07:51:51.795825+00:00"
+        },
+        {
+          "case_id": "TC-070",
+          "script_path": "scripts/regression/rest/test_TC_070.py",
+          "requirement_id": "REQ-126",
+          "interface_id": "IF-REST-019",
+          "archived_at": "2026-09-17T07:51:51.795857+00:00"
+        },
+        {
+          "case_id": "TC-071",
+          "script_path": "scripts/regression/rest/test_TC_071.py",
+          "requirement_id": "REQ-126",
+          "interface_id": "IF-REST-019",
+          "archived_at": "2026-09-17T07:51:51.795888+00:00"
+        },
+        {
+          "case_id": "TC-072",
+          "script_path": "scripts/regression/rest/test_TC_072.py",
+          "requirement_id": "REQ-097",
+          "interface_id": "IF-REST-020",
+          "archived_at": "2026-09-17T07:51:51.795919+00:00"
+        },
+        {
+          "case_id": "TC-073",
+          "script_path": "scripts/regression/rest/test_TC_073.py",
+          "requirement_id": "REQ-097",
+          "interface_id": "IF-REST-020",
+          "archived_at": "2026-09-17T07:51:51.795950+00:00"
+        },
+        {
+          "case_id": "TC-075",
+          "script_path": "scripts/regression/rest/test_TC_075.py",
+          "requirement_id": "REQ-127",
+          "interface_id": "IF-REST-021",
+          "archived_at": "2026-09-17T07:51:51.795985+00:00"
+        },
+        {
+          "case_id": "TC-076",
+          "script_path": "scripts/regression/rest/test_TC_076.py",
+          "requirement_id": "REQ-127",
+          "interface_id": "IF-REST-021",
+          "archived_at": "2026-09-17T07:51:51.796016+00:00"
+        },
+        {
+          "case_id": "TC-077",
+          "script_path": "scripts/regression/rest/test_TC_077.py",
+          "requirement_id": "REQ-127",
+          "interface_id": "IF-REST-021",
+          "archived_at": "2026-09-17T07:51:51.796065+00:00"
+        },
+        {
+          "case_id": "TC-078",
+          "script_path": "scripts/regression/rest/test_TC_078.py",
+          "requirement_id": "REQ-128",
+          "interface_id": "IF-REST-022",
+          "archived_at": "2026-09-17T07:51:51.796098+00:00"
+        },
+        {
+          "case_id": "TC-079",
+          "script_path": "scripts/regression/rest/test_TC_079.py",
+          "requirement_id": "REQ-013",
+          "interface_id": "IF-REST-022",
+          "archived_at": "2026-09-17T07:51:51.796129+00:00"
+        },
+        {
+          "case_id": "TC-080",
+          "script_path": "scripts/regression/rest/test_TC_080.py",
+          "requirement_id": "REQ-128",
+          "interface_id": "IF-REST-022",
+          "archived_at": "2026-09-17T07:51:51.796161+00:00"
+        }
+      ]
+    }
+  ]
+}

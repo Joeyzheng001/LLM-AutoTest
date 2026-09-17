@@ -1,0 +1,1251 @@
+
+{
+  "schema_version": "1.0",
+  "job_id": "job-web-c3e382183000",
+  "source_files": [
+    "/private/tmp/llm-autotest-local/job-web-c3e382183000/input/product_requirements.docx"
+  ],
+  "source_file": "/private/tmp/llm-autotest-local/job-web-c3e382183000/input/product_requirements.docx",
+  "items": [
+    {
+      "id": "REQ-001",
+      "title": "用户登录正常流程",
+      "description": "用户访问系统首页，自动跳转至登录页；输入用户名和密码，点击\"登录\"按钮；后端校验通过，创建 Session，返回 Token；前端存储 Token 到 localStorage，跳转到首页导航菜单。",
+      "source_location": {
+        "section": "4.1.1"
+      }
+    },
+    {
+      "id": "REQ-002",
+      "title": "Session 有效期默认 24 小时",
+      "description": "Session 有效期默认 24 小时，超时需重新登录。",
+      "source_location": {
+        "section": "4.1.3 BR1"
+      }
+    },
+    {
+      "id": "REQ-003",
+      "title": "密码使用 PBKDF2 哈希存储",
+      "description": "密码使用 PBKDF2 哈希存储，禁止明文保存。",
+      "source_location": {
+        "section": "4.1.3 BR2"
+      }
+    },
+    {
+      "id": "REQ-004",
+      "title": "登录失败计数维护在 Redis",
+      "description": "登录失败计数在 Redis 中维护，避免数据库压力。",
+      "source_location": {
+        "section": "4.1.3 BR3"
+      }
+    },
+    {
+      "id": "REQ-005",
+      "title": "登录页居中简洁风格",
+      "description": "登录页居中展示，简洁风格（白底 + 蓝色主色调）。",
+      "source_location": {
+        "section": "4.1.4"
+      }
+    },
+    {
+      "id": "REQ-006",
+      "title": "密码输入框支持显示/隐藏切换",
+      "description": "密码输入框支持显示/隐藏切换（眼睛图标）。",
+      "source_location": {
+        "section": "4.1.4"
+      }
+    },
+    {
+      "id": "REQ-007",
+      "title": "登录按钮 loading 状态防重复提交",
+      "description": "登录按钮点击后展示 loading 状态，防止重复提交。",
+      "source_location": {
+        "section": "4.1.4"
+      }
+    },
+    {
+      "id": "REQ-008",
+      "title": "产品配置页基金列表分页展示",
+      "description": "进入\"产品配置\"页面，展示基金列表（分页，每页 20 条）。",
+      "source_location": {
+        "section": "4.2.1"
+      }
+    },
+    {
+      "id": "REQ-009",
+      "title": "新增基金",
+      "description": "点击\"新增基金\"按钮，填写基金代码（6位数字，如 000330）、基金名称（如\"景顺长城新兴成长混合A\"）、份额类型（A类/B类）、状态（启用/停用，默认启用）；点击\"确定\"，后端校验通过后保存到 PRODUCT_CONFIG 表；列表自动刷新，展示新增的基金。",
+      "source_location": {
+        "section": "4.2.1"
+      }
+    },
+    {
+      "id": "REQ-010",
+      "title": "基金代码固定 6 位数字",
+      "description": "基金代码固定 6 位数字，正则验证 /^\\d{6}$/。",
+      "source_location": {
+        "section": "4.2.3 BR1"
+      }
+    },
+    {
+      "id": "REQ-011",
+      "title": "份额类型仅允许 A 或 B",
+      "description": "份额类型仅允许 A 或 B。",
+      "source_location": {
+        "section": "4.2.3 BR2"
+      }
+    },
+    {
+      "id": "REQ-012",
+      "title": "新增基金状态默认启用",
+      "description": "新增时状态默认\"启用\"。",
+      "source_location": {
+        "section": "4.2.3 BR3"
+      }
+    },
+    {
+      "id": "REQ-013",
+      "title": "交易页面下拉框仅展示启用基金",
+      "description": "交易页面下拉框仅展示 is_active=true 的基金。",
+      "source_location": {
+        "section": "4.2.3 BR4"
+      }
+    },
+    {
+      "id": "REQ-014",
+      "title": "产品配置 API 接口",
+      "description": "提供产品配置 REST 接口：GET /api/products/（列表分页）、POST /api/products/（新增）、GET /api/products/{fund_code}/（详情，使用 fund_code 而非 id）、PUT /api/products/{fund_code}/（更新）、DELETE /api/products/{fund_code}/（删除）、GET /api/products/active/（获取启用状态的基金，下拉用）。",
+      "source_location": {
+        "section": "4.2.4"
+      }
+    },
+    {
+      "id": "REQ-015",
+      "title": "个人投资者开户表单填写",
+      "description": "进入\"个人开户\"页面，填写表单：投资者名称（如\"张三\"）、证件类型（下拉选择：身份证/港澳通行证/户口本等）、证件号码（如身份证号）、手机号（11位数字）、销售商代码（可选）、网点代码（可选）。",
+      "source_location": {
+        "section": "4.3.1"
+      }
+    },
+    {
+      "id": "REQ-016",
+      "title": "系统自动生成账户标识与时间字段",
+      "description": "系统自动生成 ec_app_serial_no（申请序列号，32位 UUID）、ec_cust_no（客户号，64位 UUID）、transaction_account_id（交易账号，64位 UUID）、order_date（开户日期，YYYYMMDD）、order_time（开户时间，HHMMSS）。",
+      "source_location": {
+        "section": "4.3.1"
+      }
+    },
+    {
+      "id": "REQ-017",
+      "title": "设置投资者类型与业务代码",
+      "description": "设置 investor_type=1（个人）、business_code=01（开户）。",
+      "source_location": {
+        "section": "4.3.1"
+      }
+    },
+    {
+      "id": "REQ-018",
+      "title": "个人开户提交写入 ACCOUNT 表",
+      "description": "提交，后端校验通过，写入 ACCOUNT 表；返回成功消息，展示生成的交易账号。",
+      "source_location": {
+        "section": "4.3.1"
+      }
+    },
+    {
+      "id": "REQ-019",
+      "title": "investor_type 固定为 \"1\"（个人）",
+      "description": "FS-EP1-1 业务规则：investor_type 字段固定为 \"1\"（个人）。约束：开户场景仅允许个人投资者。",
+      "source_location": {
+        "section": "4.3.3 BR1"
+      }
+    },
+    {
+      "id": "REQ-020",
+      "title": "business_code 固定为 \"01\"（开户）",
+      "description": "FS-EP1-1 业务规则：business_code 字段固定为 \"01\"，标识开户业务。",
+      "source_location": {
+        "section": "4.3.3 BR2"
+      }
+    },
+    {
+      "id": "REQ-021",
+      "title": "个人允许证件类型枚举",
+      "description": "FS-EP1-1 业务规则：个人允许的证件类型包括 0=身份证、4=港澳通行证、5=户口本、A=台胞证、B=外国人永久居留证、C=港澳台居民居住证。",
+      "source_location": {
+        "section": "4.3.3 BR3"
+      }
+    },
+    {
+      "id": "REQ-022",
+      "title": "字段长度限制",
+      "description": "FS-EP1-1 业务规则：字段长度上限 investor_name ≤ 120、id_no ≤ 30、cellphone ≤ 20、ec_app_serial_no ≤ 32、ec_cust_no ≤ 64、transaction_account_id ≤ 64。",
+      "source_location": {
+        "section": "4.3.3 BR4"
+      }
+    },
+    {
+      "id": "REQ-023",
+      "title": "日期格式约束",
+      "description": "FS-EP1-1 业务规则：order_date 格式 YYYYMMDD（8 位）；order_time 格式 HHMMSS（6 位）。",
+      "source_location": {
+        "section": "4.3.3 BR5"
+      }
+    },
+    {
+      "id": "REQ-024",
+      "title": "证件类型选择后 placeholder 动态提示",
+      "description": "FS-EP1-1 界面要求：证件类型选择后，证件号输入框 placeholder 动态提示格式（如\"请输入18位身份证号\"）。输入：证件类型选项变更；输出：placeholder 文案动态更新。",
+      "source_location": {
+        "section": "4.3.4"
+      }
+    },
+    {
+      "id": "REQ-025",
+      "title": "提交按钮 loading 与开户结果弹窗",
+      "description": "FS-EP1-1 界面要求：提交按钮点击后显示 loading；成功后弹窗展示开户结果（含生成的交易账号）。",
+      "source_location": {
+        "section": "4.3.4"
+      }
+    },
+    {
+      "id": "REQ-026",
+      "title": "申购选择基金代码（仅启用状态）",
+      "description": "FS-EP2-1 正常流程：进入\"申购\"页面，从下拉框选择基金代码，下拉框仅展示启用状态的基金。",
+      "source_location": {
+        "section": "4.4.1"
+      }
+    },
+    {
+      "id": "REQ-027",
+      "title": "申购选择份额类型（A 类/B 类）",
+      "description": "FS-EP2-1 正常流程：从下拉框选择份额类型（A 类/B 类）。",
+      "source_location": {
+        "section": "4.4.1"
+      }
+    },
+    {
+      "id": "REQ-028",
+      "title": "申购填写申请金额",
+      "description": "FS-EP2-1 正常流程：填写申请金额（如 10000.00）。输入：金额数值；输出：提交时携带 application_amount。",
+      "source_location": {
+        "section": "4.4.1"
+      }
+    },
+    {
+      "id": "REQ-029",
+      "title": "申购公共字段自动填充",
+      "description": "FS-EP2-1 正常流程：其他公共字段（资金账号、客户号等）由系统自动填充。",
+      "source_location": {
+        "section": "4.4.1"
+      }
+    },
+    {
+      "id": "REQ-030",
+      "title": "申购提交触发后端校验",
+      "description": "FS-EP2-1 正常流程：点击\"提交\"，后端校验通过后进入写库流程。",
+      "source_location": {
+        "section": "4.4.1"
+      }
+    },
+    {
+      "id": "REQ-031",
+      "title": "申购事务写入 ORDER_RECORD 与 SETTLEMENT_RECORD",
+      "description": "FS-EP2-1 正常流程：事务写入两张表——ORDER_RECORD（下单记录）与 SETTLEMENT_RECORD（落库记录）。",
+      "source_location": {
+        "section": "4.4.1"
+      }
+    },
+    {
+      "id": "REQ-032",
+      "title": "申购返回成功消息并展示交易流水号",
+      "description": "FS-EP2-1 正常流程：写入成功后返回成功消息，并展示交易流水号。",
+      "source_location": {
+        "section": "4.4.1"
+      }
+    },
+    {
+      "id": "REQ-033",
+      "title": "申购 business_code = \"22\"（申购）",
+      "description": "FS-EP2-1 业务规则：business_code 固定为 \"22\"，标识申购业务。",
+      "source_location": {
+        "section": "4.4.3 BR1"
+      }
+    },
+    {
+      "id": "REQ-034",
+      "title": "申购金额大于 0、份额为 0",
+      "description": "FS-EP2-1 业务规则：申购录入时 application_amount > 0，application_vol = 0。",
+      "source_location": {
+        "section": "4.4.3 BR2"
+      }
+    },
+    {
+      "id": "REQ-035",
+      "title": "申购金额格式 NUMBER(16,2)",
+      "description": "FS-EP2-1 业务规则：金额字段格式为整数 14 位 + 小数 2 位（数据库类型 NUMBER(16,2)）。",
+      "source_location": {
+        "section": "4.4.3 BR3"
+      }
+    },
+    {
+      "id": "REQ-036",
+      "title": "申购双表写入使用数据库事务保证一致性",
+      "description": "FS-EP2-1 业务规则：同时写入 ORDER_RECORD + SETTLEMENT_RECORD，使用数据库事务保证一致性；任一失败则自动回滚。",
+      "source_location": {
+        "section": "4.4.3 BR4"
+      }
+    },
+    {
+      "id": "REQ-037",
+      "title": "申购 currency_type 默认 \"156\"",
+      "description": "FS-EP2-1 业务规则：currency_type 默认 \"156\"（人民币）。",
+      "source_location": {
+        "section": "4.4.3 BR5"
+      }
+    },
+    {
+      "id": "REQ-038",
+      "title": "申购交易状态由 pending 变更为 submitted",
+      "description": "FS-EP2-1 业务规则：交易状态初始为 \"pending\"（待提交），提交后变更为 \"submitted\"（已提交）。",
+      "source_location": {
+        "section": "4.4.3 BR6"
+      }
+    },
+    {
+      "id": "REQ-039",
+      "title": "基金转换选择转出/转入基金（仅启用状态）",
+      "description": "FS-EP2-4 正常流程：进入\"基金转换\"页面，从下拉框选择转出基金与转入基金，下拉框仅展示启用状态。",
+      "source_location": {
+        "section": "4.5.1"
+      }
+    },
+    {
+      "id": "REQ-040",
+      "title": "基金转换填写转换份额",
+      "description": "FS-EP2-4 正常流程：填写转换份额（如 1000.00）。输入：份额数值。",
+      "source_location": {
+        "section": "4.5.1"
+      }
+    },
+    {
+      "id": "REQ-041",
+      "title": "基金转换提交与双表写入",
+      "description": "FS-EP2-4 正常流程：点击\"提交\"，后端校验通过，双表写入，business_code=36，target_fund_code 存转入基金代码。",
+      "source_location": {
+        "section": "4.5.1"
+      }
+    },
+    {
+      "id": "REQ-042",
+      "title": "基金转换 business_code = \"36\"",
+      "description": "FS-EP2-4 业务规则：business_code 固定为 \"36\"，标识基金转换业务。",
+      "source_location": {
+        "section": "4.5.3 BR1"
+      }
+    },
+    {
+      "id": "REQ-043",
+      "title": "基金转换数据模型扩展",
+      "description": "FS-EP2-4 业务规则：fund_code 存转出基金代码；target_fund_code 存转入基金代码；其他交易类型此字段为空。",
+      "source_location": {
+        "section": "4.5.3 BR2"
+      }
+    },
+    {
+      "id": "REQ-044",
+      "title": "基金转换转出与转入基金必须不同",
+      "description": "FS-EP2-4 业务规则：转出/转入基金必须不同，不允许自身转换。",
+      "source_location": {
+        "section": "4.5.3 BR3"
+      }
+    },
+    {
+      "id": "REQ-045",
+      "title": "交易查询输入查询条件（至少一个）",
+      "description": "FS-EP3-1 正常流程：进入\"交易查询\"页面，输入查询条件，至少一个——账号（如 ec_cust_no）、流水号（如 ec_ap_serial_no）或交易日期区间（起止日期，YYYYMMDD 格式）。",
+      "source_location": {
+        "section": "4.6.1"
+      }
+    },
+    {
+      "id": "REQ-046",
+      "title": "交易查询返回分页结果",
+      "description": "FS-EP3-1 正常流程：点击\"查询\"，返回匹配结果，分页每页 20 条。",
+      "source_location": {
+        "section": "4.6.1"
+      }
+    },
+    {
+      "id": "REQ-047",
+      "title": "交易查询展示全部交易字段",
+      "description": "FS-EP3-1 正常流程：展示全部交易字段（基金代码、业务代码、金额、份额、状态等）。",
+      "source_location": {
+        "section": "4.6.1"
+      }
+    },
+    {
+      "id": "REQ-048",
+      "title": "交易查询不支持模糊搜索",
+      "description": "FS-EP3-1 业务规则：不支持模糊搜索，账号和流水号为精确匹配。",
+      "source_location": {
+        "section": "4.6.3 BR1"
+      }
+    },
+    {
+      "id": "REQ-049",
+      "title": "交易查询日期区间支持起止范围",
+      "description": "FS-EP3-1 业务规则：日期区间查询支持起止日期范围。",
+      "source_location": {
+        "section": "4.6.3 BR2"
+      }
+    },
+    {
+      "id": "REQ-050",
+      "title": "交易查询分页默认 20 条并支持翻页",
+      "description": "FS-EP3-1 业务规则：分页默认每页 20 条，支持翻页。",
+      "source_location": {
+        "section": "4.6.3 BR3"
+      }
+    },
+    {
+      "id": "REQ-051",
+      "title": "交易查询展示字段与交易下单字段一致",
+      "description": "FS-EP3-1 业务规则：展示全部字段，与交易下单的全部字段一致。",
+      "source_location": {
+        "section": "4.6.3 BR4"
+      }
+    },
+    {
+      "id": "REQ-052",
+      "title": "对账管理页面与执行触发",
+      "description": "FS-EP4-1 正常流程：进入\"对账管理\"页面，点击\"执行对账\"按钮触发对账。",
+      "source_location": {
+        "section": "4.7.1"
+      }
+    },
+    {
+      "id": "REQ-053",
+      "title": "对账按 5 字段匹配（含容差）",
+      "description": "FS-EP4-1 正常流程：系统读取 ORDER_RECORD 表和 SETTLEMENT_RECORD 表，按 5 个字段匹配——流水号（ec_ap_serial_no）、金额（application_amount，容差 ±0.01）、份额（application_vol，容差 ±0.01）、时间（order_date + order_time）、账号（cust_no）。",
+      "source_location": {
+        "section": "4.7.1"
+      }
+    },
+    {
+      "id": "REQ-054",
+      "title": "对账统计匹配与差异数量",
+      "description": "FS-EP4-1 正常流程：统计匹配总数、差异总数，以及各差异类型数量（金额不一致、份额不一致、缺失下单、缺失落库）。",
+      "source_location": {
+        "section": "4.7.1"
+      }
+    },
+    {
+      "id": "REQ-055",
+      "title": "对账摘要展示与差异明细展开",
+      "description": "FS-EP4-1 正常流程：展示对账摘要，差异明细可展开查看。",
+      "source_location": {
+        "section": "4.7.1"
+      }
+    },
+    {
+      "id": "REQ-056",
+      "title": "匹配字段：流水号 + 金额 + 份额 + 时间 + 账号",
+      "description": "对账匹配的字段为：流水号 + 金额 + 份额 + 时间 + 账号",
+      "source_location": {
+        "section": "4.7.3 BR1"
+      }
+    },
+    {
+      "id": "REQ-057",
+      "title": "金额容差可配置（默认 0.01 元），在容差内视为匹配",
+      "description": "对账匹配时金额容差可配置，默认 0.01 元；在容差内视为匹配",
+      "source_location": {
+        "section": "4.7.3 BR2"
+      }
+    },
+    {
+      "id": "REQ-058",
+      "title": "差异类型定义",
+      "description": "差异类型包括：amount_mismatch（金额不一致）、vol_mismatch（份额不一致）、missing_order（缺失下单记录）、missing_settlement（缺失落库记录）",
+      "source_location": {
+        "section": "4.7.3 BR3"
+      }
+    },
+    {
+      "id": "REQ-059",
+      "title": "对账结果写入 RECONCILIATION_RESULT 表，差异明细以 JSON 格式存储",
+      "description": "对账结果写入 RECONCILIATION_RESULT 表，差异明细以 JSON 格式存储",
+      "source_location": {
+        "section": "4.7.3 BR4"
+      }
+    },
+    {
+      "id": "REQ-060",
+      "title": "差异明细 JSON 结构",
+      "description": "差异明细 JSON 结构字段定义：diff_type（差异类型）、ec_ap_serial_no（流水号）、order_amount（下单金额）、settlement_amount（落库金额）、diff_value（差值）、fund_code（基金代码）、business_code（业务代码）；不同 diff_type 包含的字段集合不同",
+      "source_location": {
+        "section": "4.7.4"
+      }
+    },
+    {
+      "id": "REQ-061",
+      "title": "交易下单双表写入使用数据库事务",
+      "description": "交易下单时双表写入使用数据库事务（@transaction.atomic）保证数据一致性",
+      "source_location": {
+        "section": "7.4"
+      }
+    },
+    {
+      "id": "REQ-062",
+      "title": "对账匹配金额/份额容差可配置（默认 ±0.01）",
+      "description": "对账匹配的金额/份额容差可配置，默认 ±0.01",
+      "source_location": {
+        "section": "7.4"
+      }
+    },
+    {
+      "id": "REQ-063",
+      "title": "同一流水号不可重复提交（唯一约束）",
+      "description": "同一流水号不可重复提交，通过唯一约束保证幂等性",
+      "source_location": {
+        "section": "7.4"
+      }
+    },
+    {
+      "id": "REQ-064",
+      "title": "新增产品配置日志记录",
+      "description": "新增产品配置时输出日志条目，格式为：'时间戳 [INFO] orders.views.product: 新增产品配置: {\"fund_code\": \"基金代码\", \"fund_name\": \"基金名称\"}'，日志包含 fund_code 与 fund_name 两个字段。",
+      "source_location": {
+        "section": "日志格式"
+      }
+    },
+    {
+      "id": "REQ-065",
+      "title": "性能要求",
+      "description": "系统性能约束：单接口响应时间 ≤2s；对账任务执行时长 ≤30s",
+      "source_location": {
+        "section": "目标维度表"
+      }
+    },
+    {
+      "id": "REQ-066",
+      "title": "数据一致性要求",
+      "description": "交易下单双表写入事务成功率 100%",
+      "source_location": {
+        "section": "目标维度表"
+      }
+    },
+    {
+      "id": "REQ-067",
+      "title": "可用性要求",
+      "description": "系统 7×24 小时运行，支持 HTTPS 访问",
+      "source_location": {
+        "section": "目标维度表"
+      }
+    },
+    {
+      "id": "REQ-068",
+      "title": "安全性要求",
+      "description": "实现用户登录认证，密码以哈希方式存储，并提供 Session 管理",
+      "source_location": {
+        "section": "目标维度表"
+      }
+    },
+    {
+      "id": "REQ-069",
+      "title": "管理员角色",
+      "description": "职责：系统配置、用户管理、对账执行；权限范围：全部功能",
+      "source_location": {
+        "section": "角色表"
+      }
+    },
+    {
+      "id": "REQ-070",
+      "title": "操作员角色",
+      "description": "职责：开户、交易下单、查询导出；权限范围：开户、交易、查询",
+      "source_location": {
+        "section": "角色表"
+      }
+    },
+    {
+      "id": "REQ-071",
+      "title": "审计员角色",
+      "description": "职责：查看对账结果、导出报告；权限范围：只读权限",
+      "source_location": {
+        "section": "角色表"
+      }
+    },
+    {
+      "id": "REQ-072",
+      "title": "用户登录（FS-EP0-1）",
+      "description": "模块：用户认证；面向管理员、操作员、审计员提供登录能力",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-073",
+      "title": "产品配置管理（FS-EP0-2）",
+      "description": "模块：产品配置；仅管理员可使用",
+      "priority": "P0",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-074",
+      "title": "个人投资者开户（FS-EP1-1）",
+      "description": "模块：账户管理；面向个人投资者开通账户",
+      "priority": "P0",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-075",
+      "title": "机构投资者开户（FS-EP1-2）",
+      "description": "模块：账户管理；面向机构投资者开通账户",
+      "priority": "P0",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-076",
+      "title": "产品客户开户（FS-EP1-3）",
+      "description": "模块：账户管理；面向产品客户开通账户",
+      "priority": "P0",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-077",
+      "title": "增开交易账号（FS-EP1-4）",
+      "description": "模块：账户管理；在已有客户下增开交易账号",
+      "priority": "P1",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-078",
+      "title": "账户销户（FS-EP1-5）",
+      "description": "模块：账户管理；执行账户销户",
+      "priority": "P1",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-079",
+      "title": "修改客户资料（FS-EP1-6）",
+      "description": "模块：账户管理；修改客户资料信息",
+      "priority": "P1",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-080",
+      "title": "申购下单（FS-EP2-1）",
+      "description": "模块：交易管理；执行基金申购下单",
+      "priority": "P0",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-081",
+      "title": "赎回下单（FS-EP2-2）",
+      "description": "模块：交易管理；执行基金赎回下单",
+      "priority": "P0",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-082",
+      "title": "快取下单（FS-EP2-3）",
+      "description": "模块：交易管理；执行基金快取下单",
+      "priority": "P1",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-083",
+      "title": "基金转换下单（FS-EP2-4）",
+      "description": "模块：交易管理；执行基金转换下单",
+      "priority": "P1",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-084",
+      "title": "撤单（FS-EP2-5）",
+      "description": "模块：交易管理；撤销已提交的交易订单",
+      "priority": "P0",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-085",
+      "title": "交易记录查询（FS-EP3-1）",
+      "description": "模块：查询统计；面向管理员、操作员、审计员提供交易记录查询",
+      "priority": "P0",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-086",
+      "title": "交易记录导出（FS-EP3-2）",
+      "description": "模块：查询统计；面向管理员、操作员、审计员提供交易记录导出",
+      "priority": "P1",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-087",
+      "title": "手动对账执行（FS-EP4-1）",
+      "description": "模块：对账管理；由管理员手动触发对账",
+      "priority": "P0",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-088",
+      "title": "对账差异报告（FS-EP4-2）",
+      "description": "模块：对账管理；输出对账差异报告，面向管理员、操作员、审计员",
+      "priority": "P0",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-089",
+      "title": "定时自动对账（FS-EP4-3）",
+      "description": "模块：对账管理；按计划定时执行对账任务（当前状态：待实现）",
+      "priority": "P1",
+      "source_location": {
+        "section": "功能列表表"
+      }
+    },
+    {
+      "id": "REQ-090",
+      "title": "用户登录异常-用户名或密码错误",
+      "description": "触发条件：数据库校验不通过；系统行为：返回 HTTP 401，不返回具体字段错误；用户提示：\"用户名或密码错误\"",
+      "source_location": {
+        "section": "用户认证异常场景表"
+      }
+    },
+    {
+      "id": "REQ-091",
+      "title": "用户登录异常-输入为空",
+      "description": "触发条件：前端校验失败（用户名为空或密码为空）；系统行为：阻止提交并标红对应字段；用户提示：\"请输入用户名/密码\"",
+      "source_location": {
+        "section": "用户认证异常场景表"
+      }
+    },
+    {
+      "id": "REQ-092",
+      "title": "用户登录异常-Session过期",
+      "description": "触发条件：Token 失效（24h）；系统行为：返回 HTTP 401，由前端拦截器捕获；用户提示：自动重定向到登录页",
+      "source_location": {
+        "section": "用户认证异常场景表"
+      }
+    },
+    {
+      "id": "REQ-093",
+      "title": "用户登录异常-连续登录失败锁定",
+      "description": "触发条件：同一用户连续 5 次登录失败；系统行为：锁定账号 15 分钟；用户提示：\"账号已锁定，请 15 分钟后重试\"",
+      "source_location": {
+        "section": "用户认证异常场景表"
+      }
+    },
+    {
+      "id": "REQ-094",
+      "title": "产品配置异常-基金代码格式错误",
+      "description": "触发条件：基金代码非 6 位数字；系统行为：前端+后端双重校验拒绝；用户提示：\"基金代码必须为 6 位数字\"",
+      "source_location": {
+        "section": "产品配置异常场景表"
+      }
+    },
+    {
+      "id": "REQ-095",
+      "title": "产品配置异常-基金代码重复",
+      "description": "触发条件：违反基金代码唯一约束；系统行为：返回 HTTP 400；用户提示：\"该基金代码已存在\"",
+      "source_location": {
+        "section": "产品配置异常场景表"
+      }
+    },
+    {
+      "id": "REQ-096",
+      "title": "产品配置异常-基金名称为空",
+      "description": "触发条件：基金名称必填校验失败；系统行为：阻止提交；用户提示：\"基金名称不能为空\"",
+      "source_location": {
+        "section": "产品配置异常场景表"
+      }
+    },
+    {
+      "id": "REQ-097",
+      "title": "产品配置异常-停用被引用的基金",
+      "description": "触发条件：该基金存在关联交易记录；系统行为：允许停用，但弹出警告；用户提示：\"该基金存在关联交易，停用后不可用于新下单\"",
+      "source_location": {
+        "section": "产品配置异常场景表"
+      }
+    },
+    {
+      "id": "REQ-098",
+      "title": "开户异常-必填字段为空",
+      "description": "触发条件：必填字段未填写；系统行为：前端+后端校验拒绝，标红字段；用户提示：\"请填写必填项\"",
+      "source_location": {
+        "section": "账户开户异常场景表"
+      }
+    },
+    {
+      "id": "REQ-099",
+      "title": "开户异常-证件类型非法",
+      "description": "触发条件：证件类型不在 [0,4,5,A,B,C] 范围；系统行为：拒绝提交；用户提示：\"个人证件类型不合法\"",
+      "source_location": {
+        "section": "账户开户异常场景表"
+      }
+    },
+    {
+      "id": "REQ-100",
+      "title": "开户异常-身份证号格式错误",
+      "description": "触发条件：18 位校验码验证失败；系统行为：拒绝提交；用户提示：\"身份证号格式错误\"",
+      "source_location": {
+        "section": "账户开户异常场景表"
+      }
+    },
+    {
+      "id": "REQ-101",
+      "title": "开户异常-手机号格式错误",
+      "description": "触发条件：手机号含非数字或长度 ≠11；系统行为：拒绝提交；用户提示：\"手机号格式错误\"",
+      "source_location": {
+        "section": "账户开户异常场景表"
+      }
+    },
+    {
+      "id": "REQ-102",
+      "title": "开户异常-字段超长",
+      "description": "触发条件：字段长度超过限制（如姓名 >120 字符）；系统行为：拒绝提交；用户提示：\"字段长度超限\"",
+      "source_location": {
+        "section": "账户开户异常场景表"
+      }
+    },
+    {
+      "id": "REQ-103",
+      "title": "开户异常-证件号重复开户",
+      "description": "触发条件：违反唯一约束 (id_type, id_no)；系统行为：返回 HTTP 400；用户提示：\"该证件号已开户\"",
+      "source_location": {
+        "section": "账户开户异常场景表"
+      }
+    },
+    {
+      "id": "REQ-104",
+      "title": "交易下单异常-金额≤0",
+      "description": "触发条件：交易金额不大于 0；系统行为：业务校验拒绝提交；用户提示：\"金额必须大于 0\"",
+      "source_location": {
+        "section": "交易下单异常场景表"
+      }
+    },
+    {
+      "id": "REQ-105",
+      "title": "交易下单异常-金额小数位>2",
+      "description": "触发条件：金额小数位数超过 2 位；系统行为：格式校验拒绝提交；用户提示：\"金额最多 2 位小数\"",
+      "source_location": {
+        "section": "交易下单异常场景表"
+      }
+    },
+    {
+      "id": "REQ-106",
+      "title": "交易下单异常-金额超过上限",
+      "description": "触发条件：金额 > 99999999999999.99；系统行为：拒绝提交；用户提示：\"金额超过上限\"",
+      "source_location": {
+        "section": "交易下单异常场景表"
+      }
+    },
+    {
+      "id": "REQ-107",
+      "title": "交易下单异常-基金代码无效",
+      "description": "触发条件：基金代码在配置表不存在或 is_active=false；系统行为：拒绝提交；用户提示：\"基金代码无效或已停用\"",
+      "source_location": {
+        "section": "交易下单异常场景表"
+      }
+    },
+    {
+      "id": "REQ-108",
+      "title": "交易下单异常-必填字段缺失",
+      "description": "触发条件：fund_code 或 share_type 为空；系统行为：拒绝提交并标红对应字段；用户提示：标红对应字段",
+      "source_location": {
+        "section": "交易下单异常场景表"
+      }
+    },
+    {
+      "id": "REQ-109",
+      "title": "交易下单异常-数据库写入失败",
+      "description": "触发条件：数据库异常；系统行为：事务回滚并记录日志；用户提示：\"系统异常，请重试\"",
+      "source_location": {
+        "section": "交易下单异常场景表"
+      }
+    },
+    {
+      "id": "REQ-110",
+      "title": "基金转换异常-转出转入同一基金",
+      "description": "触发条件：转出基金与转入基金相同；系统行为：业务校验拒绝提交；用户提示：\"转出和转入基金不能相同\"",
+      "source_location": {
+        "section": "基金转换异常场景表"
+      }
+    },
+    {
+      "id": "REQ-111",
+      "title": "基金转换异常-转入基金未选择",
+      "description": "触发条件：转入基金未选择；系统行为：必填校验拒绝提交；用户提示：\"请选择转入基金\"",
+      "source_location": {
+        "section": "基金转换异常场景表"
+      }
+    },
+    {
+      "id": "REQ-112",
+      "title": "基金转换异常-份额≤0",
+      "description": "触发条件：转换份额不大于 0；系统行为：业务校验拒绝提交；用户提示：\"份额必须大于 0\"",
+      "source_location": {
+        "section": "基金转换异常场景表"
+      }
+    },
+    {
+      "id": "REQ-113",
+      "title": "基金转换异常-任一基金已停用",
+      "description": "触发条件：转出或转入基金配置表校验为已停用；系统行为：拒绝提交；用户提示：\"基金已停用，不可转换\"",
+      "source_location": {
+        "section": "基金转换异常场景表"
+      }
+    },
+    {
+      "id": "REQ-114",
+      "title": "交易查询异常-查询条件全为空",
+      "description": "触发条件：用户未输入任何筛选条件；系统行为：返回全部（分页）或提示；用户提示：\"请至少输入一个查询条件\"",
+      "source_location": {
+        "section": "交易查询异常场景表"
+      }
+    },
+    {
+      "id": "REQ-115",
+      "title": "交易查询异常-日期区间非法",
+      "description": "触发条件：起始日期 > 结束日期；系统行为：拒绝查询；用户提示：\"起始日期不能晚于结束日期\"",
+      "source_location": {
+        "section": "交易查询异常场景表"
+      }
+    },
+    {
+      "id": "REQ-116",
+      "title": "交易查询异常-日期格式非法",
+      "description": "触发条件：日期格式非 YYYYMMDD；系统行为：拒绝查询；用户提示：\"日期格式错误\"",
+      "source_location": {
+        "section": "交易查询异常场景表"
+      }
+    },
+    {
+      "id": "REQ-117",
+      "title": "交易查询异常-查询结果为空",
+      "description": "触发条件：无匹配记录；系统行为：返回空列表；用户提示：\"无匹配记录\"",
+      "source_location": {
+        "section": "交易查询异常场景表"
+      }
+    },
+    {
+      "id": "REQ-118",
+      "title": "对账异常-任一表数据为空",
+      "description": "触发条件：下单记录或落库记录无数据可对账；系统行为：阻止执行；用户提示：\"下单/落库数据为空，无法对账\"",
+      "source_location": {
+        "section": "对账异常场景表"
+      }
+    },
+    {
+      "id": "REQ-119",
+      "title": "对账异常-对账执行超时",
+      "description": "触发条件：对账数据量过大（>10万条）；系统行为：异步执行并提供进度提示；用户提示：\"对账正在执行，请稍候查看结果\"",
+      "source_location": {
+        "section": "对账异常场景表"
+      }
+    },
+    {
+      "id": "REQ-120",
+      "title": "对账异常-数据库异常",
+      "description": "触发条件：数据库连接失败；系统行为：中止并记录日志；用户提示：\"对账执行异常，请重试\"",
+      "source_location": {
+        "section": "对账异常场景表"
+      }
+    },
+    {
+      "id": "REQ-121",
+      "title": "用户登录接口",
+      "description": "方法：POST；路径：/api/auth/login/；输入：{username, password}；输出：{token, user_info}",
+      "source_location": {
+        "section": "认证API表"
+      }
+    },
+    {
+      "id": "REQ-122",
+      "title": "退出登录接口",
+      "description": "方法：POST；路径：/api/auth/logout/；输入：无；输出：{message}",
+      "source_location": {
+        "section": "认证API表"
+      }
+    },
+    {
+      "id": "REQ-123",
+      "title": "产品列表接口",
+      "description": "方法：GET；路径：/api/products/；输入：分页参数 ?page=1；输出：{count, results[]}",
+      "source_location": {
+        "section": "产品API表"
+      }
+    },
+    {
+      "id": "REQ-124",
+      "title": "新增产品接口",
+      "description": "方法：POST；路径：/api/products/；输入：{fund_code, fund_name, share_type, is_active}；输出：{...}",
+      "source_location": {
+        "section": "产品API表"
+      }
+    },
+    {
+      "id": "REQ-125",
+      "title": "产品详情接口",
+      "description": "方法：GET；路径：/api/products/{fund_code}/；输入：无；输出：{...}",
+      "source_location": {
+        "section": "产品API表"
+      }
+    },
+    {
+      "id": "REQ-126",
+      "title": "更新产品接口",
+      "description": "方法：PUT；路径：/api/products/{fund_code}/；输入：{...}；输出：{...}",
+      "source_location": {
+        "section": "产品API表"
+      }
+    },
+    {
+      "id": "REQ-127",
+      "title": "删除产品接口",
+      "description": "方法：DELETE；路径：/api/products/{fund_code}/；输入：无；输出：{message}",
+      "source_location": {
+        "section": "产品API表"
+      }
+    },
+    {
+      "id": "REQ-128",
+      "title": "启用产品列表",
+      "description": "通过 GET /api/products/active/ 获取启用产品列表，无请求体，响应为 [{fund_code, fund_name}] 数组。",
+      "source_location": {
+        "section": "启用产品与开户 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-129",
+      "title": "个人开户",
+      "description": "通过 POST /api/accounts/personal/ 提交个人开户请求体 {investor_name, id_type, id_no, cellphone, ...}，响应返回 {ec_cust_no, transaction_account_id, ...}。",
+      "source_location": {
+        "section": "启用产品与开户 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-130",
+      "title": "机构开户",
+      "description": "通过 POST /api/accounts/institution/ 提交机构开户请求体 {..., org_code, legal_person_*, operator_*}，响应返回开户结果 {...}。",
+      "source_location": {
+        "section": "启用产品与开户 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-131",
+      "title": "产品开户",
+      "description": "通过 POST /api/accounts/product/ 提交产品开户请求体 {..., product_code, product_name, ...}，响应返回 {...}。",
+      "source_location": {
+        "section": "启用产品与开户 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-132",
+      "title": "增开交易账号",
+      "description": "通过 POST /api/accounts/add-transaction/ 提交请求体 {ta_account_id}，响应返回 {new_transaction_account_id}。",
+      "source_location": {
+        "section": "启用产品与开户 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-133",
+      "title": "账户销户",
+      "description": "通过 POST /api/accounts/close/ 提交请求体 {account_id, close_type}，响应返回 {message}。",
+      "source_location": {
+        "section": "启用产品与开户 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-134",
+      "title": "修改客户资料",
+      "description": "通过 PUT /api/accounts/{id}/ 提交请求体 {cellphone, email, address, ...}，响应返回 {...}。",
+      "source_location": {
+        "section": "启用产品与开户 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-135",
+      "title": "申购下单",
+      "description": "通过 POST /api/orders/purchase/ 提交请求体 {fund_code, share_type, application_amount, ...}，响应返回 {ec_ap_serial_no, status}。",
+      "source_location": {
+        "section": "订单 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-136",
+      "title": "赎回下单",
+      "description": "通过 POST /api/orders/redeem/ 提交请求体 {fund_code, share_type, application_vol, ...}，响应返回 {...}。",
+      "source_location": {
+        "section": "订单 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-137",
+      "title": "快取下单",
+      "description": "通过 POST /api/orders/fast-redeem/ 提交请求体 {fund_code, application_vol, ...}，响应返回 {...}。",
+      "source_location": {
+        "section": "订单 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-138",
+      "title": "基金转换",
+      "description": "通过 POST /api/orders/convert/ 提交请求体 {fund_code, target_fund_code, application_vol, ...}，响应返回 {...}。",
+      "source_location": {
+        "section": "订单 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-139",
+      "title": "撤单",
+      "description": "通过 POST /api/orders/cancel/ 提交请求体 {ref_ec_ap_serial_no}，响应返回 {status: \"cancelled\"}。",
+      "source_location": {
+        "section": "订单 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-140",
+      "title": "交易记录查询",
+      "description": "通过 GET /api/orders/ 进行交易记录查询，请求参数 ?cust_no=&serial_no=&start_date=&end_date=&page=，响应返回 {count, results[]}。",
+      "source_location": {
+        "section": "订单查询 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-141",
+      "title": "导出 Excel/CSV",
+      "description": "通过 GET /api/orders/export/ 导出 Excel/CSV，请求参数 ?format=xlsx&cust_no=&...，响应为文件下载。",
+      "source_location": {
+        "section": "订单查询 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-142",
+      "title": "手动执行对账",
+      "description": "通过 POST /api/reconciliation/run/ 提交请求体 {trigger_type: \"manual\"}，响应返回 {recon_id, summary}。",
+      "source_location": {
+        "section": "对账 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-143",
+      "title": "对账结果列表",
+      "description": "通过 GET /api/reconciliation/results/ 查询对账结果列表，请求参数 ?page=1，响应返回 {count, results[]}。",
+      "source_location": {
+        "section": "对账 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-144",
+      "title": "对账差异明细",
+      "description": "通过 GET /api/reconciliation/{id}/details/ 获取对账差异明细，无请求体，响应返回 {diff_details[]}。",
+      "source_location": {
+        "section": "对账 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-145",
+      "title": "导出对账报告",
+      "description": "通过 GET /api/reconciliation/{id}/export/ 导出对账报告，请求参数 ?format=xlsx，响应为文件下载。",
+      "source_location": {
+        "section": "对账 API 表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-146",
+      "title": "单接口响应时间约束",
+      "description": "单接口响应时间要求 ≤2s，覆盖 95% 请求。",
+      "source_location": {
+        "section": "性能指标表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-147",
+      "title": "对账任务执行时间约束",
+      "description": "对账任务执行时间要求 ≤30s，适用 10 万条数据以内。",
+      "source_location": {
+        "section": "性能指标表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-148",
+      "title": "并发用户数约束",
+      "description": "并发用户数要求 ≤50，适用内部低并发场景。",
+      "source_location": {
+        "section": "性能指标表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-149",
+      "title": "数据库查询优化要求",
+      "description": "数据库查询优化要求索引覆盖高频查询字段，具体见数据库设计文档。",
+      "source_location": {
+        "section": "性能指标表",
+        "line": 1
+      }
+    },
+    {
+      "id": "REQ-150",
+      "title": "日志文件配置",
+      "description": "日志文件配置：django.log（Django 应用日志，INFO+）、orders.log（Orders 应用专用日志，INFO+）、gunicorn_access.log（Gunicorn HTTP 访问日志，INFO）、gunicorn_error.log（Gunicorn 错误日志，ERROR+）、db_queries.log（数据库查询日志，仅 DEBUG 模式，DEBUG）。",
+      "source_location": {
+        "section": "日志文件表",
+        "line": 1
+      }
+    }
+  ]
+}

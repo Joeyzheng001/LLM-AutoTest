@@ -1,0 +1,318 @@
+
+{
+  "schema_version": "1.0",
+  "job_id": "job-web-c3e382183000",
+  "repositories": [
+    {
+      "name": "qorder_autotest",
+      "path": "<local-repo>",
+      "branch": "origin/feature/fund-order-system",
+      "language": "python",
+      "is_fallback": false,
+      "status": "ok",
+      "file_count": 41,
+      "baseline_branch": "origin/master",
+      "changed_files": {
+        "added": [
+          ".gitignore",
+          "ACCOUNT_QUERY_FEATURE.md",
+          "BUGFIX_PURCHASE_ERROR.md",
+          "DOCS_UPDATE_SUMMARY.md",
+          "LOCAL_DEV_SETUP.md",
+          "ORACLE_DB_CONFIG.md",
+          "README_DEV.md",
+          "WORK_DATE_FEATURE.md",
+          "backend/config/__init__.py",
+          "backend/config/asgi.py",
+          "backend/config/settings.py",
+          "backend/config/settings_prod.py",
+          "backend/config/urls.py",
+          "backend/config/wsgi.py",
+          "backend/manage.py",
+          "backend/orders/__init__.py",
+          "backend/orders/admin.py",
+          "backend/orders/apps.py",
+          "backend/orders/management/__init__.py",
+          "backend/orders/management/commands/__init__.py",
+          "backend/orders/management/commands/init_admin.py",
+          "backend/orders/migrations/0001_initial.py",
+          "backend/orders/migrations/__init__.py",
+          "backend/orders/models/__init__.py",
+          "backend/orders/models/account.py",
+          "backend/orders/models/product.py",
+          "backend/orders/models/reconciliation.py",
+          "backend/orders/models/transaction.py",
+          "backend/orders/serializers/__init__.py",
+          "backend/orders/serializers/account.py",
+          "backend/orders/serializers/auth.py",
+          "backend/orders/serializers/product.py",
+          "backend/orders/serializers/query.py",
+          "backend/orders/serializers/reconciliation.py",
+          "backend/orders/serializers/transaction.py",
+          "backend/orders/urls.py",
+          "backend/orders/utils/__init__.py",
+          "backend/orders/utils/work_calendar.py",
+          "backend/orders/views/__init__.py",
+          "backend/orders/views/account.py",
+          "backend/orders/views/auth.py",
+          "backend/orders/views/frontend.py",
+          "backend/orders/views/product.py",
+          "backend/orders/views/query.py",
+          "backend/orders/views/reconciliation.py",
+          "backend/orders/views/transaction.py",
+          "backend/requirements.txt",
+          "convert_md_to_docx.py",
+          "deploy/build_python.sh",
+          "deploy/fund_order.service",
+          "deploy/gunicorn.conf.py",
+          "deploy/install.sh",
+          "docs/create_tables_oracle.sql",
+          "docs/database_design.md",
+          "docs/product_requirements.docx",
+          "docs/product_requirements.md",
+          "frontend/index.html",
+          "frontend/package-lock.json",
+          "frontend/package.json",
+          "frontend/src/App.vue",
+          "frontend/src/api/index.js",
+          "frontend/src/main.js",
+          "frontend/src/router/index.js",
+          "frontend/src/stores/auth.js",
+          "frontend/src/views/Dashboard.vue",
+          "frontend/src/views/Layout.vue",
+          "frontend/src/views/Login.vue",
+          "frontend/src/views/account/AccountClose.vue",
+          "frontend/src/views/account/AccountUpdate.vue",
+          "frontend/src/views/account/OrgOpen.vue",
+          "frontend/src/views/account/PersonalOpen.vue",
+          "frontend/src/views/account/ProductOpen.vue",
+          "frontend/src/views/product/ProductList.vue",
+          "frontend/src/views/query/AccountQuery.vue",
+          "frontend/src/views/query/TransactionQuery.vue",
+          "frontend/src/views/reconciliation/Reconciliation.vue",
+          "frontend/src/views/trade/FundConvert.vue",
+          "frontend/src/views/trade/Purchase.vue",
+          "frontend/src/views/trade/QuickWithdraw.vue",
+          "frontend/src/views/trade/Redeem.vue",
+          "frontend/src/views/trade/TradeCancel.vue",
+          "frontend/vite.config.js",
+          "start_dev.bat",
+          "start_frontend.bat",
+          "test_env.bat",
+          "test_local_env.py"
+        ],
+        "modified": [
+          "README.md"
+        ],
+        "removed": []
+      },
+      "files": [
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/config/__init__.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/config/asgi.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/config/settings.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/config/settings_prod.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/config/urls.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/config/wsgi.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/manage.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/__init__.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/admin.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/apps.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/management/__init__.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/management/commands/__init__.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/management/commands/init_admin.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/migrations/0001_initial.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/migrations/__init__.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/models/__init__.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/models/account.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/models/product.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/models/reconciliation.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/models/transaction.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/serializers/__init__.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/serializers/account.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/serializers/auth.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/serializers/product.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/serializers/query.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/serializers/reconciliation.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/serializers/transaction.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/urls.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/utils/__init__.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/utils/work_calendar.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/views/__init__.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/views/account.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/views/auth.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/views/frontend.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/views/product.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/views/query.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/views/reconciliation.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "backend",
+          "path": "backend/orders/views/transaction.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": ".",
+          "path": "convert_md_to_docx.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": "deploy",
+          "path": "deploy/gunicorn.conf.py"
+        },
+        {
+          "repo": "qorder_autotest",
+          "module": ".",
+          "path": "test_local_env.py"
+        }
+      ]
+    }
+  ]
+}

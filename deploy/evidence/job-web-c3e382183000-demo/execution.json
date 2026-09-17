@@ -1,0 +1,2661 @@
+
+{
+  "schema_version": "1.0",
+  "job_id": "job-web-c3e382183000",
+  "results": [
+    {
+      "case_id": "TC-001",
+      "interface_id": "IF-REST-001",
+      "expected": "status=200；响应体包含非空 token 与 username=admin",
+      "timestamp": "2026-09-17T07:27:56.557499+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "token": "***",
+        "username": "admin"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 912
+    },
+    {
+      "case_id": "TC-002",
+      "interface_id": "IF-REST-001",
+      "expected": "status=401；响应提示\"用户名或密码错误\"",
+      "timestamp": "2026-09-17T07:27:57.473143+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "用户名或密码错误"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 1071
+    },
+    {
+      "case_id": "TC-003",
+      "interface_id": "IF-REST-001",
+      "expected": "status_class=4xx；响应提示请输入用户名",
+      "timestamp": "2026-09-17T07:27:58.544947+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "username": [
+          "该字段不能为空。"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 298
+    },
+    {
+      "case_id": "TC-004",
+      "interface_id": "IF-REST-001",
+      "expected": "status=401；前端拦截器捕获后重定向至登录页",
+      "timestamp": "2026-09-17T07:27:58.843806+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "token": "***",
+        "username": "admin"
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 906,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 200（语义断言：status=401；前端拦截器捕获后重定向至登录页）"
+    },
+    {
+      "case_id": "TC-005",
+      "interface_id": "IF-REST-001",
+      "expected": "status_class=4xx；响应提示\"账号已锁定，请 15 分钟后重试\"",
+      "timestamp": "2026-09-17T07:27:59.751032+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "用户名或密码错误"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 987
+    },
+    {
+      "case_id": "TC-006",
+      "interface_id": "IF-REST-001",
+      "expected": "status_class=4xx；响应提示字段长度超限",
+      "timestamp": "2026-09-17T07:28:00.739160+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "password": "***"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 162
+    },
+    {
+      "case_id": "TC-007",
+      "interface_id": "IF-REST-002",
+      "expected": "status=200；响应 message 表示登出成功",
+      "timestamp": "2026-09-17T07:28:00.902315+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "detail": "登出成功"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 1125
+    },
+    {
+      "case_id": "TC-008",
+      "interface_id": "IF-REST-002",
+      "expected": "status=401；响应表示会话缺失",
+      "timestamp": "2026-09-17T07:28:03.229231+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 363
+    },
+    {
+      "case_id": "TC-009",
+      "interface_id": "IF-REST-002",
+      "expected": "status=401；会话无效被拒绝",
+      "timestamp": "2026-09-17T07:28:04.565329+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "认证令牌无效。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 471
+    },
+    {
+      "case_id": "TC-010",
+      "interface_id": "IF-REST-003",
+      "expected": "status=200；响应包含当前登录用户的 username/user_info",
+      "timestamp": "2026-09-17T07:28:06.380417+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "id": 1,
+        "username": "admin",
+        "is_staff": true
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 226
+    },
+    {
+      "case_id": "TC-011",
+      "interface_id": "IF-REST-003",
+      "expected": "status=401；需跳转登录页",
+      "timestamp": "2026-09-17T07:28:06.606819+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 269
+    },
+    {
+      "case_id": "TC-012",
+      "interface_id": "IF-REST-003",
+      "expected": "status=401；会话无效",
+      "timestamp": "2026-09-17T07:28:06.876522+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "认证令牌无效。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 248
+    },
+    {
+      "case_id": "TC-013",
+      "interface_id": "IF-REST-004",
+      "expected": "status=201；响应 transaction_account_id 非空",
+      "timestamp": "2026-09-17T07:28:07.125551+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "investor_type": [
+          "该字段是必填项。"
+        ]
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 267,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 400（语义断言：status=201；响应 transaction_account_id 非空）"
+    },
+    {
+      "case_id": "TC-014",
+      "interface_id": "IF-REST-004",
+      "expected": "status=400；响应提示\"个人证件类型不合法\"",
+      "timestamp": "2026-09-17T07:28:07.393788+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "investor_type": [
+          "该字段是必填项。"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 406
+    },
+    {
+      "case_id": "TC-015",
+      "interface_id": "IF-REST-004",
+      "expected": "status=400；响应提示\"字段长度超限\"",
+      "timestamp": "2026-09-17T07:28:07.800536+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "investor_type": [
+          "该字段是必填项。"
+        ],
+        "investor_name": [
+          "请确保这个字段不能超过 120 个字符。"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 291
+    },
+    {
+      "case_id": "TC-016",
+      "interface_id": "IF-REST-004",
+      "expected": "status=400；响应提示\"该证件号已开户\"",
+      "timestamp": "2026-09-17T07:28:08.092731+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "investor_type": [
+          "该字段是必填项。"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 270
+    },
+    {
+      "case_id": "TC-017",
+      "interface_id": "IF-REST-004",
+      "expected": "status=400；响应提示\"手机号格式错误\"",
+      "timestamp": "2026-09-17T07:28:08.363649+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "investor_type": [
+          "该字段是必填项。"
+        ],
+        "cellphone": [
+          "手机号格式错误"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 267
+    },
+    {
+      "case_id": "TC-018",
+      "interface_id": "IF-REST-005",
+      "expected": "status=200；响应体现更新后的账户详情",
+      "timestamp": "2026-09-17T07:28:08.631506+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "客户不存在"
+      },
+      "passed": false,
+      "failure_kind": "environment",
+      "failure_reason": "HTTP 404 路由不存在（接口未部署或服务地址不符，X-EXEC-01 同类）",
+      "timeout": false,
+      "duration_ms": 253
+    },
+    {
+      "case_id": "TC-019",
+      "interface_id": "IF-REST-005",
+      "expected": "status=404；响应表示账户不存在",
+      "timestamp": "2026-09-17T07:28:08.885587+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "客户不存在"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 220
+    },
+    {
+      "case_id": "TC-020",
+      "interface_id": "IF-REST-005",
+      "expected": "status_class=4xx；响应提示无可更新字段",
+      "timestamp": "2026-09-17T07:28:09.105986+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "客户不存在"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 223
+    },
+    {
+      "case_id": "TC-021",
+      "interface_id": "IF-REST-006",
+      "expected": "status=200；响应表示销户成功",
+      "timestamp": "2026-09-17T07:28:09.329404+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "账号不存在"
+      },
+      "passed": false,
+      "failure_kind": "environment",
+      "failure_reason": "HTTP 404 路由不存在（接口未部署或服务地址不符，X-EXEC-01 同类）",
+      "timeout": false,
+      "duration_ms": 229
+    },
+    {
+      "case_id": "TC-022",
+      "interface_id": "IF-REST-006",
+      "expected": "status=404；响应表示账户不存在",
+      "timestamp": "2026-09-17T07:28:09.559646+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "账号不存在"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 283
+    },
+    {
+      "case_id": "TC-023",
+      "interface_id": "IF-REST-006",
+      "expected": "status=401；需跳转登录页",
+      "timestamp": "2026-09-17T07:28:09.843486+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 167
+    },
+    {
+      "case_id": "TC-024",
+      "interface_id": "IF-REST-007",
+      "expected": "status=201；响应包含非空 ec_ap_serial_no 与成功消息",
+      "timestamp": "2026-09-17T07:28:10.010738+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "detail": "请求参数错误: {'business_code': [ErrorDetail(string='该字段是必填项。', code='required')]}"
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 247,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 400（语义断言：status=201；响应包含非空 ec_ap_serial_no 与成功消息）"
+    },
+    {
+      "case_id": "TC-025",
+      "interface_id": "IF-REST-007",
+      "expected": "status=400；响应提示\"金额必须大于 0\"",
+      "timestamp": "2026-09-17T07:28:10.258291+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "detail": "请求参数错误: {'business_code': [ErrorDetail(string='该字段是必填项。', code='required')]}"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 233
+    },
+    {
+      "case_id": "TC-026",
+      "interface_id": "IF-REST-007",
+      "expected": "status=400；响应提示\"金额超过上限\"",
+      "timestamp": "2026-09-17T07:28:10.492414+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "detail": "请求参数错误: {'business_code': [ErrorDetail(string='该字段是必填项。', code='required')]}"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 207
+    },
+    {
+      "case_id": "TC-027",
+      "interface_id": "IF-REST-007",
+      "expected": "status=400；响应提示\"基金代码无效或已停用\"",
+      "timestamp": "2026-09-17T07:28:10.700344+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "detail": "请求参数错误: {'business_code': [ErrorDetail(string='该字段是必填项。', code='required')]}"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 258
+    },
+    {
+      "case_id": "TC-028",
+      "interface_id": "IF-REST-007",
+      "expected": "status=400；响应提示流水号重复",
+      "timestamp": "2026-09-17T07:28:10.958915+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "detail": "请求参数错误: {'business_code': [ErrorDetail(string='该字段是必填项。', code='required')]}"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 218
+    },
+    {
+      "case_id": "TC-029",
+      "interface_id": "IF-REST-007",
+      "expected": "status=400；响应提示转出/转入基金不能相同",
+      "timestamp": "2026-09-17T07:28:11.177897+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "detail": "请求参数错误: {'share_type': [ErrorDetail(string='该字段是必填项。', code='required')]}"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 272
+    },
+    {
+      "case_id": "TC-030",
+      "interface_id": "IF-REST-008",
+      "expected": "status=200；响应表示撤单成功",
+      "timestamp": "2026-09-17T07:28:11.450602+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "原交易不存在"
+      },
+      "passed": false,
+      "failure_kind": "environment",
+      "failure_reason": "HTTP 404 路由不存在（接口未部署或服务地址不符，X-EXEC-01 同类）",
+      "timeout": false,
+      "duration_ms": 257
+    },
+    {
+      "case_id": "TC-031",
+      "interface_id": "IF-REST-008",
+      "expected": "status=404；响应表示订单不存在",
+      "timestamp": "2026-09-17T07:28:11.707999+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "原交易不存在"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 244
+    },
+    {
+      "case_id": "TC-032",
+      "interface_id": "IF-REST-008",
+      "expected": "status=401；需跳转登录页",
+      "timestamp": "2026-09-17T07:28:11.953182+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 329
+    },
+    {
+      "case_id": "TC-033",
+      "interface_id": "IF-REST-009",
+      "expected": "status=200；响应为非空账户数组",
+      "timestamp": "2026-09-17T07:28:12.282540+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "non_field_errors": [
+          "请至少输入一个查询条件（客户名称或证件号码）"
+        ]
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 276,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 400（语义断言：status=200；响应为非空账户数组）"
+    },
+    {
+      "case_id": "TC-034",
+      "interface_id": "IF-REST-009",
+      "expected": "status=200；响应包含分页列表",
+      "timestamp": "2026-09-17T07:28:12.559245+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "non_field_errors": [
+          "请至少输入一个查询条件（客户名称或证件号码）"
+        ]
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 221,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 400（语义断言：status=200；响应包含分页列表）"
+    },
+    {
+      "case_id": "TC-035",
+      "interface_id": "IF-REST-009",
+      "expected": "status=401；需登录",
+      "timestamp": "2026-09-17T07:28:12.781271+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 151
+    },
+    {
+      "case_id": "TC-036",
+      "interface_id": "IF-REST-010",
+      "expected": "status=200；响应包含 count 与 results 数组，分页默认 20 条",
+      "timestamp": "2026-09-17T07:28:12.933287+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "non_field_errors": [
+          "请至少输入一个查询条件"
+        ]
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 245,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 400（语义断言：status=200；响应包含 count 与 results 数组，分页默认 20 条）"
+    },
+    {
+      "case_id": "TC-037",
+      "interface_id": "IF-REST-010",
+      "expected": "status=400；响应提示\"起始日期不能晚于结束日期\"",
+      "timestamp": "2026-09-17T07:28:13.179098+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "non_field_errors": [
+          "请至少输入一个查询条件"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 219
+    },
+    {
+      "case_id": "TC-038",
+      "interface_id": "IF-REST-010",
+      "expected": "status=400；响应提示\"日期格式错误\"",
+      "timestamp": "2026-09-17T07:28:13.398832+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "non_field_errors": [
+          "请至少输入一个查询条件"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 219
+    },
+    {
+      "case_id": "TC-039",
+      "interface_id": "IF-REST-010",
+      "expected": "status_class=4xx；响应提示\"请至少输入一个查询条件\"",
+      "timestamp": "2026-09-17T07:28:13.618107+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "non_field_errors": [
+          "请至少输入一个查询条件"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 198
+    },
+    {
+      "case_id": "TC-040",
+      "interface_id": "IF-REST-010",
+      "expected": "status=200；响应 results 为空数组",
+      "timestamp": "2026-09-17T07:28:13.817255+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "non_field_errors": [
+          "请至少输入一个查询条件"
+        ]
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 508,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 400（语义断言：status=200；响应 results 为空数组）"
+    },
+    {
+      "case_id": "TC-041",
+      "interface_id": "IF-REST-011",
+      "expected": "status=200；响应为可下载的导出文件",
+      "timestamp": "2026-09-17T07:28:14.326462+00:00",
+      "actual_status": 200,
+      "actual_body": "PK\u0003\u0004\u0014\u0000\u0000\u0000\b\u0000�{1]FZ�\f�\u0000\u0000\u0000�\u0000\u0000\u0000\u0010\u0000\u0000\u0000docProps/app.xmlM�M\u000b�0\u0010D�J��nU� 1 ԣ��{H76�dCv��|S���<�0��\u0015�X�#w5�ħ~\u0011�G\u0000�\u000bF�Cө\u0019G%\u001aiX\u001e@�y�\u0013�g�$�\u001b�\u0003`\u0015L3Λ�\u001d�:�\u001c�5�)髷���t�j1(��k�׼\u001f�o�a\u0005���\u0005PK\u0003\u0004\u0014\u0000\u0000\u0000\b\u0000�{1]R�2��\u0000\u0000\u0000�\u0001\u0000\u0000\u0011\u0000\u0000\u0000docProps/core.xml��MO�0\f����{�C\u001bD]. N !1\t�-r����Pb���Ӗ�\u0003��c�>~l+5\u0006�>�S�\"7�\u0016�m]�\u00186ف9H��\u0007�:\u0015\u0003�p��<<�\u001e��w�'��X�%�F��Q��٘��\u0006ge���$0\bԒ%�\tʢ�\u000b�\u0014m��aJf�O�Lu]Wtˉ\u001b6*����yZ>o\\b�2U\u001b�\u0018I��j�(\u001c���o��4��@f1L�|\f�������n{��JT�\\���z+ֲ��������\u007f\u0011Zo�]�\u000f�Y�j��o�\u0013PK\u0003\u0004\u0014\u0000\u0000\u0000\b\u0000�{1]�\\�#\u0010\u0006\u0000\u0000�'\u0000\u0000\u0013\u0000\u0000\u0000xl/theme/theme1.xml�Z[s�8\u0014~��xg�m\u000b�6���\u0013siv۴���N\u001f�\u0011X�lyd��\u007f�G6\u0010˖\r�M��<\u0004,���EG��8y��.b膈��x`�/�ֻ�/��W2$\u0011A0\u0019����\n�L^�Zi\u0000�8}�\u0013\u0012�܂�\bKx\u0014��\\�[\u001a/#����V�il�\u0018Gd`}^,h@�TQZo_ ��\u001f3�\u0015�T�e�\u0001\u0013WA&�����l����>e��:\u001d2�n0\u001bX \u007f�o��NZ��T���jg?Vk���H���}�\u0005�I���\u0015\b2\r;:�X�v|��ퟌ��t4m\u001a���x8��ҋp\u001c\u0004�Q���l��A\t��i�d��ڮ����SO��}��h�\n�[O�kw�ӎ�ƭ�x\r��O�î�ƫ�t�i&'��k��\u0016hBF��z\u0012\u0015��@� \u0000Xpv���\u0003�^)�u�\u001a�\u001d��A\\�X�9�\u0011���\u0004�i�\u0019�4Fr��\u0005\u000e\u00007��LP|�A����\\���)�P\u001a\b�ȁ�G�!�ܯ����ɤ3z�}:�k�\u007fi�\u0001����ϓ�s�䟧��MB�p�,\t��#[a�'n;\u0013r:\u001cgB|�����%2���\n�N<g\u001fV��]��䞌r#���X}�OGn#ש��\"הF$E��-��\u00118�I\r2\u0013?\b���jP\u001c\u0002�\t1�����Ƭ\u0011�\u0013}��\b�ߍ���o�=W�XIڄ�\u0010F\u001a�s�s�l�\u0007�F��U�ܣ�X\u0015\u0001�\u0018�4�5,��x���<\u001d\u0013\u0012͔\u000b\u0006A��$&\u0012�9~MH\u0013�+�����@�/$�J��i�#�t&��3\u001a�F�\u001bu�h�<z�\u0005��5\n\u001c�\u001b\u001d\u0002g\u001b�F!�i��\u001e�$����\u0011+B>b\u00196\u001ar�\u0016��q��`Z\u0012��xNҴ\u0011�Y�5�>`��͑u�֑\u000e\u0011�^7B>b΋�\u0011�\u001e�8J���qX\u0004��^�I���f��~��3l,��G�\u0017J�\u000f&�?�24\u0007��Y\t��Vj���4>�\u001e2\n\u0005�\u001e>�zx\n7�ƼP��{\u0001���7«���9\u007f.}ϥ��=�ҷ7#}g�Ӌ[�Fn[���1��4.(cWr���T��)�9����h>�����$���Y-#\u0016�K��A$�����*�\t�d[%\t�T�e7�\u0012�B\u001bn�S�J��对(�<[�鯡t>,��<_��\u000b3C�rK궔��&8J���pN\u001e�\f;g<�\u001d�w�\u001d5��]v�#�0S�C�\u001aB�\u0003m���:8����\n�R�o����x\u001a�9�\u0004�}�Wm�������Q���<�\u001dǈ�!���C�y{_�g��P4\u0014ml�$,F�`���,\u0014�d`-�\u0007��Q\u0002�RU`1[�\u0003+��|L�E�p�\\_�ђ�ۦe�n�)w\u0019m\"R9�i�\u0013g���e��U\u001d�U[�j=�\u0015N��Y�ȟ\f\u0011N\u0016\u000b\u0012Hc�\u0017�J��\u0019S��+I�U8�E3�\u0012�\u0018����qNS�\u0012v�\u000f\u00022��9�ze1g���-\f\t,[�Y\u0012�M]��盜�z\"v��w�`��p�G\u000f�;�_�]C�~����n�;HL�y�\u0011\u0001tE\u0002#�\u001c\u0006\u0016\u00172�P\u0006\u0013\u0001͔�D�\u0002�d�\u001c���\u000b��\f�)\u0015έ>9\u007fE,��N^�%\u0012\u0014��\f\u0005!\u0017r���jw���,�m�T2d�\u0017�C��=3rC�T%��&\u000b���Tͻ\u001a�&`K�zn�-'��^�=�\u0017=F��\u001e��s�z��E��X�\u001e�2�9p�:�\u0003^�\u0013,C�~�}���\u0011�b���O�%�;�{� ���ۤ���\f|ԫZ�d+\u0011?K\u0007|\u001f�\u0006c�[�4_�\u0014b������1\fy�X�\f�f8߇E�\u001a3Ջ�9�\noA�@�?��\rh�\r4\u001c�\u0005^1��6��N\n<���\r��Ď�틿\u0001PK\u0003\u0004\u0014\u0000\u0000\u0000\b\u0000�{1]�g��\u0016\t\u0000\u0000�:\u0000\u0000\u0018\u0000\u0000\u0000xl/worksheets/sheet1…",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 409
+    },
+    {
+      "case_id": "TC-042",
+      "interface_id": "IF-REST-011",
+      "expected": "status=200；响应为可下载的导出文件",
+      "timestamp": "2026-09-17T07:28:14.736628+00:00",
+      "actual_status": 200,
+      "actual_body": "PK\u0003\u0004\u0014\u0000\u0000\u0000\b\u0000�{1]FZ�\f�\u0000\u0000\u0000�\u0000\u0000\u0000\u0010\u0000\u0000\u0000docProps/app.xmlM�M\u000b�0\u0010D�J��nU� 1 ԣ��{H76�dCv��|S���<�0��\u0015�X�#w5�ħ~\u0011�G\u0000�\u000bF�Cө\u0019G%\u001aiX\u001e@�y�\u0013�g�$�\u001b�\u0003`\u0015L3Λ�\u001d�:�\u001c�5�)髷���t�j1(��k�׼\u001f�o�a\u0005���\u0005PK\u0003\u0004\u0014\u0000\u0000\u0000\b\u0000�{1]pW\r��\u0000\u0000\u0000�\u0001\u0000\u0000\u0011\u0000\u0000\u0000docProps/core.xml��MO�0\f����{�\u0013\u001bD]. N !1\t�-r����Pb���Ӗ�\u0003��c�>~l+5\u0006�>�S�\"7�\u0016�m]�\u00186ف9H��\u0007�:\u0015\u0003�p��<<�\u001e��w�'��X�%�F��Q��٘��\u0006ge���$0\bԒ%�\tʢ�\u000b�\u0014m��aJf�O�Lu]Wtˉ\u001b6*����yZ>o\\b�2U\u001b�\u0018I��j�(\u001c���o��4��@f1L�|\f�������n{��JT�\\���z+ֲ��������\u007f\u0011Zo�]�\u000f�Y�j��o�\u0013PK\u0003\u0004\u0014\u0000\u0000\u0000\b\u0000�{1]�\\�#\u0010\u0006\u0000\u0000�'\u0000\u0000\u0013\u0000\u0000\u0000xl/theme/theme1.xml�Z[s�8\u0014~��xg�m\u000b�6���\u0013siv۴���N\u001f�\u0011X�lyd��\u007f�G6\u0010˖\r�M��<\u0004,���EG��8y��.b膈��x`�/�ֻ�/��W2$\u0011A0\u0019����\n�L^�Zi\u0000�8}�\u0013\u0012�܂�\bKx\u0014��\\�[\u001a/#����V�il�\u0018Gd`}^,h@�TQZo_ ��\u001f3�\u0015�T�e�\u0001\u0013WA&�����l����>e��:\u001d2�n0\u001bX \u007f�o��NZ��T���jg?Vk���H���}�\u0005�I���\u0015\b2\r;:�X�v|��ퟌ��t4m\u001a���x8��ҋp\u001c\u0004�Q���l��A\t��i�d��ڮ����SO��}��h�\n�[O�kw�ӎ�ƭ�x\r��O�î�ƫ�t�i&'��k��\u0016hBF��z\u0012\u0015��@� \u0000Xpv���\u0003�^)�u�\u001a�\u001d��A\\�X�9�\u0011���\u0004�i�\u0019�4Fr��\u0005\u000e\u00007��LP|�A����\\���)�P\u001a\b�ȁ�G�!�ܯ����ɤ3z�}:�k�\u007fi�\u0001����ϓ�s�䟧��MB�p�,\t��#[a�'n;\u0013r:\u001cgB|�����%2���\n�N<g\u001fV��]��䞌r#���X}�OGn#ש��\"הF$E��-��\u00118�I\r2\u0013?\b���jP\u001c\u0002�\t1�����Ƭ\u0011�\u0013}��\b�ߍ���o�=W�XIڄ�\u0010F\u001a�s�s�l�\u0007�F��U�ܣ�X\u0015\u0001�\u0018�4�5,��x���<\u001d\u0013\u0012͔\u000b\u0006A��$&\u0012�9~MH\u0013�+�����@�/$�J��i�#�t&��3\u001a�F�\u001bu�h�<z�\u0005��5\n\u001c�\u001b\u001d\u0002g\u001b�F!�i��\u001e�$����\u0011+B>b\u00196\u001ar�\u0016��q��`Z\u0012��xNҴ\u0011�Y�5�>`��͑u�֑\u000e\u0011�^7B>b΋�\u0011�\u001e�8J���qX\u0004��^�I���f��~��3l,��G�\u0017J�\u000f&�?�24\u0007��Y\t��Vj���4>�\u001e2\n\u0005�\u001e>�zx\n7�ƼP��{\u0001���7«���9\u007f.}ϥ��=�ҷ7#}g�Ӌ[�Fn[���1��4.(cWr���T��)�9����h>�����$���Y-#\u0016�K��A$�����*�\t�d[%\t�T�e7�\u0012�B\u001bn�S�J��对(�<[�鯡t>,��<_��\u000b3C�rK궔��&8J���pN\u001e�\f;g<�\u001d�w�\u001d5��]v�#�0S�C�\u001aB�\u0003m���:8����\n�R�o����x\u001a�9�\u0004�}�Wm�������Q���<�\u001dǈ�!���C�y{_�g��P4\u0014ml�$,F�`���,\u0014�d`-�\u0007��Q\u0002�RU`1[�\u0003+��|L�E�p�\\_�ђ�ۦe�n�)w\u0019m\"R9�i�\u0013g���e��U\u001d�U[�j=�\u0015N��Y�ȟ\f\u0011N\u0016\u000b\u0012Hc�\u0017�J��\u0019S��+I�U8�E3�\u0012�\u0018����qNS�\u0012v�\u000f\u00022��9�ze1g���-\f\t,[�Y\u0012�M]��盜�z\"v��w�`��p�G\u000f�;�_�]C�~����n�;HL�y�\u0011\u0001tE\u0002#�\u001c\u0006\u0016\u00172�P\u0006\u0013\u0001͔�D�\u0002�d�\u001c���\u000b��\f�)\u0015έ>9\u007fE,��N^�%\u0012\u0014��\f\u0005!\u0017r���jw���,�m�T2d�\u0017�C��=3rC�T%��&\u000b���Tͻ\u001a�&`K�zn�-'��^�=�\u0017=F��\u001e��s�z��E��X�\u001e�2�9p�:�\u0003^�\u0013,C�~�}���\u0011�b���O�%�;�{� ���ۤ���\f|ԫZ�d+\u0011?K\u0007|\u001f�\u0006c�[�4_�\u0014b������1\fy�X�\f�f8߇E�\u001a3Ջ�9�\noA�@�?��\rh�\r4\u001c�\u0005^1��6��N\n<���\r��Ď�틿\u0001PK\u0003\u0004\u0014\u0000\u0000\u0000\b\u0000�{1]�g��\u0016\t\u0000\u0000�:\u0000\u0000\u0018\u0000\u0000\u0000xl/worksheets/sheet1…",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 410
+    },
+    {
+      "case_id": "TC-043",
+      "interface_id": "IF-REST-011",
+      "expected": "status=401；需登录",
+      "timestamp": "2026-09-17T07:28:15.146888+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 160
+    },
+    {
+      "case_id": "TC-044",
+      "interface_id": "IF-REST-012",
+      "expected": "status=200；响应包含非空 recon_id 与 summary",
+      "timestamp": "2026-09-17T07:28:15.307868+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "id": 18,
+        "recon_time": "2026-09-17 15:28:15",
+        "recon_date": "",
+        "trigger_type": "manual",
+        "status": "completed",
+        "total_matched": 16,
+        "total_diff": 1,
+        "diff_amount": 0,
+        "diff_vol": 0,
+        "diff_status": 0,
+        "diff_missing_order": 0,
+        "diff_missing_settlement": 1,
+        "diff_details": [
+          {
+            "type": "missing_settlement",
+            "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+            "order_data": {
+              "amount": "5.01",
+              "vol": "0.00"
+            },
+            "settlement_data": null
+          }
+        ],
+        "amount_tolerance": "0.01"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 266
+    },
+    {
+      "case_id": "TC-045",
+      "interface_id": "IF-REST-012",
+      "expected": "status=400；响应提示\"下单/落库数据为空，无法对账\"",
+      "timestamp": "2026-09-17T07:28:15.574339+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "id": 19,
+        "recon_time": "2026-09-17 15:28:16",
+        "recon_date": "",
+        "trigger_type": "manual",
+        "status": "completed",
+        "total_matched": 16,
+        "total_diff": 1,
+        "diff_amount": 0,
+        "diff_vol": 0,
+        "diff_status": 0,
+        "diff_missing_order": 0,
+        "diff_missing_settlement": 1,
+        "diff_details": [
+          {
+            "type": "missing_settlement",
+            "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+            "order_data": {
+              "amount": "5.01",
+              "vol": "0.00"
+            },
+            "settlement_data": null
+          }
+        ],
+        "amount_tolerance": "0.01"
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 306,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 200（语义断言：status=400；响应提示\"下单/落库数据为空，无法对账\"）"
+    },
+    {
+      "case_id": "TC-046",
+      "interface_id": "IF-REST-012",
+      "expected": "status_class=5xx；响应提示\"对账执行异常，请重试\"",
+      "timestamp": "2026-09-17T07:28:15.880967+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "id": 20,
+        "recon_time": "2026-09-17 15:28:16",
+        "recon_date": "",
+        "trigger_type": "manual",
+        "status": "completed",
+        "total_matched": 16,
+        "total_diff": 1,
+        "diff_amount": 0,
+        "diff_vol": 0,
+        "diff_status": 0,
+        "diff_missing_order": 0,
+        "diff_missing_settlement": 1,
+        "diff_details": [
+          {
+            "type": "missing_settlement",
+            "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+            "order_data": {
+              "amount": "5.01",
+              "vol": "0.00"
+            },
+            "settlement_data": null
+          }
+        ],
+        "amount_tolerance": "0.01"
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 298,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 200（语义断言：status_class=5xx；响应提示\"对账执行异常，请重试\"）"
+    },
+    {
+      "case_id": "TC-047",
+      "interface_id": "IF-REST-012",
+      "expected": "status=200；响应返回对账任务结果",
+      "timestamp": "2026-09-17T07:28:16.179368+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "id": 21,
+        "recon_time": "2026-09-17 15:28:16",
+        "recon_date": "",
+        "trigger_type": "manual",
+        "status": "completed",
+        "total_matched": 16,
+        "total_diff": 1,
+        "diff_amount": 0,
+        "diff_vol": 0,
+        "diff_status": 0,
+        "diff_missing_order": 0,
+        "diff_missing_settlement": 1,
+        "diff_details": [
+          {
+            "type": "missing_settlement",
+            "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+            "order_data": {
+              "amount": "5.01",
+              "vol": "0.00"
+            },
+            "settlement_data": null
+          }
+        ],
+        "amount_tolerance": "0.01"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 251
+    },
+    {
+      "case_id": "TC-048",
+      "interface_id": "IF-REST-013",
+      "expected": "status=200；响应包含 summary（匹配数/差异数）",
+      "timestamp": "2026-09-17T07:28:16.431218+00:00",
+      "actual_status": 200,
+      "actual_body": [
+        {
+          "id": 21,
+          "recon_time": "2026-09-17 15:28:16",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 20,
+          "recon_time": "2026-09-17 15:28:16",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 19,
+          "recon_time": "2026-09-17 15:28:16",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 18,
+          "recon_time": "2026-09-17 15:28:15",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 17,
+          "recon_time": "2026-09-17 14:34:27",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 14,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 16,
+          "recon_time": "2026-09-17 14:15:36",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 12,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 15,
+          "recon_time": "2026-09-17 14:14:43",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 13,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 14,
+          "recon_time": "2026-09-17 13:44:03",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 13,
+          "recon_time": "2026-09-17 13:42:05",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 12,
+          "recon_time": "2026-09-17 13:40:57",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 11,
+          "recon_time": "2026-09-17 13:40:31",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 10,
+          "recon_time": "2026-09-17 11:49:13",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 9,
+          "recon_time": "2026-09-17 11:47:36",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 8,
+          "recon_time": "2026-09-17 11:22:40",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 7,
+          "recon_time": "2026-09-17 10:58:49",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 6,
+          "recon_time": "2026-09-17 10:58:18",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 5,
+          "recon_time": "2026-09-17 10:58:17",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 4,
+          "recon_time": "2026-09-17 10:58:17",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 3,
+          "recon_time": "2026-09-16 16:26:08",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 2,
+          "recon_time": "2026-09-16 16:26:08",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        }
+      ],
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 242
+    },
+    {
+      "case_id": "TC-049",
+      "interface_id": "IF-REST-013",
+      "expected": "status=200；响应 differences 字段为 JSON 数组",
+      "timestamp": "2026-09-17T07:28:16.674170+00:00",
+      "actual_status": 200,
+      "actual_body": [
+        {
+          "id": 21,
+          "recon_time": "2026-09-17 15:28:16",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 20,
+          "recon_time": "2026-09-17 15:28:16",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 19,
+          "recon_time": "2026-09-17 15:28:16",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 18,
+          "recon_time": "2026-09-17 15:28:15",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 17,
+          "recon_time": "2026-09-17 14:34:27",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 14,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 16,
+          "recon_time": "2026-09-17 14:15:36",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 12,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 15,
+          "recon_time": "2026-09-17 14:14:43",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 13,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 14,
+          "recon_time": "2026-09-17 13:44:03",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 13,
+          "recon_time": "2026-09-17 13:42:05",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 12,
+          "recon_time": "2026-09-17 13:40:57",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 11,
+          "recon_time": "2026-09-17 13:40:31",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 10,
+          "recon_time": "2026-09-17 11:49:13",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 9,
+          "recon_time": "2026-09-17 11:47:36",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 8,
+          "recon_time": "2026-09-17 11:22:40",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 7,
+          "recon_time": "2026-09-17 10:58:49",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 6,
+          "recon_time": "2026-09-17 10:58:18",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 5,
+          "recon_time": "2026-09-17 10:58:17",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 4,
+          "recon_time": "2026-09-17 10:58:17",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 3,
+          "recon_time": "2026-09-16 16:26:08",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 2,
+          "recon_time": "2026-09-16 16:26:08",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        }
+      ],
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 243
+    },
+    {
+      "case_id": "TC-050",
+      "interface_id": "IF-REST-013",
+      "expected": "status=200；响应 results 为空数组",
+      "timestamp": "2026-09-17T07:28:16.917911+00:00",
+      "actual_status": 200,
+      "actual_body": [
+        {
+          "id": 21,
+          "recon_time": "2026-09-17 15:28:16",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 20,
+          "recon_time": "2026-09-17 15:28:16",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 19,
+          "recon_time": "2026-09-17 15:28:16",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 18,
+          "recon_time": "2026-09-17 15:28:15",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 16,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 17,
+          "recon_time": "2026-09-17 14:34:27",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 14,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 16,
+          "recon_time": "2026-09-17 14:15:36",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 12,
+          "total_diff": 1,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 1,
+          "diff_details": [
+            {
+              "type": "missing_settlement",
+              "serial_no": "CB4DEE78F28042EB8083E70BDB842622",
+              "order_data": {
+                "amount": "…",
+                "vol": "…"
+              },
+              "settlement_data": null
+            }
+          ],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 15,
+          "recon_time": "2026-09-17 14:14:43",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 13,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 14,
+          "recon_time": "2026-09-17 13:44:03",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 13,
+          "recon_time": "2026-09-17 13:42:05",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 12,
+          "recon_time": "2026-09-17 13:40:57",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 11,
+          "recon_time": "2026-09-17 13:40:31",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 2,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 10,
+          "recon_time": "2026-09-17 11:49:13",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 9,
+          "recon_time": "2026-09-17 11:47:36",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 8,
+          "recon_time": "2026-09-17 11:22:40",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 7,
+          "recon_time": "2026-09-17 10:58:49",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 6,
+          "recon_time": "2026-09-17 10:58:18",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 5,
+          "recon_time": "2026-09-17 10:58:17",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 4,
+          "recon_time": "2026-09-17 10:58:17",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 3,
+          "recon_time": "2026-09-16 16:26:08",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        },
+        {
+          "id": 2,
+          "recon_time": "2026-09-16 16:26:08",
+          "recon_date": "",
+          "trigger_type": "manual",
+          "status": "completed",
+          "total_matched": 1,
+          "total_diff": 0,
+          "diff_amount": 0,
+          "diff_vol": 0,
+          "diff_status": 0,
+          "diff_missing_order": 0,
+          "diff_missing_settlement": 0,
+          "diff_details": [],
+          "amount_tolerance": "0.01"
+        }
+      ],
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 242
+    },
+    {
+      "case_id": "TC-051",
+      "interface_id": "IF-REST-013",
+      "expected": "status=401；需登录",
+      "timestamp": "2026-09-17T07:28:17.161258+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 150
+    },
+    {
+      "case_id": "TC-052",
+      "interface_id": "IF-REST-014",
+      "expected": "status=200；响应包含 cron 与 amount_tolerance 配置",
+      "timestamp": "2026-09-17T07:28:17.312167+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "enabled": false,
+        "time": "16:00"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 204
+    },
+    {
+      "case_id": "TC-053",
+      "interface_id": "IF-REST-014",
+      "expected": "status=401；需登录",
+      "timestamp": "2026-09-17T07:28:17.516983+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 151
+    },
+    {
+      "case_id": "TC-054",
+      "interface_id": "IF-REST-014",
+      "expected": "status=200；响应为默认调度配置",
+      "timestamp": "2026-09-17T07:28:17.668650+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "enabled": false,
+        "time": "16:00"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 207
+    },
+    {
+      "case_id": "TC-055",
+      "interface_id": "IF-REST-015",
+      "expected": "status=200；响应表示调度计划保存成功",
+      "timestamp": "2026-09-17T07:28:17.876201+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "enabled": false,
+        "time": "16:00"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 216
+    },
+    {
+      "case_id": "TC-056",
+      "interface_id": "IF-REST-015",
+      "expected": "status_class=4xx；响应表示容差必须大于 0",
+      "timestamp": "2026-09-17T07:28:18.092839+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "enabled": false,
+        "time": "16:00"
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 246,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 200（语义断言：status_class=4xx；响应表示容差必须大于 0）"
+    },
+    {
+      "case_id": "TC-057",
+      "interface_id": "IF-REST-015",
+      "expected": "status=400；响应表示调度配置无效",
+      "timestamp": "2026-09-17T07:28:18.339560+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "enabled": false,
+        "time": "16:00"
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 203,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 200（语义断言：status=400；响应表示调度配置无效）"
+    },
+    {
+      "case_id": "TC-058",
+      "interface_id": "IF-REST-016",
+      "expected": "status=200；响应包含 count 与 results 数组（默认 20 条/页）",
+      "timestamp": "2026-09-17T07:28:18.542788+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "count": 6,
+        "next": null,
+        "previous": null,
+        "results": [
+          {
+            "fund_code": "000001",
+            "fund_name": "华夏成长混合",
+            "share_type": "A",
+            "status": "N",
+            "nav": "1.0000",
+            "is_active": true,
+            "created_at": "2026-09-16 22:30:38",
+            "updated_at": "2026-09-17 14:24:11"
+          },
+          {
+            "fund_code": "000002",
+            "fund_name": "华夏成长混合",
+            "share_type": "B",
+            "status": "S",
+            "nav": "1.0000",
+            "is_active": true,
+            "created_at": "2026-09-16 22:30:38",
+            "updated_at": "2026-09-16 22:30:38"
+          },
+          {
+            "fund_code": "000003",
+            "fund_name": "华夏回报混合",
+            "share_type": "A",
+            "status": "N",
+            "nav": "1.0000",
+            "is_active": true,
+            "created_at": "2026-09-16 22:30:38",
+            "updated_at": "2026-09-16 22:30:38"
+          },
+          {
+            "fund_code": "000010",
+            "fund_name": "测试基金E2E",
+            "share_type": "A",
+            "status": "S",
+            "nav": "1.5000",
+            "is_active": true,
+            "created_at": "2026-09-16 16:03:20",
+            "updated_at": "2026-09-16 16:03:20"
+          },
+          {
+            "fund_code": "000012",
+            "fund_name": "test1",
+            "share_type": "B",
+            "status": "S",
+            "nav": "1.3000",
+            "is_active": true,
+            "created_at": "2026-09-17 14:24:02",
+            "updated_at": "2026-09-17 14:24:02"
+          },
+          {
+            "fund_code": "000330",
+            "fund_name": "现金宝",
+            "share_type": "A",
+            "status": "S",
+            "nav": "1.0000",
+            "is_active": true,
+            "created_at": "2026-09-17 13:35:06",
+            "updated_at": "2026-09-17 13:35:06"
+          }
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 259
+    },
+    {
+      "case_id": "TC-059",
+      "interface_id": "IF-REST-016",
+      "expected": "status=200；响应 results 为空数组",
+      "timestamp": "2026-09-17T07:28:18.802815+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "count": 6,
+        "next": null,
+        "previous": null,
+        "results": [
+          {
+            "fund_code": "000001",
+            "fund_name": "华夏成长混合",
+            "share_type": "A",
+            "status": "N",
+            "nav": "1.0000",
+            "is_active": true,
+            "created_at": "2026-09-16 22:30:38",
+            "updated_at": "2026-09-17 14:24:11"
+          },
+          {
+            "fund_code": "000002",
+            "fund_name": "华夏成长混合",
+            "share_type": "B",
+            "status": "S",
+            "nav": "1.0000",
+            "is_active": true,
+            "created_at": "2026-09-16 22:30:38",
+            "updated_at": "2026-09-16 22:30:38"
+          },
+          {
+            "fund_code": "000003",
+            "fund_name": "华夏回报混合",
+            "share_type": "A",
+            "status": "N",
+            "nav": "1.0000",
+            "is_active": true,
+            "created_at": "2026-09-16 22:30:38",
+            "updated_at": "2026-09-16 22:30:38"
+          },
+          {
+            "fund_code": "000010",
+            "fund_name": "测试基金E2E",
+            "share_type": "A",
+            "status": "S",
+            "nav": "1.5000",
+            "is_active": true,
+            "created_at": "2026-09-16 16:03:20",
+            "updated_at": "2026-09-16 16:03:20"
+          },
+          {
+            "fund_code": "000012",
+            "fund_name": "test1",
+            "share_type": "B",
+            "status": "S",
+            "nav": "1.3000",
+            "is_active": true,
+            "created_at": "2026-09-17 14:24:02",
+            "updated_at": "2026-09-17 14:24:02"
+          },
+          {
+            "fund_code": "000330",
+            "fund_name": "现金宝",
+            "share_type": "A",
+            "status": "S",
+            "nav": "1.0000",
+            "is_active": true,
+            "created_at": "2026-09-17 13:35:06",
+            "updated_at": "2026-09-17 13:35:06"
+          }
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 299
+    },
+    {
+      "case_id": "TC-060",
+      "interface_id": "IF-REST-016",
+      "expected": "status=401；需登录",
+      "timestamp": "2026-09-17T07:28:19.102353+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 147
+    },
+    {
+      "case_id": "TC-061",
+      "interface_id": "IF-REST-017",
+      "expected": "status=201；响应 fund_code=000330 且 is_active=true",
+      "timestamp": "2026-09-17T07:28:19.250462+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "fund_code": [
+          "具有 基金代码 的 产品配置 已存在。"
+        ]
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 242,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 400（语义断言：status=201；响应 fund_code=000330 且 is_active=true）"
+    },
+    {
+      "case_id": "TC-062",
+      "interface_id": "IF-REST-017",
+      "expected": "status=400；响应提示\"基金代码必须为 6 位数字\"",
+      "timestamp": "2026-09-17T07:28:19.492949+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "fund_code": [
+          "基金代码必须为 6 位数字"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 232
+    },
+    {
+      "case_id": "TC-063",
+      "interface_id": "IF-REST-017",
+      "expected": "status=400；响应提示\"该基金代码已存在\"",
+      "timestamp": "2026-09-17T07:28:19.725446+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "fund_code": [
+          "具有 基金代码 的 产品配置 已存在。"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 218
+    },
+    {
+      "case_id": "TC-064",
+      "interface_id": "IF-REST-017",
+      "expected": "status=400；响应提示\"基金名称不能为空\"",
+      "timestamp": "2026-09-17T07:28:19.944261+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "fund_name": [
+          "该字段不能为空。"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 236
+    },
+    {
+      "case_id": "TC-065",
+      "interface_id": "IF-REST-017",
+      "expected": "status=400；响应提示份额类型仅允许 A 或 B",
+      "timestamp": "2026-09-17T07:28:20.180654+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "share_type": [
+          "“C” 不是合法选项。"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 228
+    },
+    {
+      "case_id": "TC-066",
+      "interface_id": "IF-REST-018",
+      "expected": "status=200；响应包含 fund_code=000330 与产品字段",
+      "timestamp": "2026-09-17T07:28:20.409255+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "fund_code": "000330",
+        "fund_name": "现金宝",
+        "share_type": "A",
+        "status": "S",
+        "nav": "1.0000",
+        "is_active": true,
+        "created_at": "2026-09-17 13:35:06",
+        "updated_at": "2026-09-17 13:35:06"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 234
+    },
+    {
+      "case_id": "TC-067",
+      "interface_id": "IF-REST-018",
+      "expected": "status=404；响应表示产品不存在",
+      "timestamp": "2026-09-17T07:28:20.643923+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "未找到。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 216
+    },
+    {
+      "case_id": "TC-068",
+      "interface_id": "IF-REST-018",
+      "expected": "status=401；需登录",
+      "timestamp": "2026-09-17T07:28:20.860212+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 148
+    },
+    {
+      "case_id": "TC-069",
+      "interface_id": "IF-REST-019",
+      "expected": "status=200；响应体现更新后的全部字段",
+      "timestamp": "2026-09-17T07:28:21.009141+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "fund_code": "000330",
+        "fund_name": "景顺长城新兴成长混合A-更新",
+        "share_type": "B",
+        "status": "S",
+        "nav": "1.0000",
+        "is_active": true,
+        "created_at": "2026-09-17 13:35:06",
+        "updated_at": "2026-09-17 15:28:21"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 246
+    },
+    {
+      "case_id": "TC-070",
+      "interface_id": "IF-REST-019",
+      "expected": "status=404；响应表示产品不存在",
+      "timestamp": "2026-09-17T07:28:21.255947+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "未找到。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 213
+    },
+    {
+      "case_id": "TC-071",
+      "interface_id": "IF-REST-019",
+      "expected": "status_class=4xx；响应提示缺少必填字段",
+      "timestamp": "2026-09-17T07:28:21.469188+00:00",
+      "actual_status": 400,
+      "actual_body": {
+        "fund_code": [
+          "该字段是必填项。"
+        ],
+        "fund_name": [
+          "该字段是必填项。"
+        ],
+        "share_type": [
+          "该字段是必填项。"
+        ]
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 290
+    },
+    {
+      "case_id": "TC-072",
+      "interface_id": "IF-REST-020",
+      "expected": "status=200；响应 is_active=false 且提示关联交易警告",
+      "timestamp": "2026-09-17T07:28:21.759713+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "fund_code": "000330",
+        "fund_name": "景顺长城新兴成长混合A-更新",
+        "share_type": "B",
+        "status": "S",
+        "nav": "1.0000",
+        "is_active": false,
+        "created_at": "2026-09-17 13:35:06",
+        "updated_at": "2026-09-17 15:28:22"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 223
+    },
+    {
+      "case_id": "TC-073",
+      "interface_id": "IF-REST-020",
+      "expected": "status=404；响应表示产品不存在",
+      "timestamp": "2026-09-17T07:28:21.983488+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "未找到。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 266
+    },
+    {
+      "case_id": "TC-074",
+      "interface_id": "IF-REST-020",
+      "expected": "status_class=4xx；响应提示无可更新字段",
+      "timestamp": "2026-09-17T07:28:22.249971+00:00",
+      "actual_status": 200,
+      "actual_body": {
+        "fund_code": "000330",
+        "fund_name": "景顺长城新兴成长混合A-更新",
+        "share_type": "B",
+        "status": "S",
+        "nav": "1.0000",
+        "is_active": false,
+        "created_at": "2026-09-17 13:35:06",
+        "updated_at": "2026-09-17 15:28:22"
+      },
+      "passed": false,
+      "timeout": false,
+      "duration_ms": 219,
+      "failure_kind": "assertion",
+      "failure_reason": "HTTP 200（语义断言：status_class=4xx；响应提示无可更新字段）"
+    },
+    {
+      "case_id": "TC-075",
+      "interface_id": "IF-REST-021",
+      "expected": "status=204；响应表示删除成功",
+      "timestamp": "2026-09-17T07:28:22.469785+00:00",
+      "actual_status": 204,
+      "actual_body": "",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 224
+    },
+    {
+      "case_id": "TC-076",
+      "interface_id": "IF-REST-021",
+      "expected": "status=404；响应表示产品不存在",
+      "timestamp": "2026-09-17T07:28:22.694233+00:00",
+      "actual_status": 404,
+      "actual_body": {
+        "detail": "未找到。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 233
+    },
+    {
+      "case_id": "TC-077",
+      "interface_id": "IF-REST-021",
+      "expected": "status=401；需登录",
+      "timestamp": "2026-09-17T07:28:22.928427+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 130
+    },
+    {
+      "case_id": "TC-078",
+      "interface_id": "IF-REST-022",
+      "expected": "status=200；响应为非空 [{fund_code, fund_name}, ...] 数组",
+      "timestamp": "2026-09-17T07:28:23.059507+00:00",
+      "actual_status": 200,
+      "actual_body": [
+        {
+          "fund_code": "000001",
+          "fund_name": "华夏成长混合",
+          "share_type": "A",
+          "status": "N",
+          "nav": "1.0000",
+          "is_active": true,
+          "created_at": "2026-09-16 22:30:38",
+          "updated_at": "2026-09-17 14:24:11"
+        },
+        {
+          "fund_code": "000002",
+          "fund_name": "华夏成长混合",
+          "share_type": "B",
+          "status": "S",
+          "nav": "1.0000",
+          "is_active": true,
+          "created_at": "2026-09-16 22:30:38",
+          "updated_at": "2026-09-16 22:30:38"
+        },
+        {
+          "fund_code": "000003",
+          "fund_name": "华夏回报混合",
+          "share_type": "A",
+          "status": "N",
+          "nav": "1.0000",
+          "is_active": true,
+          "created_at": "2026-09-16 22:30:38",
+          "updated_at": "2026-09-16 22:30:38"
+        },
+        {
+          "fund_code": "000010",
+          "fund_name": "测试基金E2E",
+          "share_type": "A",
+          "status": "S",
+          "nav": "1.5000",
+          "is_active": true,
+          "created_at": "2026-09-16 16:03:20",
+          "updated_at": "2026-09-16 16:03:20"
+        },
+        {
+          "fund_code": "000012",
+          "fund_name": "test1",
+          "share_type": "B",
+          "status": "S",
+          "nav": "1.3000",
+          "is_active": true,
+          "created_at": "2026-09-17 14:24:02",
+          "updated_at": "2026-09-17 14:24:02"
+        }
+      ],
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 226
+    },
+    {
+      "case_id": "TC-079",
+      "interface_id": "IF-REST-022",
+      "expected": "status=200；响应为空数组",
+      "timestamp": "2026-09-17T07:28:23.286696+00:00",
+      "actual_status": 200,
+      "actual_body": [
+        {
+          "fund_code": "000001",
+          "fund_name": "华夏成长混合",
+          "share_type": "A",
+          "status": "N",
+          "nav": "1.0000",
+          "is_active": true,
+          "created_at": "2026-09-16 22:30:38",
+          "updated_at": "2026-09-17 14:24:11"
+        },
+        {
+          "fund_code": "000002",
+          "fund_name": "华夏成长混合",
+          "share_type": "B",
+          "status": "S",
+          "nav": "1.0000",
+          "is_active": true,
+          "created_at": "2026-09-16 22:30:38",
+          "updated_at": "2026-09-16 22:30:38"
+        },
+        {
+          "fund_code": "000003",
+          "fund_name": "华夏回报混合",
+          "share_type": "A",
+          "status": "N",
+          "nav": "1.0000",
+          "is_active": true,
+          "created_at": "2026-09-16 22:30:38",
+          "updated_at": "2026-09-16 22:30:38"
+        },
+        {
+          "fund_code": "000010",
+          "fund_name": "测试基金E2E",
+          "share_type": "A",
+          "status": "S",
+          "nav": "1.5000",
+          "is_active": true,
+          "created_at": "2026-09-16 16:03:20",
+          "updated_at": "2026-09-16 16:03:20"
+        },
+        {
+          "fund_code": "000012",
+          "fund_name": "test1",
+          "share_type": "B",
+          "status": "S",
+          "nav": "1.3000",
+          "is_active": true,
+          "created_at": "2026-09-17 14:24:02",
+          "updated_at": "2026-09-17 14:24:02"
+        }
+      ],
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 222
+    },
+    {
+      "case_id": "TC-080",
+      "interface_id": "IF-REST-022",
+      "expected": "status=401；需登录",
+      "timestamp": "2026-09-17T07:28:23.509560+00:00",
+      "actual_status": 401,
+      "actual_body": {
+        "detail": "身份认证信息未提供。"
+      },
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 149
+    },
+    {
+      "case_id": "E2E-001",
+      "case_type": "e2e",
+      "interface_id": "UI-E2E-001",
+      "expected": "登录流程触发，浏览器跳转至登录后页面",
+      "timestamp": "2026-09-17T07:28:23.660845+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 2605
+    },
+    {
+      "case_id": "E2E-002",
+      "case_type": "e2e",
+      "interface_id": "UI-E2E-001",
+      "expected": "用户名为空时阻止提交，前端校验提示请输入用户名",
+      "timestamp": "2026-09-17T07:28:26.266615+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 1900
+    },
+    {
+      "case_id": "E2E-003",
+      "case_type": "e2e",
+      "interface_id": "UI-E2E-001",
+      "expected": "密码为空时阻止提交，前端校验提示请输入密码",
+      "timestamp": "2026-09-17T07:28:28.167800+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 1948
+    },
+    {
+      "case_id": "E2E-004",
+      "case_type": "e2e",
+      "interface_id": "UI-E2E-001",
+      "expected": "登录失败提示用户名或密码错误，不暴露具体字段错误",
+      "timestamp": "2026-09-17T07:28:30.116335+00:00",
+      "passed": true,
+      "timeout": false,
+      "duration_ms": 2119
+    }
+  ],
+  "summary": {
+    "total": 84,
+    "passed": 68,
+    "failed_assertion": 13,
+    "failed_environment": 3
+  }
+}

@@ -1,0 +1,49 @@
+
+{
+  "schema_version": "1.0",
+  "job_id": "job-web-c3e382183000",
+  "automation_rate": {
+    "value": 1.0,
+    "numerator": 9,
+    "denominator": 9,
+    "data_complete": true
+  },
+  "nodes": [
+    {
+      "name": "req_parse",
+      "status": "completed"
+    },
+    {
+      "name": "code_scan",
+      "status": "completed"
+    },
+    {
+      "name": "interface_reconstruct",
+      "status": "completed"
+    },
+    {
+      "name": "code_review",
+      "status": "completed"
+    },
+    {
+      "name": "testcase_generate",
+      "status": "completed"
+    },
+    {
+      "name": "auto_execute",
+      "status": "completed"
+    },
+    {
+      "name": "test_report",
+      "status": "completed"
+    },
+    {
+      "name": "defect_list",
+      "status": "completed"
+    },
+    {
+      "name": "retest_regression",
+      "status": "completed"
+    }
+  ]
+}

@@ -1,0 +1,2946 @@
+
+{
+  "schema_version": "1.0",
+  "job_id": "job-web-c3e382183000",
+  "mappings": [
+    {
+      "requirement_id": "REQ-001",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "POST /api/auth/login/ 接口存在（IF-REST-001），行为证据含 views/auth.py、serializers/auth.py，但请求体参数、Session 创建与 Token 返回实现未提供；需核对 views/auth.py 中登录校验、会话/Token 生成逻辑"
+      }
+    },
+    {
+      "requirement_id": "REQ-002",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "Session 有效期属服务端配置行为，接口签名无法证明；需核对 backend/config/settings.py 或 settings_prod.py 中 SESSION_COOKIE_AGE / SESSION_EXPIRE_AT_BROWSER_CLOSE 等配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-003",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "密码哈希算法属服务端实现，接口签名无法证明；需核对 PASSWORD_HASHERS 配置或自定义 PBKDF2 hasher 实现位置（如 settings.py 或 auth serializer）"
+      }
+    },
+    {
+      "requirement_id": "REQ-004",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "Redis 失败计数属缓存/中间件行为，接口签名无法证明；需核对 CACHES/Redis 配置与 views/auth.py 中失败计数读写代码"
+      }
+    },
+    {
+      "requirement_id": "REQ-005",
+      "status": "missing",
+      "confidence": 0.95,
+      "evidence": {
+        "note": "登录页居中简洁风格属前端 UI 要求，行为证据仅含 backend Python 文件，无前端样式/模板/组件代码可核对"
+      }
+    },
+    {
+      "requirement_id": "REQ-006",
+      "status": "missing",
+      "confidence": 0.95,
+      "evidence": {
+        "note": "密码框显示/隐藏切换属前端 UI 要求，行为证据无前端代码覆盖"
+      }
+    },
+    {
+      "requirement_id": "REQ-007",
+      "status": "missing",
+      "confidence": 0.95,
+      "evidence": {
+        "note": "登录按钮 loading 防重复提交属前端 UI 要求，行为证据无前端代码覆盖"
+      }
+    },
+    {
+      "requirement_id": "REQ-008",
+      "status": "undetermined",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-016",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "GET /api/products/ 接口存在，但分页参数（page_size=20）与分页类配置未提供；需核对 views 中 pagination_class 或 DRF PageNumberPagination 配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-009",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-017",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "POST /api/products/ 接口存在，行为证据含 serializers/product.py、models/product.py，但 fund_code/份额类型/状态默认值与写表逻辑未提供；需核对 serializer validate 与 view perform_create"
+      }
+    },
+    {
+      "requirement_id": "REQ-010",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-017",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "基金代码正则校验属服务端验证行为，接口签名无法证明；需核对 serializers/product.py 中 fund_code 字段 regex 校验或自定义 validate 方法"
+      }
+    },
+    {
+      "requirement_id": "REQ-011",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-017",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "份额类型枚举校验属服务端验证行为；需核对 serializers/product.py 中 share_type 字段 choices 与 validate"
+      }
+    },
+    {
+      "requirement_id": "REQ-012",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-017",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "新增默认启用属服务端默认值；需核对 models/product.py 中 is_active 字段 default 或 serializer default"
+      }
+    },
+    {
+      "requirement_id": "REQ-013",
+      "status": "partial",
+      "confidence": 0.65,
+      "interface_id": "IF-REST-022",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 33,
+          "end_line": 33
+        },
+        "note": "GET /api/products/active/ 接口 summary 描述为'查询启用状态的产品列表'，与需求意图一致；具体 is_active=true 过滤实现仍需核对 view queryset.filter 实现"
+      }
+    },
+    {
+      "requirement_id": "REQ-014",
+      "status": "partial",
+      "confidence": 0.7,
+      "interface_id": "IF-REST-018",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "GET/POST/PUT/PATCH/DELETE /api/products/ 系列接口与 /active/ 均存在，但路径占位符为 {pk} 而非需求规定的 {fund_code}；lookup_field 配置未提供，需核对 view 中 lookup_field='fund_code'"
+      }
+    },
+    {
+      "requirement_id": "REQ-015",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "POST /api/accounts/ 创建账户接口存在，但前端表单字段（投资者名称、证件类型、证件号码、手机号、销售商代码、网点代码）渲染属前端 UI，行为证据无前端代码覆盖"
+      }
+    },
+    {
+      "requirement_id": "REQ-016",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "UUID 自动生成与日期时间格式属服务端字段处理；需核对 serializers/account.py 与 models/account.py 中 ec_app_serial_no/ec_cust_no/transaction_account_id/order_date/order_time 字段定义与生成逻辑"
+      }
+    },
+    {
+      "requirement_id": "REQ-017",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "investor_type/business_code 固定值属服务端默认值；需核对 serializer 或 view 中默认值设置"
+      }
+    },
+    {
+      "requirement_id": "REQ-018",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "POST /api/accounts/ 接口存在，写入 ACCOUNT 表与返回交易账号行为需核对 views 中 perform_create 与 serializers 中 create 方法"
+      }
+    },
+    {
+      "requirement_id": "REQ-019",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "investor_type='1' 固定值校验属服务端业务规则；需核对 serializer validate 或 view 业务校验"
+      }
+    },
+    {
+      "requirement_id": "REQ-020",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "business_code='01' 固定值校验属服务端业务规则；需核对 serializer 或 view"
+      }
+    },
+    {
+      "requirement_id": "REQ-021",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "证件类型枚举（0/4/5/A/B/C）属服务端校验；需核对 id_type 字段 choices 与 validate"
+      }
+    },
+    {
+      "requirement_id": "REQ-022",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "字段长度上限属服务端校验；需核对 serializers/account.py 中各字段 max_length 配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-023",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "order_date/order_time 格式约束属服务端校验；需核对 serializer validate 或自定义 validator"
+      }
+    },
+    {
+      "requirement_id": "REQ-024",
+      "status": "missing",
+      "confidence": 0.95,
+      "evidence": {
+        "note": "证件类型切换 placeholder 动态提示属前端交互，行为证据无前端代码覆盖"
+      }
+    },
+    {
+      "requirement_id": "REQ-025",
+      "status": "missing",
+      "confidence": 0.95,
+      "evidence": {
+        "note": "提交按钮 loading 与开户结果弹窗属前端 UI，行为证据无前端代码覆盖"
+      }
+    },
+    {
+      "requirement_id": "REQ-026",
+      "status": "partial",
+      "confidence": 0.6,
+      "interface_id": "IF-REST-022",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 33,
+          "end_line": 33
+        },
+        "note": "GET /api/products/active/ 接口可用于下拉数据源，summary 匹配启用基金筛选；前端下拉仅展示启用基金的过滤行为未在证据中覆盖"
+      }
+    },
+    {
+      "requirement_id": "REQ-027",
+      "status": "missing",
+      "confidence": 0.9,
+      "evidence": {
+        "note": "份额类型 A/B 下拉选择属前端 UI，行为证据无前端代码覆盖"
+      }
+    },
+    {
+      "requirement_id": "REQ-028",
+      "status": "partial",
+      "confidence": 0.55,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "POST /api/transactions/ 接口存在，application_amount 字段校验与金额格式未在接口签名中体现，需核对 serializers/transaction.py"
+      }
+    },
+    {
+      "requirement_id": "REQ-029",
+      "status": "missing",
+      "confidence": 0.9,
+      "evidence": {
+        "note": "公共字段（资金账号、客户号等）前端自动填充属前端逻辑，行为证据无前端代码覆盖"
+      }
+    },
+    {
+      "requirement_id": "REQ-030",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "POST /api/transactions/ 接口存在，后端校验逻辑需核对 serializers/transaction.py 中 validate 与 view perform_create"
+      }
+    },
+    {
+      "requirement_id": "REQ-031",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "事务双写 ORDER_RECORD 与 SETTLEMENT_RECORD 属服务端事务行为；接口签名无法证明，需核对 views/transactions 中 transaction.atomic 与两表写入代码"
+      }
+    },
+    {
+      "requirement_id": "REQ-032",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "IF-REST-007 仅证明存在创建交易入口；returns 描述为 'unknown'，是否在响应体返回 ec_ap_serial_no 流水号字段及成功消息语义无法确认；需核对 backend/orders/serializers/transaction.py 与 backend/orders/views/auth.py 中对应 view 的 response 结构"
+      }
+    },
+    {
+      "requirement_id": "REQ-033",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "IF-REST-007 body 参数类型为 unknown，无法证明是否将申购请求的 business_code 强制置为 '22'；需核对 backend/orders/serializers/transaction.py 与 backend/orders/views 中业务分支判定逻辑"
+      }
+    },
+    {
+      "requirement_id": "REQ-034",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "参数校验属于服务端行为，IF-REST-007 body 参数未列出 application_amount/application_vol，无法证明 '金额>0 且份额=0' 校验存在；需核对 backend/orders/serializers/transaction.py 的 validate 方法"
+      }
+    },
+    {
+      "requirement_id": "REQ-035",
+      "status": "undetermined",
+      "confidence": 0.35,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "NUMBER(16,2) 是数据库类型约束，IF-REST-007 不暴露模型字段定义；需核对 backend/orders/models/transaction.py 中 application_amount 字段的 max_digits=16, decimal_places=2 配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-036",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "事务一致性是服务端行为，接口签名无法证明 ORDER_RECORD + SETTLEMENT_RECORD 是否使用数据库事务包裹；需核对 backend/orders/views 中 transaction.create 对应的 service/manager 层是否有 @transaction.atomic"
+      }
+    },
+    {
+      "requirement_id": "REQ-037",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "currency_type 默认值 '156' 属服务端默认填充逻辑，IF-REST-007 body 参数类型 unknown；需核对 backend/orders/serializers/transaction.py 中字段默认值及 views 中是否在请求缺省时回填 '156'"
+      }
+    },
+    {
+      "requirement_id": "REQ-038",
+      "status": "undetermined",
+      "confidence": 0.25,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "状态从 pending→submitted 的流转属于状态机逻辑，接口签名无法证明；需核对 backend/orders/models/transaction.py 状态字段定义与 backend/orders/views 中提交时的状态更新点"
+      }
+    },
+    {
+      "requirement_id": "REQ-039",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-022",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 33,
+          "end_line": 33
+        },
+        "note": "IF-REST-022 (GET /api/products/active/) 路径暗示提供启用状态产品列表，但 query 参数与返回字段语义均为 unknown，无法证明下拉框是否仅返回 status='active' 的基金；需核对 backend/orders/views 中 active 视图的 filter 条件"
+      }
+    },
+    {
+      "requirement_id": "REQ-040",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "份额字段在 body 参数中未列出具体名称；需核对 backend/orders/serializers/transaction.py 是否存在转换份额字段及前端约定字段名"
+      }
+    },
+    {
+      "requirement_id": "REQ-041",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "双表写入事务与 target_fund_code 存储逻辑均属服务端行为，IF-REST-007 无法证明；需核对 backend/orders/models/transaction.py 中 target_fund_code 字段是否存在及 view 层事务包裹"
+      }
+    },
+    {
+      "requirement_id": "REQ-042",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "business_code='36' 业务分支判定无法从接口签名得出；需核对 backend/orders/views 中业务类型路由或 serializer 中字段硬编码值"
+      }
+    },
+    {
+      "requirement_id": "REQ-043",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "fund_code/target_fund_code 字段扩展属模型层行为；需核对 backend/orders/models/transaction.py 是否定义 target_fund_code 字段及 nullable 配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-044",
+      "status": "undetermined",
+      "confidence": 0.25,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "转出/转入基金不能相同的校验属服务端业务规则，接口签名无法证明；需核对 backend/orders/serializers/transaction.py validate 方法或 view 层校验逻辑"
+      }
+    },
+    {
+      "requirement_id": "REQ-045",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "IF-REST-010 (GET /api/transactions/query/) query 参数类型为 unknown，无法证明是否支持 ec_cust_no/ec_ap_serial_no/order_date 区间；需核对 backend/orders/serializers/query.py 与 backend/orders/views 中 query 视图参数定义"
+      }
+    },
+    {
+      "requirement_id": "REQ-046",
+      "status": "undetermined",
+      "confidence": 0.35,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "分页每页 20 条属服务端默认配置，IF-REST-010 未暴露 page_size 参数语义；需核对 backend/orders/views 中 query 视图的 pagination_class 与 page_size 设置"
+      }
+    },
+    {
+      "requirement_id": "REQ-047",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "返回字段集合属响应结构，IF-REST-010 返回描述为 unknown；需核对 backend/orders/serializers/query.py 输出字段是否覆盖基金代码/业务代码/金额/份额/状态等"
+      }
+    },
+    {
+      "requirement_id": "REQ-048",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "精确匹配 vs 模糊搜索属查询语义差异，接口签名无法证明；需核对 backend/orders/views 中 query 视图 ORM 查询是否使用 exact/iexact 而非 icontains"
+      }
+    },
+    {
+      "requirement_id": "REQ-049",
+      "status": "undetermined",
+      "confidence": 0.35,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "日期起止范围参数 (YYYYMMDD) 需在 serializer 中定义，IF-REST-010 未暴露具体参数；需核对 backend/orders/serializers/query.py 是否有 start_date/end_date 字段及格式校验"
+      }
+    },
+    {
+      "requirement_id": "REQ-050",
+      "status": "undetermined",
+      "confidence": 0.35,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "默认 page_size=20 与翻页参数 (page) 属服务端配置；需核对 backend/orders/views 中 pagination class 配置及 REST_FRAMEWORK 设置"
+      }
+    },
+    {
+      "requirement_id": "REQ-051",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "展示字段集需与下单字段一致，需对比 backend/orders/serializers/transaction.py 与 backend/orders/serializers/query.py 的输出字段定义；接口层无法证明"
+      }
+    },
+    {
+      "requirement_id": "REQ-052",
+      "status": "undetermined",
+      "confidence": 0.45,
+      "interface_id": "IF-REST-012",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 43,
+          "end_line": 43
+        },
+        "note": "IF-REST-012 (POST /api/reconciliation/run/) 路径与 summary '触发对账任务运行接口' 对应触发入口存在，但 body 参数与返回语义 unknown，无法证明点击按钮即触发及调度逻辑；需核对 backend/orders/views 中 run 视图实现"
+      }
+    },
+    {
+      "requirement_id": "REQ-053",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-012",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 43,
+          "end_line": 43
+        },
+        "note": "5 字段匹配逻辑（流水号+金额+份额+时间+账号）及 ±0.01 容差属对账算法，接口签名无法证明；需核对 backend/orders/models/reconciliation.py 及 backend/orders/views 中 run 视图对应的 service/manager"
+      }
+    },
+    {
+      "requirement_id": "REQ-054",
+      "status": "undetermined",
+      "confidence": 0.35,
+      "interface_id": "IF-REST-013",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 44,
+          "end_line": 44
+        },
+        "note": "IF-REST-013 (GET /api/reconciliation/) 提供对账记录列表入口，但返回字段未列匹配总数/差异总数/各差异类型数量；需核对 backend/orders/serializers/reconciliation.py 与 backend/orders/models/reconciliation.py 字段定义"
+      }
+    },
+    {
+      "requirement_id": "REQ-055",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-013",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 44,
+          "end_line": 44
+        },
+        "note": "摘要展示与差异明细展开属响应结构与前端交互，IF-REST-013 返回语义 unknown；需核对 backend/orders/serializers/reconciliation.py 是否嵌套差异明细字段"
+      }
+    },
+    {
+      "requirement_id": "REQ-056",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-012",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 43,
+          "end_line": 43
+        },
+        "note": "匹配字段集合属对账算法内部定义，接口签名无法证明；需核对 backend/orders/models/reconciliation.py 与对账 service 中的匹配键构造逻辑"
+      }
+    },
+    {
+      "requirement_id": "REQ-057",
+      "status": "undetermined",
+      "confidence": 0.25,
+      "interface_id": "IF-REST-015",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 45,
+          "end_line": 45
+        },
+        "note": "金额容差可配置（默认 0.01）属配置项，IF-REST-015 (POST /api/reconciliation/schedule/) 仅证明调度计划入口；需核对 backend/config/settings.py 与 backend/orders/models/reconciliation.py 是否暴露 tolerance 配置项及默认值"
+      }
+    },
+    {
+      "requirement_id": "REQ-058",
+      "status": "undetermined",
+      "confidence": 0.25,
+      "interface_id": "IF-REST-013",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 44,
+          "end_line": 44
+        },
+        "note": "差异类型枚举 (amount_mismatch/vol_mismatch/missing_order/missing_settlement) 属领域定义；需核对 backend/orders/models/reconciliation.py 中 diff_type 字段 choices 或对账 service 中差异分类逻辑"
+      }
+    },
+    {
+      "requirement_id": "REQ-059",
+      "status": "undetermined",
+      "confidence": 0.25,
+      "interface_id": "IF-REST-013",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 44,
+          "end_line": 44
+        },
+        "note": "RECONCILIATION_RESULT 表写入与差异 JSON 存储属持久化行为；需核对 backend/orders/models/reconciliation.py 模型是否对应此表及 JSONField 字段定义"
+      }
+    },
+    {
+      "requirement_id": "REQ-060",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-013",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 44,
+          "end_line": 44
+        },
+        "note": "差异明细 JSON 字段结构属序列化器输出；需核对 backend/orders/serializers/reconciliation.py 中嵌套差异对象的字段定义（diff_type/ec_ap_serial_no/order_amount/settlement_amount/diff_value/fund_code/business_code）"
+      }
+    },
+    {
+      "requirement_id": "REQ-061",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "@transaction.atomic 是 Django 服务端装饰器，接口签名无法证明；需核对 backend/orders/views 中 transaction create 视图函数体或对应 service 层是否使用 transaction.atomic 包裹 ORDER_RECORD + SETTLEMENT_RECORD 双写"
+      }
+    },
+    {
+      "requirement_id": "REQ-062",
+      "status": "undetermined",
+      "confidence": 0.25,
+      "interface_id": "IF-REST-015",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 45,
+          "end_line": 45
+        },
+        "note": "金额/份额容差可配置（默认 ±0.01）属配置层行为；需核对 backend/config/settings.py、backend/orders/models/reconciliation.py 或 settings_prod.py 中容差配置项及默认值"
+      }
+    },
+    {
+      "requirement_id": "REQ-063",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "接口 IF-REST-007 为创建交易接口，但流水号唯一约束是否在 backend/orders/models/transaction.py 的 Meta.unique_together/unique 字段中定义、是否在 serializer/validate 中拦截，行为证据仅列出文件路径未提供内容，需核对 models/transaction.py 与 serializers/transaction.py"
+      }
+    },
+    {
+      "requirement_id": "REQ-064",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-017",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "接口 IF-REST-017 为创建产品接口，但日志格式（时间戳 [INFO] orders.views.product + fund_code/fund_name JSON）需在 views/product.py 中实现；行为证据列表中未提供 views/product.py 文件，无法确认日志格式与 logger 名称是否一致"
+      }
+    },
+    {
+      "requirement_id": "REQ-065",
+      "status": "undetermined",
+      "confidence": 0.1,
+      "evidence": {
+        "note": "性能指标（≤2s 响应、≤30s 对账）属非功能性需求，需压测报告、SLA 配置或中间件限流/超时配置；现有行为证据仅列出项目文件，无性能基准或 settings 中 CELERY_TASK_TIME_LIMIT/MIDDLEWARE 超时配置可考"
+      }
+    },
+    {
+      "requirement_id": "REQ-066",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "接口 IF-REST-007 路径暗示交易写入，但双表事务原子性需在 views/transaction.py 使用 transaction.atomic() 包裹两张表写入；行为证据未提供视图代码，无法确认是否启用事务/异常回滚"
+      }
+    },
+    {
+      "requirement_id": "REQ-067",
+      "status": "undetermined",
+      "confidence": 0.1,
+      "evidence": {
+        "note": "7×24 与 HTTPS 需在 backend/config/settings.py 与 settings_prod.py 中配置 SECURE_SSL_REDIRECT、ALLOWED_HOSTS 与部署层证书；证据仅列出配置文件路径，未提供 SECURE_*/SESSION_COOKIE_SECURE 等配置值"
+      }
+    },
+    {
+      "requirement_id": "REQ-068",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "存在登录 IF-REST-001/002/003 接口，但密码哈希（是否使用 Django 默认 PBKDF2/argon2）与 Session 有效期需核对 serializers/auth.py 与 settings.py 中 PASSWORD_HASHERS/SESSION_COOKIE_AGE；行为证据未提供视图/配置内容"
+      }
+    },
+    {
+      "requirement_id": "REQ-069",
+      "status": "undetermined",
+      "confidence": 0.1,
+      "evidence": {
+        "note": "管理员角色权限范围需在 Django Groups/Permissions、REST_FRAMEWORK permission_classes 或自定义装饰器中声明；现有接口清单未暴露 RBAC 配置，行为证据中无 accounts/views 或 permissions.py"
+      }
+    },
+    {
+      "requirement_id": "REQ-070",
+      "status": "undetermined",
+      "confidence": 0.1,
+      "evidence": {
+        "note": "操作员角色权限同上，需在权限层声明开户/交易/查询权限；接口清单与行为证据均无 RBAC 配置文件可考"
+      }
+    },
+    {
+      "requirement_id": "REQ-071",
+      "status": "undetermined",
+      "confidence": 0.1,
+      "evidence": {
+        "note": "审计员只读角色同上，需在权限层限制为 GET-only；接口清单中部分资源（POST /api/transactions/、/api/reconciliation/run/）需被审计员拒绝，需核对 permission_classes 实现"
+      }
+    },
+    {
+      "requirement_id": "REQ-072",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "存在 POST /api/auth/login/ 接口，但 params/returns 均为 unknown（无 username/password 字段定义、返回的会话凭证形态未知），且认证方式（Token/Session/JWT）从接口签名无法判定，需核对 serializers/auth.py"
+      }
+    },
+    {
+      "requirement_id": "REQ-073",
+      "status": "partial",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-017",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "存在产品 CRUD 接口族（IF-REST-016~022），但是否限制仅管理员可访问需核对 permission_classes/IsAdminUser 配置；行为证据未包含 views/product.py"
+      }
+    },
+    {
+      "requirement_id": "REQ-074",
+      "status": "partial",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "存在 POST /api/accounts/ 创建账户接口，但个人/机构/产品客户三种类型是否通过 body 字段区分、是否有独立端点，从签名无法判定（body params 为 unknown）"
+      }
+    },
+    {
+      "requirement_id": "REQ-075",
+      "status": "partial",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "同上 REQ-074，机构投资者开户端点与个人投资者是否共用 POST /api/accounts/、是否通过 investor_type 字段区分无法确认"
+      }
+    },
+    {
+      "requirement_id": "REQ-076",
+      "status": "partial",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "产品客户开户端点同上，无法确认是否存在专用 endpoint 或共用 /api/accounts/，需核对 serializers/account.py"
+      }
+    },
+    {
+      "requirement_id": "REQ-077",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "增开交易账号是否通过 POST /api/accounts/ 携带客户主键实现，或存在专门子端点（如 /api/accounts/{pk}/trading-accounts/），接口清单未暴露；需核对 views/account.py"
+      }
+    },
+    {
+      "requirement_id": "REQ-078",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-006",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 31,
+          "end_line": 31
+        },
+        "note": "存在 POST /api/accounts/{pk}/close/ 关闭账户接口，路径与销户需求匹配；但账户状态机（销户前余额检查、关联交易阻断）从签名无法判定"
+      }
+    },
+    {
+      "requirement_id": "REQ-079",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-005",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 30,
+          "end_line": 30
+        },
+        "note": "存在 PUT /api/accounts/{pk}/update/ 更新接口；但修改客户资料是否走此端点或独立 /api/customers/{pk}/ 端点、字段范围是否受角色限制，需核对视图"
+      }
+    },
+    {
+      "requirement_id": "REQ-080",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "存在 POST /api/transactions/ 创建交易接口，但订单类型（申购/赎回/快取/转换）是否通过 body 字段（如 order_type）区分、各自业务校验与流水号生成逻辑从签名无法判定"
+      }
+    },
+    {
+      "requirement_id": "REQ-081",
+      "status": "partial",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "同上，赎回下单是否与申购共用端点或独立端点、是否带赎回份额校验无法确认"
+      }
+    },
+    {
+      "requirement_id": "REQ-082",
+      "status": "partial",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "同上，快取下单端点与业务规则无法从接口签名判定；接口清单中无 /api/transactions/quick/ 专用端点"
+      }
+    },
+    {
+      "requirement_id": "REQ-083",
+      "status": "partial",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "基金转换是否通过单接口或双接口实现（转出+转入两笔流水）无法从 POST /api/transactions/ 单一端点判定"
+      }
+    },
+    {
+      "requirement_id": "REQ-084",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-008",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 35,
+          "end_line": 35
+        },
+        "note": "存在 POST /api/transactions/{serial_no}/cancel/ 按流水号撤销接口，路径与撤单需求匹配；订单状态可撤销性校验（已成交/已清算不可撤）需核对 views/transaction.py"
+      }
+    },
+    {
+      "requirement_id": "REQ-085",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "存在 GET /api/transactions/query/ 查询交易列表接口；但 query 过滤字段（管理员/操作员/审计员可见范围差异、导出权限）从签名 unknown 参数无法判定"
+      }
+    },
+    {
+      "requirement_id": "REQ-086",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-011",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 40,
+          "end_line": 40
+        },
+        "note": "存在 GET /api/transactions/export/ 导出接口，但导出格式（CSV/Excel）、异步任务还是同步流式返回需核对视图实现"
+      }
+    },
+    {
+      "requirement_id": "REQ-087",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-012",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 43,
+          "end_line": 43
+        },
+        "note": "存在 POST /api/reconciliation/run/ 手动触发对账接口，路径匹配；但是否限制仅管理员调用、任务时长上限（≤30s 见 REQ-065）需核对 permission_classes 与任务实现"
+      }
+    },
+    {
+      "requirement_id": "REQ-088",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-013",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 44,
+          "end_line": 44
+        },
+        "note": "存在 GET /api/reconciliation/ 查询对账记录列表接口；但差异报告字段结构、面向三类角色的可见性范围需核对 serializers/reconciliation.py"
+      }
+    },
+    {
+      "requirement_id": "REQ-089",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-015",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 45,
+          "end_line": 45
+        },
+        "note": "存在 IF-REST-014/015 调度计划读写端点，但定时执行需 Celery beat/crontab 或 django-cron 配置；行为证据未提供 celery.py 或定时任务注册文件，且需求标注『当前状态：待实现』，无法判定实际是否启用"
+      }
+    },
+    {
+      "requirement_id": "REQ-090",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "接口 IF-REST-001 路径存在但 returns 描述为 unknown，无法确认 HTTP 401 与具体错误文案；需核对 views/auth.py 中认证失败返回结构"
+      }
+    },
+    {
+      "requirement_id": "REQ-091",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "空输入校验主要为前端责任，后端是否在 serializer 中拒绝空 username/password 需核对 serializers/auth.py；接口签名 params 为 unknown"
+      }
+    },
+    {
+      "requirement_id": "REQ-092",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "Token 24h 过期需在 settings.py 中配置 TOKEN_LIFETIME 或自定义过期策略，且需 401 拦截器（middleware/decoration）；行为证据未提供 settings.py 实际配置或中间件实现"
+      }
+    },
+    {
+      "requirement_id": "REQ-093",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "5 次失败锁定 15 分钟需在视图/认证后端中维护失败计数与锁定时间戳；接口签名与现有证据文件不足以确认存在此逻辑（django-axes 或自定义）"
+      }
+    },
+    {
+      "requirement_id": "REQ-094",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-017",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "基金代码 6 位数字校验需在 serializers/product.py 的 validate_fund_code 实现；行为证据未提供 product serializer/view 内容"
+      }
+    },
+    {
+      "requirement_id": "REQ-095",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-017",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "重复基金代码应触发数据库唯一约束并返回 400，需核对 models/product.py 是否在 fund_code 字段定义 unique=True、serializer 异常映射是否返回 400 而非 500"
+      }
+    },
+    {
+      "requirement_id": "REQ-096",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-017",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "基金名称必填校验需在 serializer 中设置 required=True 或 allow_blank=False；行为证据未提供 serializers/product.py 内容"
+      }
+    },
+    {
+      "requirement_id": "REQ-097",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-020",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "停用被引用基金弹出警告需在 views/product.py 中检查关联交易记录数；接口 PATCH /api/products/{pk}/ 不暴露预检/警告返回机制，需核对序列化器与视图实现"
+      }
+    },
+    {
+      "requirement_id": "REQ-098",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "开户必填字段校验需在 serializers/account.py 中实现；接口 body params 为 unknown，无法确认字段集合与 required 标记"
+      }
+    },
+    {
+      "requirement_id": "REQ-099",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "接口 IF-REST-004 (POST /api/accounts/) 是最相关的开户端点，但 body params 全部为 unknown，无法验证 id_type 字段是否进行 [0,4,5,A,B,C] 取值校验及对应错误提示；待核对 backend/orders/serializers/account.py 中 id_type 校验逻辑"
+      }
+    },
+    {
+      "requirement_id": "REQ-100",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "接口 body 为 unknown，18 位身份证校验码算法及'身份证号格式错误'提示属于服务端校验逻辑，无直接代码证据；待核对 serializers/account.py 中 id_no 校验"
+      }
+    },
+    {
+      "requirement_id": "REQ-101",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "手机号非数字/长度≠11 的校验及提示属于服务端逻辑，接口签名无法证明；待核对 serializers/account.py 中 cellphone 字段校验"
+      }
+    },
+    {
+      "requirement_id": "REQ-102",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "字段长度上限（如姓名>120 字符）及'字段长度超限'提示属于服务端校验，无字段级证据；待核对 serializers/account.py 与对应 model CharField max_length 配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-103",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-004",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 29,
+          "end_line": 29
+        },
+        "note": "(id_type, id_no) 唯一约束及 HTTP 400 + '该证件号已开户' 提示属服务端/模型层行为，接口签名无法证明；待核对 backend/orders/models/account.py 中 unique_together 与 IntegrityError 处理"
+      }
+    },
+    {
+      "requirement_id": "REQ-104",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "交易金额>0 校验及'金额必须大于 0'提示属服务端逻辑，body 为 unknown 无字段证据；待核对 serializers/transaction.py 与 views 校验"
+      }
+    },
+    {
+      "requirement_id": "REQ-105",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "金额小数位≤2 的格式校验属服务端逻辑；待核对 serializers/transaction.py 中 Decimal places/quantize 校验"
+      }
+    },
+    {
+      "requirement_id": "REQ-106",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "金额上限 99999999999999.99 的阈值属服务端配置/校验；待核对 transaction.py serializer 与全局 settings 配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-107",
+      "status": "undetermined",
+      "confidence": 0.25,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "基金代码在 product 表存在性及 is_active=true 校验属服务端逻辑；待核对 views/transaction.py 中基金代码查询与 product.py 模型 is_active 字段"
+      }
+    },
+    {
+      "requirement_id": "REQ-108",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "fund_code/share_type 必填校验及字段标红属前端+后端联动，接口签名无证据；待核对 serializers/transaction.py 中 required=True 与错误码"
+      }
+    },
+    {
+      "requirement_id": "REQ-109",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-007",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 34,
+          "end_line": 34
+        },
+        "note": "事务回滚、错误日志、'系统异常，请重试'提示属事务与日志层行为，无 @transaction.atomic 等直接证据；待核对 views/transaction.py 是否使用 transaction.atomic 及 logger 配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-110",
+      "status": "missing",
+      "confidence": 0.7,
+      "evidence": {
+        "note": "输入接口清单中无任何基金转换端点（如 /api/conversions/ 或 /api/transactions/convert/），缺失对应实现入口"
+      }
+    },
+    {
+      "requirement_id": "REQ-111",
+      "status": "missing",
+      "confidence": 0.7,
+      "evidence": {
+        "note": "无基金转换接口，无法验证转入基金必填校验"
+      }
+    },
+    {
+      "requirement_id": "REQ-112",
+      "status": "missing",
+      "confidence": 0.7,
+      "evidence": {
+        "note": "无基金转换接口，无法验证份额>0 校验"
+      }
+    },
+    {
+      "requirement_id": "REQ-113",
+      "status": "missing",
+      "confidence": 0.7,
+      "evidence": {
+        "note": "无基金转换接口，无法验证转出/转入基金 is_active 校验"
+      }
+    },
+    {
+      "requirement_id": "REQ-114",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "GET /api/transactions/query/ 接口存在但 query params 全部为 unknown，无法判断空条件时是返回全量还是提示'请至少输入一个查询条件'；待核对 views/transaction.py query 逻辑"
+      }
+    },
+    {
+      "requirement_id": "REQ-115",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "起始>结束日期校验属 query 参数服务端校验；待核对 serializers/query.py 与 views 中日期区间比较"
+      }
+    },
+    {
+      "requirement_id": "REQ-116",
+      "status": "undetermined",
+      "confidence": 0.3,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "YYYYMMDD 日期格式校验属服务端逻辑；待核对 serializers/query.py 中日期字段 format 校验"
+      }
+    },
+    {
+      "requirement_id": "REQ-117",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-010",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 39,
+          "end_line": 39
+        },
+        "note": "返回空列表为 REST 默认行为，但'无匹配记录'用户提示文案是否由接口返回或前端生成未知；待核对 views/transaction.py 与前端交互"
+      }
+    },
+    {
+      "requirement_id": "REQ-118",
+      "status": "undetermined",
+      "confidence": 0.25,
+      "interface_id": "IF-REST-012",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 43,
+          "end_line": 43
+        },
+        "note": "对账前空数据校验属服务端业务逻辑；待核对 views/reconciliation.py 与 services 中 run 前置检查"
+      }
+    },
+    {
+      "requirement_id": "REQ-119",
+      "status": "undetermined",
+      "confidence": 0.2,
+      "interface_id": "IF-REST-012",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 43,
+          "end_line": 43
+        },
+        "note": "10万条阈值、异步执行、进度提示属异步任务（Celery/RQ）行为，接口签名无法证明；待核对是否使用 celery task 及 settings 中 broker 配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-120",
+      "status": "undetermined",
+      "confidence": 0.25,
+      "interface_id": "IF-REST-012",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 43,
+          "end_line": 43
+        },
+        "note": "DB 连接失败中止与日志记录属异常处理逻辑；待核对 views/reconciliation.py 中 except DatabaseError 处理与 logging 配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-121",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-001",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 21,
+          "end_line": 21
+        },
+        "note": "POST /api/auth/login/ 接口存在，路径与方法匹配，但 body params (username/password) 与返回 {token, user_info} 均为 unknown，且 Session/Token 有效期策略属服务端配置；待核对 serializers/auth.py、views/auth.py 与 settings 中 SESSION_COOKIE_AGE/JWT 配置"
+      }
+    },
+    {
+      "requirement_id": "REQ-122",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-002",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 22,
+          "end_line": 22
+        },
+        "note": "POST /api/auth/logout/ 接口存在，但返回 message 字段未知，Token/Session 失效行为无证据；待核对 views/auth.py logout 实现"
+      }
+    },
+    {
+      "requirement_id": "REQ-123",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "interface_id": "IF-REST-016",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "GET /api/products/ 接口存在，?page=1 分页参数位置正确，但响应 {count, results[]} 格式与分页类（PageNumberPagination）配置待确认；待核对 settings 中 DEFAULT_PAGINATION_CLASS"
+      }
+    },
+    {
+      "requirement_id": "REQ-124",
+      "status": "undetermined",
+      "confidence": 0.35,
+      "interface_id": "IF-REST-017",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "POST /api/products/ 接口存在，但 body 字段 (fund_code, fund_name, share_type, is_active) 与响应结构均为 unknown；待核对 serializers/product.py 字段定义"
+      }
+    },
+    {
+      "requirement_id": "REQ-125",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-018",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "GET /api/products/{pk}/ 接口存在但 path param 名称为 pk（主键），需求使用 fund_code 作为路径参数；若基金代码即为主键则匹配，否则需额外查询逻辑；待核对 product model 主键字段名"
+      }
+    },
+    {
+      "requirement_id": "REQ-126",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-019",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "PUT /api/products/{pk}/ 存在，pk 与 fund_code 的映射关系同 REQ-125；body 全量字段 unknown，无法确认是否覆盖所有必填字段"
+      }
+    },
+    {
+      "requirement_id": "REQ-127",
+      "status": "partial",
+      "confidence": 0.5,
+      "interface_id": "IF-REST-021",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 17,
+          "end_line": 17
+        },
+        "note": "DELETE /api/products/{pk}/ 接口存在，pk vs fund_code 同上；返回 message 文案 unknown；删除是否级联/软删除需核对 model"
+      }
+    },
+    {
+      "requirement_id": "REQ-128",
+      "status": "undetermined",
+      "confidence": 0.45,
+      "interface_id": "IF-REST-022",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/views/product.py",
+          "start_line": 33,
+          "end_line": 33
+        },
+        "note": "GET /api/products/active/ 接口存在，但响应是否严格为 [{fund_code, fund_name}] 数组（非分页对象）unknown；待核对 active 视图是否绕过分页"
+      }
+    },
+    {
+      "requirement_id": "REQ-129",
+      "status": "missing",
+      "confidence": 0.75,
+      "evidence": {
+        "note": "需求要求 POST /api/accounts/personal/，但接口清单中仅有通用 POST /api/accounts/ (IF-REST-004)，未扫描到 personal 子路径；personal/institution 端点缺失"
+      }
+    },
+    {
+      "requirement_id": "REQ-130",
+      "status": "missing",
+      "confidence": 0.75,
+      "evidence": {
+        "note": "需求要求 POST /api/accounts/institution/，接口清单中无对应路径，仅有 IF-REST-004 通用开户；机构开户专用端点缺失"
+      }
+    },
+    {
+      "requirement_id": "REQ-131",
+      "status": "missing",
+      "confidence": 0.85,
+      "evidence": {
+        "note": "需求要求 POST /api/accounts/product/，接口清单中仅有 IF-REST-004 POST /api/accounts/，无 product/ 子路径，无对应实现证据"
+      }
+    },
+    {
+      "requirement_id": "REQ-132",
+      "status": "missing",
+      "confidence": 0.9,
+      "evidence": {
+        "note": "需求要求 POST /api/accounts/add-transaction/，接口清单中无任何 add-transaction 相关端点"
+      }
+    },
+    {
+      "requirement_id": "REQ-133",
+      "status": "missing",
+      "confidence": 0.75,
+      "evidence": {
+        "note": "需求要求 POST /api/accounts/close/（body 含 account_id、close_type），仅有 IF-REST-006 POST /api/accounts/{pk}/close/，路径与参数契约（pk 在 path vs account_id 在 body）不一致"
+      }
+    },
+    {
+      "requirement_id": "REQ-134",
+      "status": "missing",
+      "confidence": 0.75,
+      "evidence": {
+        "note": "需求要求 PUT /api/accounts/{id}/，仅有 IF-REST-005 PUT /api/accounts/{pk}/update/，路径结构不同且行为证据未提供"
+      }
+    },
+    {
+      "requirement_id": "REQ-135",
+      "status": "missing",
+      "confidence": 0.9,
+      "evidence": {
+        "note": "需求要求 POST /api/orders/purchase/，接口清单中无 /api/orders/ 命名空间下的任何端点，仅有 IF-REST-007 POST /api/transactions/"
+      }
+    },
+    {
+      "requirement_id": "REQ-136",
+      "status": "missing",
+      "confidence": 0.9,
+      "evidence": {
+        "note": "需求要求 POST /api/orders/redeem/，接口清单中无对应端点"
+      }
+    },
+    {
+      "requirement_id": "REQ-137",
+      "status": "missing",
+      "confidence": 0.9,
+      "evidence": {
+        "note": "需求要求 POST /api/orders/fast-redeem/，接口清单中无对应端点"
+      }
+    },
+    {
+      "requirement_id": "REQ-138",
+      "status": "missing",
+      "confidence": 0.9,
+      "evidence": {
+        "note": "需求要求 POST /api/orders/convert/，接口清单中无对应端点"
+      }
+    },
+    {
+      "requirement_id": "REQ-139",
+      "status": "missing",
+      "confidence": 0.75,
+      "evidence": {
+        "note": "需求要求 POST /api/orders/cancel/（body 含 ref_ec_ap_serial_no），仅有 IF-REST-008 POST /api/transactions/{serial_no}/cancel/，路径与参数契约（body vs path）不一致"
+      }
+    },
+    {
+      "requirement_id": "REQ-140",
+      "status": "missing",
+      "confidence": 0.8,
+      "evidence": {
+        "note": "需求要求 GET /api/orders/，仅有 IF-REST-010 GET /api/transactions/query/，路径与查询参数（cust_no/serial_no/start_date/end_date/page）契约均未确认"
+      }
+    },
+    {
+      "requirement_id": "REQ-141",
+      "status": "missing",
+      "confidence": 0.8,
+      "evidence": {
+        "note": "需求要求 GET /api/orders/export/，仅有 IF-REST-011 GET /api/transactions/export/，路径不同且 format 等查询参数语义未确认"
+      }
+    },
+    {
+      "requirement_id": "REQ-142",
+      "status": "undetermined",
+      "confidence": 0.65,
+      "interface_id": "IF-REST-012",
+      "evidence": {
+        "code_location": {
+          "repo": "qorder_autotest",
+          "file": "backend/orders/urls.py",
+          "start_line": 43,
+          "end_line": 43
+        },
+        "note": "路径 POST /api/reconciliation/run/ 与 IF-REST-012 匹配，但 body 字段 trigger_type=\"manual\" 与 recon_id/summary 响应均标记为 unknown，需核对 views/reconciliation.py 与 serializers/reconciliation.py"
+      }
+    },
+    {
+      "requirement_id": "REQ-143",
+      "status": "missing",
+      "confidence": 0.85,
+      "evidence": {
+        "note": "需求要求 GET /api/reconciliation/results/，接口清单中仅有 IF-REST-013 GET /api/reconciliation/，无 results/ 子路径"
+      }
+    },
+    {
+      "requirement_id": "REQ-144",
+      "status": "missing",
+      "confidence": 0.9,
+      "evidence": {
+        "note": "需求要求 GET /api/reconciliation/{id}/details/，接口清单中无对应端点"
+      }
+    },
+    {
+      "requirement_id": "REQ-145",
+      "status": "missing",
+      "confidence": 0.9,
+      "evidence": {
+        "note": "需求要求 GET /api/reconciliation/{id}/export/，接口清单中无对应端点"
+      }
+    },
+    {
+      "requirement_id": "REQ-146",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "evidence": {
+        "note": "性能指标类需求（单接口 ≤2s/95%），接口签名无法证明响应时间，需核对 gunicorn 配置、压测报告与中间件性能日志（db_queries.log）"
+      }
+    },
+    {
+      "requirement_id": "REQ-147",
+      "status": "undetermined",
+      "confidence": 0.35,
+      "evidence": {
+        "note": "对账任务 ≤30s 的执行时间约束，IF-REST-012 仅证明触发入口，需核对 reconciliation 任务实现、批量处理逻辑与 10 万条数据基准测试"
+      }
+    },
+    {
+      "requirement_id": "REQ-148",
+      "status": "undetermined",
+      "confidence": 0.35,
+      "evidence": {
+        "note": "并发用户数 ≤50 约束，需核对 gunicorn workers/threads 配置与压测报告，输入中未提供"
+      }
+    },
+    {
+      "requirement_id": "REQ-149",
+      "status": "undetermined",
+      "confidence": 0.4,
+      "evidence": {
+        "note": "数据库查询索引优化要求，需核对 models/* 中的 db_index/Index、迁移文件及数据库设计文档，输入未提供"
+      }
+    },
+    {
+      "requirement_id": "REQ-150",
+      "status": "undetermined",
+      "confidence": 0.5,
+      "evidence": {
+        "note": "日志文件配置涉及 django.log/orders.log/gunicorn_access.log/gunicorn_error.log/db_queries.log，settings.py 已在 evidence 列表但内容未提供，需核对 LOGGING 配置段与 gunicorn 启动参数"
+      }
+    }
+  ],
+  "risks": [
+    {
+      "requirement_id": "REQ-013",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：GET /api/products/active/ 接口 summary 描述为'查询启用状态的产品列表'，与需求意图一致；具体 is_active=true 过滤实现仍需核对 view queryset.filter 实现",
+      "interface_id": "IF-REST-022"
+    },
+    {
+      "requirement_id": "REQ-014",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：GET/POST/PUT/PATCH/DELETE /api/products/ 系列接口与 /active/ 均存在，但路径占位符为 {pk} 而非需求规定的 {fund_code}；lookup_field 配置未提供，需核对 view 中 lookup_field='fund_code'",
+      "interface_id": "IF-REST-018"
+    },
+    {
+      "requirement_id": "REQ-015",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：POST /api/accounts/ 创建账户接口存在，但前端表单字段（投资者名称、证件类型、证件号码、手机号、销售商代码、网点代码）渲染属前端 UI，行为证据无前端代码覆盖",
+      "interface_id": "IF-REST-004"
+    },
+    {
+      "requirement_id": "REQ-026",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：GET /api/products/active/ 接口可用于下拉数据源，summary 匹配启用基金筛选；前端下拉仅展示启用基金的过滤行为未在证据中覆盖",
+      "interface_id": "IF-REST-022"
+    },
+    {
+      "requirement_id": "REQ-028",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：POST /api/transactions/ 接口存在，application_amount 字段校验与金额格式未在接口签名中体现，需核对 serializers/transaction.py",
+      "interface_id": "IF-REST-007"
+    },
+    {
+      "requirement_id": "REQ-072",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在 POST /api/auth/login/ 接口，但 params/returns 均为 unknown（无 username/password 字段定义、返回的会话凭证形态未知），且认证方式（Token/Session/JWT）从接口签名无法判定，需核对 serializers/auth.py",
+      "interface_id": "IF-REST-001"
+    },
+    {
+      "requirement_id": "REQ-073",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在产品 CRUD 接口族（IF-REST-016~022），但是否限制仅管理员可访问需核对 permission_classes/IsAdminUser 配置；行为证据未包含 views/product.py",
+      "interface_id": "IF-REST-017"
+    },
+    {
+      "requirement_id": "REQ-074",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在 POST /api/accounts/ 创建账户接口，但个人/机构/产品客户三种类型是否通过 body 字段区分、是否有独立端点，从签名无法判定（body params 为 unknown）",
+      "interface_id": "IF-REST-004"
+    },
+    {
+      "requirement_id": "REQ-075",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：同上 REQ-074，机构投资者开户端点与个人投资者是否共用 POST /api/accounts/、是否通过 investor_type 字段区分无法确认",
+      "interface_id": "IF-REST-004"
+    },
+    {
+      "requirement_id": "REQ-076",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：产品客户开户端点同上，无法确认是否存在专用 endpoint 或共用 /api/accounts/，需核对 serializers/account.py",
+      "interface_id": "IF-REST-004"
+    },
+    {
+      "requirement_id": "REQ-078",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在 POST /api/accounts/{pk}/close/ 关闭账户接口，路径与销户需求匹配；但账户状态机（销户前余额检查、关联交易阻断）从签名无法判定",
+      "interface_id": "IF-REST-006"
+    },
+    {
+      "requirement_id": "REQ-079",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在 PUT /api/accounts/{pk}/update/ 更新接口；但修改客户资料是否走此端点或独立 /api/customers/{pk}/ 端点、字段范围是否受角色限制，需核对视图",
+      "interface_id": "IF-REST-005"
+    },
+    {
+      "requirement_id": "REQ-080",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在 POST /api/transactions/ 创建交易接口，但订单类型（申购/赎回/快取/转换）是否通过 body 字段（如 order_type）区分、各自业务校验与流水号生成逻辑从签名无法判定",
+      "interface_id": "IF-REST-007"
+    },
+    {
+      "requirement_id": "REQ-081",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：同上，赎回下单是否与申购共用端点或独立端点、是否带赎回份额校验无法确认",
+      "interface_id": "IF-REST-007"
+    },
+    {
+      "requirement_id": "REQ-082",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：同上，快取下单端点与业务规则无法从接口签名判定；接口清单中无 /api/transactions/quick/ 专用端点",
+      "interface_id": "IF-REST-007"
+    },
+    {
+      "requirement_id": "REQ-083",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：基金转换是否通过单接口或双接口实现（转出+转入两笔流水）无法从 POST /api/transactions/ 单一端点判定",
+      "interface_id": "IF-REST-007"
+    },
+    {
+      "requirement_id": "REQ-084",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在 POST /api/transactions/{serial_no}/cancel/ 按流水号撤销接口，路径与撤单需求匹配；订单状态可撤销性校验（已成交/已清算不可撤）需核对 views/transaction.py",
+      "interface_id": "IF-REST-008"
+    },
+    {
+      "requirement_id": "REQ-085",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在 GET /api/transactions/query/ 查询交易列表接口；但 query 过滤字段（管理员/操作员/审计员可见范围差异、导出权限）从签名 unknown 参数无法判定",
+      "interface_id": "IF-REST-010"
+    },
+    {
+      "requirement_id": "REQ-086",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在 GET /api/transactions/export/ 导出接口，但导出格式（CSV/Excel）、异步任务还是同步流式返回需核对视图实现",
+      "interface_id": "IF-REST-011"
+    },
+    {
+      "requirement_id": "REQ-087",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在 POST /api/reconciliation/run/ 手动触发对账接口，路径匹配；但是否限制仅管理员调用、任务时长上限（≤30s 见 REQ-065）需核对 permission_classes 与任务实现",
+      "interface_id": "IF-REST-012"
+    },
+    {
+      "requirement_id": "REQ-088",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：存在 GET /api/reconciliation/ 查询对账记录列表接口；但差异报告字段结构、面向三类角色的可见性范围需核对 serializers/reconciliation.py",
+      "interface_id": "IF-REST-013"
+    },
+    {
+      "requirement_id": "REQ-125",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：GET /api/products/{pk}/ 接口存在但 path param 名称为 pk（主键），需求使用 fund_code 作为路径参数；若基金代码即为主键则匹配，否则需额外查询逻辑；待核对 product model 主键字段名",
+      "interface_id": "IF-REST-018"
+    },
+    {
+      "requirement_id": "REQ-126",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：PUT /api/products/{pk}/ 存在，pk 与 fund_code 的映射关系同 REQ-125；body 全量字段 unknown，无法确认是否覆盖所有必填字段",
+      "interface_id": "IF-REST-019"
+    },
+    {
+      "requirement_id": "REQ-127",
+      "description": "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口；LLM 判定依据：DELETE /api/products/{pk}/ 接口存在，pk vs fund_code 同上；返回 message 文案 unknown；删除是否级联/软删除需核对 model",
+      "interface_id": "IF-REST-021"
+    }
+  ],
+  "missing_features": [
+    {
+      "requirement_id": "REQ-005",
+      "title": "登录页居中简洁风格"
+    },
+    {
+      "requirement_id": "REQ-006",
+      "title": "密码输入框支持显示/隐藏切换"
+    },
+    {
+      "requirement_id": "REQ-007",
+      "title": "登录按钮 loading 状态防重复提交"
+    },
+    {
+      "requirement_id": "REQ-024",
+      "title": "证件类型选择后 placeholder 动态提示"
+    },
+    {
+      "requirement_id": "REQ-025",
+      "title": "提交按钮 loading 与开户结果弹窗"
+    },
+    {
+      "requirement_id": "REQ-027",
+      "title": "申购选择份额类型（A 类/B 类）"
+    },
+    {
+      "requirement_id": "REQ-029",
+      "title": "申购公共字段自动填充"
+    },
+    {
+      "requirement_id": "REQ-110",
+      "title": "基金转换异常-转出转入同一基金"
+    },
+    {
+      "requirement_id": "REQ-111",
+      "title": "基金转换异常-转入基金未选择"
+    },
+    {
+      "requirement_id": "REQ-112",
+      "title": "基金转换异常-份额≤0"
+    },
+    {
+      "requirement_id": "REQ-113",
+      "title": "基金转换异常-任一基金已停用"
+    },
+    {
+      "requirement_id": "REQ-129",
+      "title": "个人开户"
+    },
+    {
+      "requirement_id": "REQ-130",
+      "title": "机构开户"
+    },
+    {
+      "requirement_id": "REQ-131",
+      "title": "产品开户"
+    },
+    {
+      "requirement_id": "REQ-132",
+      "title": "增开交易账号"
+    },
+    {
+      "requirement_id": "REQ-133",
+      "title": "账户销户"
+    },
+    {
+      "requirement_id": "REQ-134",
+      "title": "修改客户资料"
+    },
+    {
+      "requirement_id": "REQ-135",
+      "title": "申购下单"
+    },
+    {
+      "requirement_id": "REQ-136",
+      "title": "赎回下单"
+    },
+    {
+      "requirement_id": "REQ-137",
+      "title": "快取下单"
+    },
+    {
+      "requirement_id": "REQ-138",
+      "title": "基金转换"
+    },
+    {
+      "requirement_id": "REQ-139",
+      "title": "撤单"
+    },
+    {
+      "requirement_id": "REQ-140",
+      "title": "交易记录查询"
+    },
+    {
+      "requirement_id": "REQ-141",
+      "title": "导出 Excel/CSV"
+    },
+    {
+      "requirement_id": "REQ-143",
+      "title": "对账结果列表"
+    },
+    {
+      "requirement_id": "REQ-144",
+      "title": "对账差异明细"
+    },
+    {
+      "requirement_id": "REQ-145",
+      "title": "导出对账报告"
+    }
+  ],
+  "change_scope": [
+    {
+      "interface_id": "IF-REST-001",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-068",
+        "REQ-072",
+        "REQ-090",
+        "REQ-091",
+        "REQ-092",
+        "REQ-093",
+        "REQ-121"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-002",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-122"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-003",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": []
+    },
+    {
+      "interface_id": "IF-REST-004",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-015",
+        "REQ-016",
+        "REQ-017",
+        "REQ-018",
+        "REQ-019",
+        "REQ-020",
+        "REQ-021",
+        "REQ-022",
+        "REQ-023",
+        "REQ-074",
+        "REQ-075",
+        "REQ-076",
+        "REQ-077",
+        "REQ-098",
+        "REQ-099",
+        "REQ-100",
+        "REQ-101",
+        "REQ-102",
+        "REQ-103"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-005",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-079"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-006",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-078"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-007",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-028",
+        "REQ-030",
+        "REQ-031",
+        "REQ-032",
+        "REQ-033",
+        "REQ-034",
+        "REQ-035",
+        "REQ-036",
+        "REQ-037",
+        "REQ-038",
+        "REQ-040",
+        "REQ-041",
+        "REQ-042",
+        "REQ-043",
+        "REQ-044",
+        "REQ-061",
+        "REQ-063",
+        "REQ-066",
+        "REQ-080",
+        "REQ-081",
+        "REQ-082",
+        "REQ-083",
+        "REQ-104",
+        "REQ-105",
+        "REQ-106",
+        "REQ-107",
+        "REQ-108",
+        "REQ-109"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-008",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-084"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-009",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": []
+    },
+    {
+      "interface_id": "IF-REST-010",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-045",
+        "REQ-046",
+        "REQ-047",
+        "REQ-048",
+        "REQ-049",
+        "REQ-050",
+        "REQ-051",
+        "REQ-085",
+        "REQ-114",
+        "REQ-115",
+        "REQ-116",
+        "REQ-117"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-011",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-086"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-012",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-052",
+        "REQ-053",
+        "REQ-056",
+        "REQ-087",
+        "REQ-118",
+        "REQ-119",
+        "REQ-120",
+        "REQ-142"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-013",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-054",
+        "REQ-055",
+        "REQ-058",
+        "REQ-059",
+        "REQ-060",
+        "REQ-088"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-014",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": []
+    },
+    {
+      "interface_id": "IF-REST-015",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/urls.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-057",
+        "REQ-062",
+        "REQ-089"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-016",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/product.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-008",
+        "REQ-123"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-017",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/product.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-009",
+        "REQ-010",
+        "REQ-011",
+        "REQ-012",
+        "REQ-064",
+        "REQ-073",
+        "REQ-094",
+        "REQ-095",
+        "REQ-096",
+        "REQ-124"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-018",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/product.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-014",
+        "REQ-125"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-019",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/product.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-126"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-020",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/product.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-097"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-021",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/product.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-127"
+      ]
+    },
+    {
+      "interface_id": "IF-REST-022",
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/product.py",
+      "change": "added",
+      "covered_by": [
+        "REQ-013",
+        "REQ-026",
+        "REQ-039",
+        "REQ-128"
+      ]
+    }
+  ],
+  "removed_files": [],
+  "unmatched_changed_files": [
+    {
+      "repo": "qorder_autotest",
+      "file": ".gitignore",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "ACCOUNT_QUERY_FEATURE.md",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "BUGFIX_PURCHASE_ERROR.md",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "DOCS_UPDATE_SUMMARY.md",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "LOCAL_DEV_SETUP.md",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "ORACLE_DB_CONFIG.md",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "README_DEV.md",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "WORK_DATE_FEATURE.md",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/config/__init__.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/config/asgi.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/config/settings.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/config/settings_prod.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/config/urls.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/config/wsgi.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/manage.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/__init__.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/admin.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/apps.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/management/__init__.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/management/commands/__init__.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/management/commands/init_admin.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/migrations/0001_initial.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/migrations/__init__.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/models/__init__.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/models/account.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/models/product.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/models/reconciliation.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/models/transaction.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/serializers/__init__.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/serializers/account.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/serializers/auth.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/serializers/product.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/serializers/query.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/serializers/reconciliation.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/serializers/transaction.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/utils/__init__.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/utils/work_calendar.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/__init__.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/account.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/auth.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/frontend.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/query.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/reconciliation.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/orders/views/transaction.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "backend/requirements.txt",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "convert_md_to_docx.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "deploy/build_python.sh",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "deploy/fund_order.service",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "deploy/gunicorn.conf.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "deploy/install.sh",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "docs/create_tables_oracle.sql",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "docs/database_design.md",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "docs/product_requirements.docx",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "docs/product_requirements.md",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/index.html",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/package-lock.json",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/package.json",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/App.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/api/index.js",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/main.js",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/router/index.js",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/stores/auth.js",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/Dashboard.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/Layout.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/Login.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/account/AccountClose.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/account/AccountUpdate.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/account/OrgOpen.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/account/PersonalOpen.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/account/ProductOpen.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/product/ProductList.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/query/AccountQuery.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/query/TransactionQuery.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/reconciliation/Reconciliation.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/trade/FundConvert.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/trade/Purchase.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/trade/QuickWithdraw.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/trade/Redeem.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/src/views/trade/TradeCancel.vue",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "frontend/vite.config.js",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "start_dev.bat",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "start_frontend.bat",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "test_env.bat",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "test_local_env.py",
+      "change": "added"
+    },
+    {
+      "repo": "qorder_autotest",
+      "file": "README.md",
+      "change": "modified"
+    }
+  ]
+}

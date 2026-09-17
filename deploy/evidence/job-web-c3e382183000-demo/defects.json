@@ -1,0 +1,601 @@
+
+{
+  "schema_version": "1.0",
+  "job_id": "job-web-c3e382183000",
+  "defects": [
+    {
+      "id": "DEF-001",
+      "case_id": "TC-004",
+      "interface_id": "IF-REST-001",
+      "failure_reason": "HTTP 200（语义断言：status=401；前端拦截器捕获后重定向至登录页）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_004.py",
+        "params": {
+          "body": {
+            "username": "admin",
+            "password": "***"
+          }
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:27:58.843806+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:34.331887+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:34.331887+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:34.331887+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:48.298108+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:48.298108+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:48.298108+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-002",
+      "case_id": "TC-013",
+      "interface_id": "IF-REST-004",
+      "failure_reason": "HTTP 400（语义断言：status=201；响应 transaction_account_id 非空）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_013.py",
+        "params": {
+          "body": {
+            "investor_name": "张三",
+            "id_type": "0",
+            "id_no": "11010519491231002X",
+            "cellphone": "13800138000"
+          }
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:07.125551+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:34.547870+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:34.547870+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:34.547870+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:48.683454+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:48.683454+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:48.683454+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-003",
+      "case_id": "TC-024",
+      "interface_id": "IF-REST-007",
+      "failure_reason": "HTTP 400（语义断言：status=201；响应包含非空 ec_ap_serial_no 与成功消息）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_024.py",
+        "params": {
+          "body": {
+            "fund_code": "000330",
+            "share_type": "A",
+            "application_amount": "10000.00",
+            "currency_type": "156"
+          }
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:10.010738+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:34.792546+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:34.792546+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:34.792546+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:48.925790+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:48.925790+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:48.925790+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-004",
+      "case_id": "TC-033",
+      "interface_id": "IF-REST-009",
+      "failure_reason": "HTTP 400（语义断言：status=200；响应为非空账户数组）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_033.py",
+        "params": {
+          "query": "investor_name=张三"
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:12.282540+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:35.002886+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:35.002886+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:35.002886+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:49.198347+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:49.198347+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:49.198347+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-005",
+      "case_id": "TC-034",
+      "interface_id": "IF-REST-009",
+      "failure_reason": "HTTP 400（语义断言：status=200；响应包含分页列表）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_034.py",
+        "params": {
+          "query": ""
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:12.559245+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:35.234158+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:35.234158+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:35.234158+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:49.587739+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:49.587739+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:49.587739+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-006",
+      "case_id": "TC-036",
+      "interface_id": "IF-REST-010",
+      "failure_reason": "HTTP 400（语义断言：status=200；响应包含 count 与 results 数组，分页默认 20 条）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_036.py",
+        "params": {
+          "query": "ec_cust_no=EC-CUST-2025-0001&page=1"
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:12.933287+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:35.443149+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:35.443149+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:35.443149+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:49.997501+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:49.997501+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:49.997501+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-007",
+      "case_id": "TC-040",
+      "interface_id": "IF-REST-010",
+      "failure_reason": "HTTP 400（语义断言：status=200；响应 results 为空数组）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_040.py",
+        "params": {
+          "query": "ec_ap_serial_no=NEVER-EXIST-SERIAL-9999"
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:13.817255+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:35.646713+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:35.646713+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:35.646713+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:50.239179+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:50.239179+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:50.239179+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-008",
+      "case_id": "TC-045",
+      "interface_id": "IF-REST-012",
+      "failure_reason": "HTTP 200（语义断言：status=400；响应提示\"下单/落库数据为空，无法对账\"）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_045.py",
+        "params": {
+          "body": {
+            "trigger_type": "manual"
+          }
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:15.574339+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:35.914489+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:35.914489+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:35.914489+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:50.569909+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:50.569909+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:50.569909+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-009",
+      "case_id": "TC-046",
+      "interface_id": "IF-REST-012",
+      "failure_reason": "HTTP 200（语义断言：status_class=5xx；响应提示\"对账执行异常，请重试\"）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_046.py",
+        "params": {
+          "body": {
+            "trigger_type": "manual"
+          }
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:15.880967+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:36.164559+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:36.164559+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:36.164559+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:50.860828+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:50.860828+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:50.860828+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-010",
+      "case_id": "TC-056",
+      "interface_id": "IF-REST-015",
+      "failure_reason": "HTTP 200（语义断言：status_class=4xx；响应表示容差必须大于 0）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_056.py",
+        "params": {
+          "body": {
+            "cron": "0 2 * * *",
+            "amount_tolerance": "0",
+            "vol_tolerance": "0"
+          }
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:18.092839+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:36.392586+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:36.392586+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:36.392586+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:51.165705+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:51.165705+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:51.165705+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-011",
+      "case_id": "TC-057",
+      "interface_id": "IF-REST-015",
+      "failure_reason": "HTTP 200（语义断言：status=400；响应表示调度配置无效）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_057.py",
+        "params": {
+          "body": {
+            "cron": "INVALID_CRON",
+            "amount_tolerance": "0.01",
+            "vol_tolerance": "0.01"
+          }
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:18.339560+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:36.616164+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:36.616164+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:36.616164+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:51.422330+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:51.422330+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:51.422330+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-012",
+      "case_id": "TC-061",
+      "interface_id": "IF-REST-017",
+      "failure_reason": "HTTP 400（语义断言：status=201；响应 fund_code=000330 且 is_active=true）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_061.py",
+        "params": {
+          "body": {
+            "fund_code": "000330",
+            "fund_name": "景顺长城新兴成长混合A",
+            "share_type": "A",
+            "is_active": true
+          }
+        }
+      },
+      "status": "closed_suggested",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:19.250462+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:36.842949+00:00"
+        },
+        {
+          "event": "retest_passed",
+          "timestamp": "2026-09-17T07:28:36.842949+00:00"
+        },
+        {
+          "event": "close_suggested",
+          "timestamp": "2026-09-17T07:28:36.842949+00:00"
+        }
+      ]
+    },
+    {
+      "id": "DEF-013",
+      "case_id": "TC-074",
+      "interface_id": "IF-REST-020",
+      "failure_reason": "HTTP 200（语义断言：status_class=4xx；响应提示无可更新字段）",
+      "reproduce": {
+        "script_path": "scripts/test_TC_074.py",
+        "params": {
+          "pk": "000330",
+          "body": {}
+        }
+      },
+      "status": "retained",
+      "is_fallback": false,
+      "history": [
+        {
+          "event": "discovered",
+          "timestamp": "2026-09-17T07:28:22.249971+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:28:37.076402+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:28:37.076402+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:28:37.076402+00:00"
+        },
+        {
+          "event": "retest_started",
+          "timestamp": "2026-09-17T07:51:51.790981+00:00"
+        },
+        {
+          "event": "retest_failed",
+          "timestamp": "2026-09-17T07:51:51.790981+00:00"
+        },
+        {
+          "event": "retained",
+          "timestamp": "2026-09-17T07:51:51.790981+00:00"
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    "X-DEF-02：用例 TC-061（缺陷 DEF-012）脚本缺失（scripts/test_TC_061.py），复测跳过该项"
+  ]
+}

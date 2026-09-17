@@ -1,0 +1,294 @@
+
+{
+  "schema_version": "1.0",
+  "job_id": "job-web-c3e382183000",
+  "candidates": [
+    {
+      "candidate_id": "CAND-001",
+      "protocol": "rest",
+      "signature": "POST /api/auth/login/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 21,
+        "end_line": 21
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-002",
+      "protocol": "rest",
+      "signature": "POST /api/auth/logout/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 22,
+        "end_line": 22
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-003",
+      "protocol": "rest",
+      "signature": "GET /api/auth/user/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 23,
+        "end_line": 23
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-004",
+      "protocol": "rest",
+      "signature": "POST /api/accounts/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 29,
+        "end_line": 29
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-005",
+      "protocol": "rest",
+      "signature": "PUT /api/accounts/{pk}/update/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 30,
+        "end_line": 30
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-006",
+      "protocol": "rest",
+      "signature": "POST /api/accounts/{pk}/close/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 31,
+        "end_line": 31
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-007",
+      "protocol": "rest",
+      "signature": "POST /api/transactions/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 34,
+        "end_line": 34
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-008",
+      "protocol": "rest",
+      "signature": "POST /api/transactions/{serial_no}/cancel/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 35,
+        "end_line": 35
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-009",
+      "protocol": "rest",
+      "signature": "GET /api/accounts/query/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 38,
+        "end_line": 38
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-010",
+      "protocol": "rest",
+      "signature": "GET /api/transactions/query/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 39,
+        "end_line": 39
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-011",
+      "protocol": "rest",
+      "signature": "GET /api/transactions/export/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 40,
+        "end_line": 40
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-012",
+      "protocol": "rest",
+      "signature": "POST /api/reconciliation/run/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 43,
+        "end_line": 43
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-013",
+      "protocol": "rest",
+      "signature": "GET /api/reconciliation/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 44,
+        "end_line": 44
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-014",
+      "protocol": "rest",
+      "signature": "GET /api/reconciliation/schedule/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 45,
+        "end_line": 45
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-015",
+      "protocol": "rest",
+      "signature": "POST /api/reconciliation/schedule/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/urls.py",
+        "start_line": 45,
+        "end_line": 45
+      },
+      "is_fallback": false,
+      "confidence": 0.9
+    },
+    {
+      "candidate_id": "CAND-016",
+      "protocol": "rest",
+      "signature": "GET /api/products/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "confidence": 0.8
+    },
+    {
+      "candidate_id": "CAND-017",
+      "protocol": "rest",
+      "signature": "POST /api/products/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "confidence": 0.8
+    },
+    {
+      "candidate_id": "CAND-018",
+      "protocol": "rest",
+      "signature": "GET /api/products/{pk}/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "confidence": 0.8
+    },
+    {
+      "candidate_id": "CAND-019",
+      "protocol": "rest",
+      "signature": "PUT /api/products/{pk}/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "confidence": 0.8
+    },
+    {
+      "candidate_id": "CAND-020",
+      "protocol": "rest",
+      "signature": "PATCH /api/products/{pk}/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "confidence": 0.8
+    },
+    {
+      "candidate_id": "CAND-021",
+      "protocol": "rest",
+      "signature": "DELETE /api/products/{pk}/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 17,
+        "end_line": 17
+      },
+      "is_fallback": false,
+      "confidence": 0.8
+    },
+    {
+      "candidate_id": "CAND-022",
+      "protocol": "rest",
+      "signature": "GET /api/products/active/",
+      "code_location": {
+        "repo": "qorder_autotest",
+        "file": "backend/orders/views/product.py",
+        "start_line": 33,
+        "end_line": 33
+      },
+      "is_fallback": false,
+      "confidence": 0.8
+    }
+  ],
+  "warnings": []
+}
