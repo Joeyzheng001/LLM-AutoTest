@@ -360,6 +360,51 @@ async def test_defect_list_only_assertion_failures(
     }
 
 
+async def test_defect_list_keeps_e2e_context_separate(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """E2E 断言失败要从 e2e_cases 回填，不得套用接口用例/接口语义。"""
+    _engine, te_store, _orch_store = env
+    testcases = te_store.read_json(_JOB, "testcases.json")
+    testcases["e2e_cases"] = [
+        {
+            "id": "E2E-001",
+            "case_type": "e2e",
+            "requirement_id": "REQ-001",
+            "title": "用户进入个人中心",
+            "expected": "页面显示个人中心",
+            "steps": [{"action": "goto", "value": "/dashboard"}],
+        }
+    ]
+    te_store.write(_JOB, "testcases.json", testcases)
+    execution = te_store.read_json(_JOB, "execution.json")
+    execution["results"].append(
+        {
+            "case_id": "E2E-001",
+            "case_type": "e2e",
+            "interface_id": "UI-E2E-001",
+            "passed": False,
+            "failure_kind": "assertion",
+            "failure_reason": "页面未显示个人中心",
+            "actual_status": 200,
+            "actual_body": {"url": "/dashboard"},
+            "timestamp": "2026-09-15T00:00:04+00:00",
+        }
+    )
+    te_store.write(_JOB, "execution.json", execution)
+
+    payload = await _run_defect_list(env)
+    defect = next(item for item in payload["defects"] if item["case_id"] == "E2E-001")
+
+    assert defect["interface"] == {
+        "protocol": "e2e",
+        "method": "浏览器",
+        "path": "前端页面",
+        "summary": "用户进入个人中心",
+    }
+    assert defect["testcase"]["expected"] == "页面显示个人中心"
+
+
 async def test_defect_list_skip_order_guard(
     env: tuple[Engine, ArtifactStore, ArtifactStore],
 ) -> None:

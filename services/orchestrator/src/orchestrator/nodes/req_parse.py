@@ -179,6 +179,16 @@ def _validate_review_shape(
     store: ArtifactStore, job_id: str, review: dict[str, Any], doc_paths: list[Path]
 ) -> None:
     """在落盘前校验评审业务字段，使 Schema 错误可进入一次模型修复轮。"""
+    if _looks_like_dimension_projected_as_review(review):
+        raise PipelineError(
+            code=X_LLM_02,
+            message=(
+                "requirement_review.json 校验失败：当前输出是单个 dimension 评分对象，"
+                "不是完整需求评审。请丢弃该对象，重新输出包含 13 个规定顶层字段的完整 JSON；"
+                "weight/reason 只能出现在 dimension_scores 的五个维度内部。"
+            ),
+            node_id=NODE_NAME,
+        )
     errors = store.validate(
         job_id,
         "requirement_review.json",
@@ -191,6 +201,13 @@ def _validate_review_shape(
             node_id=NODE_NAME,
             details={"errors": errors[:10]},
         )
+
+
+def _looks_like_dimension_projected_as_review(review: dict[str, Any]) -> bool:
+    """识别模型把一个 `{weight, score, reason}` 维度误作为整份评审输出的漂移。"""
+    dimension_fields = {"weight", "score", "reason"}
+    review_fields = {"quality_grade", "summary", "dimension_scores", "quality_assessment"}
+    return bool(dimension_fields & set(review)) and not bool(review_fields & set(review))
 
 
 def _merge_documents(doc_paths: list[Path]) -> str:

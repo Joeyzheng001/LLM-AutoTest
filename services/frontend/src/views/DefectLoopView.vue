@@ -1,16 +1,17 @@
 <script setup lang="ts">
 // 缺陷闭环页（07 §3.5）：缺陷清单（双向关联 + 复现脚本引用）+ 生命周期时间线（R-DEF-03）+
 // 单条复测（07 §3.5）/ 一键全量复测（F-DEF-02）。边界提示如实分列（X-DEF-01/03、N9）。
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
 import { getDefects, retestFull, retestSingle } from '../api/client'
 import type { DefectEntry, RetestResponse } from '../api/types'
 import { DEFECT_STATUS_LABELS, DEFECT_EVENT_LABELS } from '../api/labels'
+import { navigateTo } from '../api/navigation'
 
 const _jobId = ref('')
 
 // C-16：总览页节点卡跳转携带 jobId（App.vue 动态组件下发）
-const props = defineProps<{ initialJobId?: string }>()
+const props = defineProps<{ initialJobId?: string; viewKey?: string }>()
 
 const defects = ref<DefectEntry[]>([])
 const warnings = ref<string[]>([])
@@ -21,6 +22,10 @@ const retesting = ref<string | null>(null) // 'full' 或缺陷 id
 const retestError = ref('')
 const retestResult = ref<RetestResponse | null>(null)
 const expandedId = ref('')
+const e2eMode = computed(() => props.viewKey === 'e2e-defects')
+const visibleDefects = computed(() => defects.value.filter((defect) =>
+  e2eMode.value ? defect.case_id.startsWith('E2E-') : !defect.case_id.startsWith('E2E-')
+))
 
 async function load(): Promise<void> {
   if (!_jobId.value) return
@@ -66,6 +71,14 @@ function actualText(defect: DefectEntry): string {
   return `${status}\n${body}`
 }
 
+function viewRetestProgress(): void {
+  if (_jobId.value) navigateTo('overview', _jobId.value)
+}
+
+function viewRetestRecords(): void {
+  if (_jobId.value) navigateTo(e2eMode.value ? 'e2e-defects' : 'interface-defects', _jobId.value)
+}
+
 async function retestOne(defectId: string): Promise<void> {
   if (!_jobId.value || retesting.value) return
   retesting.value = defectId
@@ -104,9 +117,9 @@ async function retestAll(): Promise<void> {
     <p v-else-if="error" class="state-line state-error" role="alert">{{ error }}</p>
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
 
-    <template v-else-if="defects.length || warnings.length">
+    <template v-else-if="visibleDefects.length || warnings.length">
       <!-- 全量复测（F-DEF-02：后台 force_node 重跑，进度见流水线总览） -->
-      <div class="action-row">
+      <div v-if="!e2eMode" class="action-row">
         <button class="primary-btn" type="button" :disabled="retesting !== null" @click="retestAll">
           {{ retesting === 'full' ? '已提交全量复测…' : '一键复测全量（F-DEF-02）' }}
         </button>
@@ -117,6 +130,13 @@ async function retestAll(): Promise<void> {
               : `单条复测完成：${retestResult.retested?.join('、') ?? retestResult.defect_id}`
           }}
         </span>
+        <template v-if="retestResult?.mode === 'full'">
+          <button class="ghost-btn" type="button" @click="viewRetestProgress">查看进度</button>
+          <button class="ghost-btn" type="button" @click="viewRetestRecords">查看复测记录</button>
+        </template>
+      </div>
+      <div v-else class="hint hint-notice">
+        E2E 缺陷由浏览器执行产物生成；请从「流水线总览」选择“从自动执行起”重跑，避免把接口复测错误用于前端用例。
       </div>
       <p v-if="retestError" class="state-line state-error" role="alert">{{ retestError }}</p>
 
@@ -128,11 +148,11 @@ async function retestAll(): Promise<void> {
       <!-- 缺陷清单 -->
       <div class="card">
         <header class="card-title">
-          缺陷清单（{{ defects.length }} 条 · 仅断言失败进入 R-DEF-01）
+          {{ e2eMode ? 'E2E 缺陷清单' : '接口缺陷清单' }}（{{ visibleDefects.length }} 条 · 仅断言失败进入 R-DEF-01）
         </header>
-        <p v-if="!defects.length" class="state-line">无缺陷条目。</p>
+        <p v-if="!visibleDefects.length" class="state-line">无{{ e2eMode ? ' E2E' : '接口' }}缺陷条目。</p>
         <div
-          v-for="defect in defects"
+          v-for="defect in visibleDefects"
           :key="defect.id"
           class="defect-item"
           :class="{ expanded: expandedId === defect.id }"

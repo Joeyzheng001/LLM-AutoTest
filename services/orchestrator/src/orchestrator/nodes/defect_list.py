@@ -52,6 +52,11 @@ async def run_defect_list(
         case_by_id = {
             str(c.get("id", "")): c for c in testcases.get("cases", []) if c.get("id")
         }
+        # E2E 用例与接口用例同源于 testcases.json，但不具备 REST interface_id；
+        # 必须独立回填，否则 E2E 缺陷页会错误展示接口缺陷上下文。
+        e2e_case_by_id = {
+            str(c.get("id", "")): c for c in testcases.get("e2e_cases", []) if c.get("id")
+        }
         interface_by_id = {
             str(i.get("id", "")): i for i in interfaces.get("interfaces", []) if i.get("id")
         }
@@ -60,7 +65,8 @@ async def run_defect_list(
         # R-DEF-01：仅断言失败进清单（环境失败隔离，不入）
         for index, result in enumerate(r for r in results if r.get("failure_kind") == "assertion"):
             case_id = str(result.get("case_id", ""))
-            case = case_by_id.get(case_id, {})
+            is_e2e = result.get("case_type") == "e2e" or case_id.startswith("E2E-")
+            case = (e2e_case_by_id if is_e2e else case_by_id).get(case_id, {})
             if_id = str(result.get("interface_id", ""))
             interface = interface_by_id.get(if_id, {})
             params = case.get("params") if isinstance(case.get("params"), dict) else {}
@@ -84,14 +90,18 @@ async def run_defect_list(
                     "failure_reason": str(result.get("failure_reason", "")),
                     # 缺陷页的定位事实全部从前置产物回填，非 LLM 摘要。
                     "interface": {
-                        "protocol": str(interface.get("protocol", "")),
-                        "method": str(signature.get("method", "")),
-                        "path": str(signature.get("path", "")),
-                        "summary": str(signature.get("summary", "")),
+                        "protocol": "e2e" if is_e2e else str(interface.get("protocol", "")),
+                        "method": "浏览器" if is_e2e else str(signature.get("method", "")),
+                        "path": "前端页面" if is_e2e else str(signature.get("path", "")),
+                        "summary": (
+                            str(case.get("title", ""))
+                            if is_e2e
+                            else str(signature.get("summary", ""))
+                        ),
                     },
                     "testcase": {
                         "title": str(case.get("title", "")),
-                        "category": str(case.get("category", "")),
+                        "category": "e2e" if is_e2e else str(case.get("category", "")),
                         "expected": str(case.get("expected", result.get("expected", ""))),
                     },
                     "actual": actual,

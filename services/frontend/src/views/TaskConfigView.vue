@@ -169,6 +169,18 @@ const formValid = computed(
     llmValid.value,
 )
 
+const formInvalidReasons = computed(() => {
+  const reasons: string[] = []
+  if (docFiles.length < 1) reasons.push('请选择至少一份需求文档')
+  if (!reposValid.value) reasons.push('补全仓库名称和本地绝对路径')
+  if (!form.restUrl.trim().startsWith('http')) reasons.push('填写合法的 REST 服务地址')
+  if (!authValid.value) reasons.push('补全鉴权地址、用户名和密码')
+  if (!llmValid.value) {
+    reasons.push('填写合法的 MiniMax API Key、模型和 Base URL，或关闭本次模型配置')
+  }
+  return reasons
+})
+
 function pickDocs(event: Event): void {
   const files = Array.from((event.target as HTMLInputElement).files ?? [])
   docError.value = ''
@@ -563,6 +575,9 @@ async function handleSubmit(): Promise<void> {
         </span>
         <span v-else class="submit-note">与 CLI 走同一 PipelineRunner（Web 与命令行入口等价）</span>
       </div>
+      <p v-if="!formValid" class="submit-blockers" role="status">
+        暂不能启动：{{ formInvalidReasons.join('；') }}。
+      </p>
       <p v-if="submitError" class="field-error" role="alert">{{ submitError }}</p>
     </form>
   </div>
@@ -834,6 +849,13 @@ async function handleSubmit(): Promise<void> {
 .submit-ok {
   font-size: var(--text-sm);
   color: var(--accent-strong);
+}
+
+.submit-blockers {
+  margin: var(--space-2) 0 0;
+  color: var(--warning);
+  font-size: var(--text-xs);
+  line-height: 1.6;
 }
 
 .submit-note {

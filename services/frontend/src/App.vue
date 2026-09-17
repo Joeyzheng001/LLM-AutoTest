@@ -120,7 +120,7 @@ watch(views, (next) => {
         <span class="topbar-badge mono">实时数据 · orchestrator :8000</span>
       </header>
       <main class="content">
-        <component :is="active?.component" :initial-job-id="navigation.jobId" />
+        <component :is="active?.component" :initial-job-id="navigation.jobId" :view-key="active?.key" />
       </main>
     </div>
   </div>

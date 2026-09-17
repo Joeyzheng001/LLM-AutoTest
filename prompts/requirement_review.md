@@ -1,10 +1,11 @@
 <!-- 需求质量评审：移植自 htftest-agent requirement-review Skill；由本项目 GLM 客户端执行。 -->
 
 ---
-version: 1.3
+version: 1.4
 spec: F-REQ-01
 owner: 甲
 changelog:
+  - 1.4 | 2026-09-17 | 明确禁止把单个评分维度对象当成完整评审；修复轮按完整根对象重建
   - 1.3 | 2026-09-16 | 明确五个摘要清单只能输出字符串数组，禁止复用思维导图对象
   - 1.2 | 2026-09-16 | 明确维度评分对象与思维导图叶节点格式，减少模型输出展示型变体
   - 1.1 | 2026-09-16 | 长输出治理：按风险优先级收敛问题和思维导图，避免 JSON 截断
@@ -22,6 +23,8 @@ sampling:
 
 顶层字段必须且只能是：
 `score`、`quality_grade`、`summary`、`dimension_scores`、`quality_assessment`、`issues`、`readable_issue_points`、`completeness_issues`、`consistency_issues`、`untestable_items`、`risk_flags`、`testable_features`、`mindmap`。
+
+特别禁止：不能只输出某个评分维度的 `{ "weight": ..., "score": ..., "reason": ... }` 对象；这三个字段不能出现在根对象。若收到“reason/weight 为根字段”相关的机器校验错误，表示上一轮误输出了单维度对象，必须丢弃它并按上述 13 个顶层字段完整重建。
 
 评分规则：
 - 维度固定为「需求完整性」0.35、「一致性与逻辑性」0.20、「可测试性」0.25、「清晰度与规范性」0.10、「风险与依赖描述」0.10；每项 0–100 分，`score` 为加权总分四舍五入后的整数。

@@ -126,7 +126,7 @@ async def test_req_parse_success(env: tuple[Engine, ArtifactStore], doc: Path) -
     assert review["quality_grade"] == "B"
     assert review["source_files"] == [str(doc)]
     # 两个 Prompt 均为真实文件，且使用同一份已文本化的需求文档。
-    assert [ref for ref, _content in llm.received] == ["requirement_review@1.3", "req_parse@1.0"]
+    assert [ref for ref, _content in llm.received] == ["requirement_review@1.4", "req_parse@1.0"]
     assert all("按 ID 查询用户" in content for _ref, content in llm.received)
 
 
@@ -333,6 +333,21 @@ async def test_req_parse_moves_root_dimensions_and_derives_score_grade(
     assert stored["score"] == 77
     assert stored["quality_grade"] == "B"
     assert stored["quality_assessment"]["grade"] == "B"
+
+
+async def test_req_parse_repairs_dimension_object_misplaced_at_root(
+    env: tuple[Engine, ArtifactStore], doc: Path
+) -> None:
+    """MiniMax 误回单个 dimension 时，修复轮收到明确重建指令并恢复完整评审。"""
+    engine, store = env
+    state = engine.init_job(_JOB)
+    bad_dimension = '{"weight": 0.35, "score": 75, "reason": "主流程已描述"}'
+    llm = _SequenceLlm([bad_dimension, _GOOD_REVIEW_OUTPUT, _GOOD_OUTPUT])
+
+    await run_req_parse(engine, state, store, llm, _PROMPTS, [doc])
+
+    assert store.read_json(_JOB, "requirement_review.json")["quality_grade"] == "B"
+    assert "单个 dimension 评分对象" in llm.received[1]
 
 
 async def test_req_parse_bad_json_x_llm_02(env: tuple[Engine, ArtifactStore], doc: Path) -> None:
