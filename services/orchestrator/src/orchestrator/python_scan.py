@@ -441,7 +441,8 @@ def _emit_router_routes(
     for action, (verb, detail) in _VIEWSET_ACTIONS.items():
         if action not in method_map and not (inherits_viewset and action in _VIEWSET_ACTIONS):
             continue
-        path = f"{base}/{{pk}}" if detail else base
+        # DRF DefaultRouter 默认 trailing_slash=True；候选须保留真实路由语义。
+        path = f"{base}/{{pk}}/" if detail else f"{base}/"
         line = method_map[action].lineno if action in method_map else register_line
         routes.append(
             _candidate(
@@ -472,7 +473,11 @@ def _emit_router_routes(
                 elif keyword.arg == "detail" and isinstance(keyword.value, ast.Constant):
                     detail = bool(keyword.value.value)
             action_route = f"{{{url_path}}}" if url_path.startswith("<") else url_path
-            path = f"{base}/{{pk}}/{action_route}" if detail else f"{base}/{action_route}"
+            path = (
+                f"{base}/{{pk}}/{action_route}/"
+                if detail
+                else f"{base}/{action_route}/"
+            )
             for verb in http_methods:
                 routes.append(
                     _candidate(
@@ -539,20 +544,19 @@ def _scan_decorators(
 
 
 def _join_prefix(prefix: str, route: str) -> str:
-    """拼接两段路由（各去首尾斜杠后以 / 连接）。"""
+    """拼接两段路由，同时保留 Django 路由定义中的末尾斜杠。"""
     left = prefix.strip("/")
     right = route.strip("/")
-    return f"{left}/{right}" if left and right else (left or right)
+    joined = f"{left}/{right}" if left and right else (left or right)
+    has_trailing_slash = route.endswith("/") or (not route and prefix.endswith("/"))
+    return f"{joined}/" if joined and has_trailing_slash else joined
 
 
 def _normalize_django_path(prefix: str, route: str) -> str:
-    """Django 路由归一：前缀拼接 + <converter:name> → {name} + 首斜杠 + 去尾斜杠。"""
+    """Django 路由归一：前缀拼接 + <converter:name> → {name}，保留末尾斜杠。"""
     joined = _join_prefix(prefix, route)
     converted = re.sub(r"<(?:[^:<>]+:)?([^<>]+)>", r"{\1}", joined)
-    normalized = f"/{converted.strip('/')}"
-    if len(normalized) > 1 and normalized.endswith("/"):
-        normalized = normalized.rstrip("/") or "/"
-    return normalized
+    return f"/{converted.lstrip('/')}" if converted else "/"
 
 
 def _candidate(

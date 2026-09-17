@@ -1,11 +1,10 @@
 <script setup lang="ts">
-// 需求解析页（C-10 独立展示屏）：requirement_items.json 全量条目——
-// 需求 ID/标题/描述/优先级 + 文档来源（source_files，C-10 多文档）。
-// 红线：数据来自后端产物（前端不计算）；stub_note（兜底条目）如实标注。
+// 需求解析页：先展示 requirement_review 的质量结论与澄清风险，
+// 再展示 requirement_items 的可执行条目。所有内容均来自后端产物，前端不计算。
 import { ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
-import { getRequirementItems } from '../api/client'
-import type { RequirementItem } from '../api/types'
+import { getRequirementItems, getRequirementReview } from '../api/client'
+import type { RequirementItem, RequirementReview } from '../api/types'
 
 const _jobId = ref('')
 
@@ -14,22 +13,44 @@ const props = defineProps<{ initialJobId?: string }>()
 
 const items = ref<RequirementItem[]>([])
 const sourceFiles = ref<string[]>([])
+const review = ref<RequirementReview | null>(null)
+const reviewNote = ref('')
 const loading = ref(false)
 const error = ref('')
+
+const dimensionOrder = [
+  '需求完整性',
+  '一致性与逻辑性',
+  '可测试性',
+  '清晰度与规范性',
+  '风险与依赖描述',
+]
 
 async function load(): Promise<void> {
   if (!_jobId.value) return
   loading.value = true
   error.value = ''
+  reviewNote.value = ''
   try {
-    const payload = await getRequirementItems(_jobId.value)
+    // 历史任务没有 requirement_review 时仍展示条目；新任务一定同时拥有两份产物。
+    const [itemsResult, reviewResult] = await Promise.allSettled([
+      getRequirementItems(_jobId.value),
+      getRequirementReview(_jobId.value),
+    ])
+    if (itemsResult.status === 'rejected') throw itemsResult.reason
+    const payload = itemsResult.value
     items.value = payload.items
-    // C-10：多文档来源清单（旧产物无此键 → 空数组隐藏）
     sourceFiles.value = payload.source_files ?? []
+    if (reviewResult.status === 'fulfilled') review.value = reviewResult.value
+    else {
+      review.value = null
+      reviewNote.value = '该任务未生成需求质量评审（兼容历史任务）。'
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : '需求解析产物加载失败'
     items.value = []
     sourceFiles.value = []
+    review.value = null
   } finally {
     loading.value = false
   }
@@ -58,13 +79,101 @@ watch(_jobId, () => void load())
     <p v-else-if="error" class="state-line state-error" role="alert">{{ error }}</p>
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
 
-    <template v-else-if="items.length">
+    <template v-else-if="items.length || review">
       <div class="view-head">
-        <span class="tag tag-accent">需求解析结果（req_parse 产物）</span>
+        <span class="tag tag-accent">需求解析结果</span>
         <span class="coverage-note"
           >共 <span class="mono">{{ items.length }}</span> 条需求条目</span
         >
       </div>
+
+      <section v-if="review" class="quality-card card" aria-labelledby="quality-title">
+        <div class="quality-head">
+          <div>
+            <p class="eyebrow">需求质量评审</p>
+            <h2 id="quality-title">{{ review.quality_assessment.grade_name }}</h2>
+            <p class="summary">{{ review.summary }}</p>
+          </div>
+          <div class="score-block" :data-grade="review.quality_grade">
+            <span class="score-number mono">{{ review.score }}</span>
+            <span class="score-label">/ 100 · {{ review.quality_grade }} 级</span>
+          </div>
+        </div>
+
+        <div class="dimension-grid">
+          <div v-for="name in dimensionOrder" :key="name" class="dimension-item">
+            <div class="dimension-label">
+              <span>{{ name }}</span
+              ><b class="mono">{{ review.dimension_scores[name]?.score ?? 0 }}</b>
+            </div>
+            <div class="score-track">
+              <span :style="{ width: `${review.dimension_scores[name]?.score ?? 0}%` }" />
+            </div>
+            <p>{{ review.dimension_scores[name]?.reason }}</p>
+          </div>
+        </div>
+
+        <div
+          v-if="review.readable_issue_points.length || review.risk_flags.length"
+          class="signal-grid"
+        >
+          <div v-if="review.readable_issue_points.length" class="signal-panel issue-panel">
+            <h3>优先澄清</h3>
+            <ul>
+              <li v-for="point in review.readable_issue_points" :key="point">{{ point }}</li>
+            </ul>
+          </div>
+          <div v-if="review.risk_flags.length" class="signal-panel">
+            <h3>风险与依赖</h3>
+            <ul>
+              <li v-for="risk in review.risk_flags" :key="`${risk.type}-${risk.desc}`">
+                <span class="mono risk-type">{{ risk.type }}</span
+                >{{ risk.desc }}
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <details v-if="review.issues.length" class="details-panel">
+          <summary>查看全部 {{ review.issues.length }} 项评审问题</summary>
+          <div
+            v-for="issue in review.issues"
+            :key="`${issue.location}-${issue.question}`"
+            class="issue-row"
+          >
+            <span class="tag" :data-priority="issue.priority">{{ issue.priority }}</span>
+            <div>
+              <b>{{ issue.question }}</b>
+              <p>{{ issue.location }} · {{ issue.reason }} · 影响：{{ issue.impact }}</p>
+            </div>
+          </div>
+        </details>
+
+        <details class="details-panel">
+          <summary>测试范围与思维导图</summary>
+          <p class="feature-line">
+            <b>可直接设计测试：</b>{{ review.testable_features.join('、') || '暂无' }}
+          </p>
+          <p v-if="review.untestable_items.length" class="feature-line">
+            <b>暂不可测：</b>{{ review.untestable_items.join('、') }}
+          </p>
+          <ul class="mindmap-root">
+            <li>
+              <b>{{ review.mindmap.主题 }}</b>
+              <ul>
+                <li v-for="node in review.mindmap.子主题" :key="node.主题">
+                  {{ node.主题 }}
+                  <ul v-if="node.子主题.length">
+                    <li v-for="child in node.子主题" :key="child.主题">{{ child.主题 }}</li>
+                  </ul>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </details>
+      </section>
+
+      <p v-else-if="reviewNote" class="state-line">{{ reviewNote }}</p>
 
       <!-- 文档来源（C-10 多文档） -->
       <div v-if="sourceFiles.length" class="card source-card">
@@ -76,7 +185,8 @@ watch(_jobId, () => void load())
         </ul>
       </div>
 
-      <div class="card">
+      <div v-if="items.length" class="card">
+        <header class="section-title">可执行需求条目</header>
         <table class="req-table">
           <thead>
             <tr>
@@ -112,7 +222,7 @@ watch(_jobId, () => void load())
       </div>
     </template>
 
-    <p v-else class="state-line">requirement_items.json 尚未生成（需任务跑到需求解析节点之后）。</p>
+    <p v-else class="state-line">需求解析产物尚未生成（需任务跑到需求解析节点之后）。</p>
   </div>
 </template>
 
@@ -153,6 +263,156 @@ watch(_jobId, () => void load())
   margin-bottom: var(--space-4);
 }
 
+.quality-card {
+  padding: var(--space-5);
+}
+.quality-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-5);
+  align-items: flex-start;
+}
+.eyebrow {
+  margin: 0 0 var(--space-1);
+  color: var(--accent-strong);
+  font-size: var(--text-xs);
+}
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+h2 {
+  margin-bottom: var(--space-2);
+  font-size: var(--text-lg);
+}
+.summary {
+  margin-bottom: 0;
+  color: var(--text-2);
+}
+.score-block {
+  min-width: 118px;
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  text-align: right;
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+}
+.score-block[data-grade='C'],
+.score-block[data-grade='D'] {
+  background: var(--warning-dim, rgba(204, 145, 23, 0.12));
+  color: var(--warning);
+}
+.score-number {
+  display: block;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+}
+.score-label {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+}
+.dimension-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+.dimension-label {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+.dimension-item p {
+  margin: var(--space-1) 0 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.score-track {
+  height: 5px;
+  margin-top: var(--space-2);
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+.score-track span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+.signal-panel {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.issue-panel {
+  border-color: color-mix(in srgb, var(--warning) 35%, var(--border));
+}
+.signal-panel h3 {
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+}
+.signal-panel ul,
+.mindmap-root {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.signal-panel li + li {
+  margin-top: var(--space-1);
+}
+.risk-type {
+  margin-right: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.details-panel {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.details-panel summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-size: var(--text-sm);
+}
+.issue-row {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+.issue-row p,
+.feature-line {
+  margin: var(--space-1) 0 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.mindmap-root {
+  margin-top: var(--space-3);
+}
+.mindmap-root ul {
+  padding-left: 18px;
+}
+.section-title {
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
 .tag {
   display: inline-block;
   padding: 2px var(--space-2);
@@ -179,6 +439,37 @@ watch(_jobId, () => void load())
   background: var(--warning-dim, rgba(204, 145, 23, 0.12));
   border-color: color-mix(in srgb, var(--warning) 30%, transparent);
   color: var(--warning);
+}
+
+.tag[data-priority='高'] {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+}
+.tag[data-priority='中'] {
+  color: var(--accent-strong);
+}
+
+@media (max-width: 860px) {
+  .dimension-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .quality-head,
+  .signal-grid {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+  .score-block {
+    text-align: left;
+  }
+  .req-table {
+    min-width: 680px;
+  }
+  .card {
+    overflow-x: auto;
+  }
 }
 
 .source-card {

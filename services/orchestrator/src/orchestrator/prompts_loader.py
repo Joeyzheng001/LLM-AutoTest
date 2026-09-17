@@ -21,6 +21,7 @@ class PromptSpec:
     changelog: tuple[str, ...]  # "版本 | 日期 | 说明"
     sampling: dict[str, float | int | None]  # 模板建议值（实际以 Settings 为准）
     body: str  # `---` 元信息块之后的 Prompt 正文
+    knowledge_refs: tuple[str, ...] = ()  # 本次调用注入的 Skill/记忆版本（不含原文）
 
     @property
     def ref(self) -> str:
@@ -52,6 +53,7 @@ def load_prompt(prompts_dir: Path, name: str) -> PromptSpec:
             message=f"Prompt 元信息块缺 version 字段：{path.name}",
             details={"prompt": name},
         )
+    knowledge_body, knowledge_refs = _load_node_knowledge(prompts_dir, name)
     return PromptSpec(
         name=name,
         version=version,
@@ -59,8 +61,55 @@ def load_prompt(prompts_dir: Path, name: str) -> PromptSpec:
         owner=owner,
         changelog=changelog,
         sampling=sampling,
-        body=body,
+        body=f"{body}\n\n{knowledge_body}".strip() if knowledge_body else body,
+        knowledge_refs=knowledge_refs,
     )
+
+
+# 每个模型节点只加载自己需要的知识。禁止把全部历史经验拼入每一轮调用，
+# 否则 Token 膨胀并稀释当前任务约束，反而降低结构化输出稳定性。
+_NODE_KNOWLEDGE: dict[str, tuple[str, ...]] = {
+    "requirement_review": (
+        "skills/requirement-output-stability.md",
+        "memory/model-output-drift.md",
+    ),
+    "req_parse": ("skills/requirement-item-extraction.md", "memory/model-output-drift.md"),
+    "interface_reconstruct": ("skills/interface-reconstruction.md",),
+    "code_review": ("skills/code-review-evidence.md", "memory/server-side-evidence.md"),
+    "testcase_generate": ("skills/functional-test-design.md", "memory/test-design-lessons.md"),
+    "e2e_testcase_generate": ("skills/e2e-automation.md", "memory/e2e-environment.md"),
+}
+
+
+def _load_node_knowledge(prompts_dir: Path, name: str) -> tuple[str, tuple[str, ...]]:
+    """加载节点 Skill 与审核记忆；文件不存在视为配置错误，禁止静默退化。"""
+    from orchestrator.errors import X_LLM_03, PipelineError
+
+    # 单元测试或外部最小 Prompt 包不带知识目录时保持旧加载器行为；
+    # 正式 prompts 包一旦声明 knowledge 目录，就要求节点映射文件完整存在。
+    if not (prompts_dir / "skills").is_dir():
+        return "", ()
+    pieces: list[str] = []
+    refs: list[str] = []
+    for relative in _NODE_KNOWLEDGE.get(name, ()):
+        path = prompts_dir / relative
+        if not path.is_file():
+            raise PipelineError(
+                code=X_LLM_03,
+                message=f"LLM 知识文件不存在：{path}",
+                details={"prompt": name, "knowledge": relative},
+            )
+        text = path.read_text(encoding="utf-8").strip()
+        version, _, _, _, _, body = _parse_meta(text)
+        if not version or not body:
+            raise PipelineError(
+                code=X_LLM_03,
+                message=f"LLM 知识文件元信息或正文不合规：{path.name}",
+                details={"prompt": name, "knowledge": relative},
+            )
+        refs.append(f"{relative.removesuffix('.md')}@{version}")
+        pieces.append(f"\n\n## 受控知识：{relative.removesuffix('.md')}\n{body}")
+    return "".join(pieces), tuple(refs)
 
 
 def _parse_meta(

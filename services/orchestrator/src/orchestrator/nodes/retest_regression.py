@@ -37,7 +37,9 @@ from orchestrator.nodes.auto_execute import (
     MockDemoRunner,
     RestRunner,
     _judge_assertion,
+    auth_exempt_paths,
     login_for_headers,
+    prefers_django_trailing_slash,
     probe_rest,
 )
 
@@ -122,7 +124,14 @@ async def retest_defects(
         verify = not bool(auth.get("insecure_tls", True))
 
     rest_ready = await probe_rest(rest_base_url, transport, verify)
-    rest_runner = RestRunner(rest_base_url, transport, auth_headers, verify)
+    rest_runner = RestRunner(
+        rest_base_url,
+        transport,
+        auth_headers,
+        verify,
+        auth_exempt_paths(auth),
+        prefers_django_trailing_slash(auth),
+    )
     demo_runner = MockDemoRunner()
     warnings: list[str] = []
     archived: list[dict[str, Any]] = []
@@ -210,6 +219,54 @@ async def retest_defects(
         defect["history"] = history
         retested.append(str(defect.get("id", "")))
 
+    # 基线沉淀：本轮已经真实执行通过的接口用例同样可成为回归候选。
+    # 不收 E2E（其页面状态/环境依赖更强）、环境降级、不可加载或无溯源的用例。
+    archived_case_ids = {str(item["case_id"]) for item in archived}
+    try:
+        execution = _load_json(te_store, job_id, "execution.json")
+    except PipelineError:
+        execution = {"results": []}
+    for result in execution.get("results", []):
+        case_id = str(result.get("case_id", ""))
+        case = case_by_id.get(case_id)
+        if (
+            result.get("passed") is not True
+            or result.get("case_type") == "e2e"
+            or case is None
+            or case_id in archived_case_ids
+            or case.get("loadable") is not True
+        ):
+            continue
+        requirement_id = str(case.get("requirement_id", ""))
+        interface_id = str(case.get("interface_id", ""))
+        interface = interface_by_id.get(interface_id, {})
+        script_rel = str(case.get("script_path", ""))
+        script_path = job_dir / script_rel if script_rel else None
+        if not requirement_id or script_path is None:
+            continue
+        protocol = str(interface.get("protocol", "rest"))
+        # 已归档脚本在重跑时不应因原路径不存在而从索引消失。
+        existing_rel = f"{_REGRESSION_ROOT}/{protocol}/{script_path.name}"
+        existing_path = job_dir / existing_rel
+        if script_path.is_file():
+            archived_path = _archive_script(job_dir, script_path, protocol)
+        elif existing_path.is_file():
+            archived_path = existing_rel
+        else:
+            continue
+        archived.append(
+            {
+                "case_id": case_id,
+                "script_path": archived_path,
+                "requirement_id": requirement_id,
+                "interface_id": interface_id,
+                "protocol": protocol,
+                "archived_at": _now_iso(),
+                "source": "execution_passed",
+            }
+        )
+        archived_case_ids.add(case_id)
+
     defects_payload["defects"] = defects
     if warnings:
         defects_payload["warnings"] = warnings
@@ -273,6 +330,11 @@ def _build_index(
             for protocol, scripts in sorted(suites.items())
         ],
     }
+    if not suites:
+        payload["empty_reason"] = (
+            "本轮没有同时满足“真实执行通过、可加载脚本、需求与接口溯源完整”的接口用例；"
+            "E2E 需连续两次通过后才会沉淀。"
+        )
     return payload
 
 

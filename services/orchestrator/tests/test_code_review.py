@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from helpers import requirement_review_payload
 from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import Engine
 from orchestrator.errors import X_ORCH_02, PipelineError
@@ -119,6 +120,7 @@ def env(tmp_path: Path) -> tuple[Engine, ArtifactStore]:
     store = ArtifactStore(tmp_path, _SCHEMAS, "orchestrator")
     engine = Engine(store)
     state = engine.init_job(_JOB)
+    store.write(_JOB, "requirement_review.json", requirement_review_payload(_JOB))
     for node_name, filename, payload in (
         (
             "req_parse",

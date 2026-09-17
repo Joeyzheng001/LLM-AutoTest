@@ -5,7 +5,7 @@
 import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
 import { getTestcases } from '../api/client'
-import type { TestCaseEntry } from '../api/types'
+import type { E2eTestCaseEntry, TestCaseEntry } from '../api/types'
 import { CASE_CATEGORY_LABELS } from '../api/labels'
 
 const _jobId = ref('')
@@ -14,6 +14,7 @@ const _jobId = ref('')
 const props = defineProps<{ initialJobId?: string }>()
 
 const cases = ref<TestCaseEntry[]>([])
+const e2eCases = ref<E2eTestCaseEntry[]>([])
 const warnings = ref<string[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -32,10 +33,12 @@ async function load(): Promise<void> {
   try {
     const payload = await getTestcases(_jobId.value)
     cases.value = payload.cases
+    e2eCases.value = payload.e2e_cases ?? []
     warnings.value = payload.warnings ?? []
   } catch (err) {
     error.value = err instanceof Error ? err.message : '用例产物加载失败'
     cases.value = []
+    e2eCases.value = []
     warnings.value = []
   } finally {
     loading.value = false
@@ -72,7 +75,7 @@ function paramsText(params: Record<string, unknown> | undefined): string {
     <p v-else-if="error" class="state-line state-error" role="alert">{{ error }}</p>
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
 
-    <template v-else-if="cases.length">
+    <template v-else-if="cases.length || e2eCases.length">
       <div class="view-head">
         <span class="tag tag-accent">用例生成结果（testcases.json）</span>
         <span class="coverage-note">
@@ -139,6 +142,31 @@ function paramsText(params: Record<string, unknown> | undefined): string {
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div v-if="e2eCases.length" class="card e2e-card">
+        <header class="card-title">
+          前端 E2E 用例
+          <span class="e2e-count mono">{{ e2eCases.length }} 条</span>
+        </header>
+        <p class="e2e-note">由需求测试点生成，步骤仅使用受限的浏览器动作与语义定位器。</p>
+        <article v-for="item in e2eCases" :key="item.id" class="e2e-case">
+          <div class="e2e-head">
+            <span class="mono case-id">{{ item.id }}</span>
+            <span class="tag tag-e2e">前端 E2E</span>
+            <span class="mono loc">{{ item.requirement_id }}</span>
+            <strong>{{ item.title }}</strong>
+          </div>
+          <p v-if="item.preconditions?.length" class="e2e-detail">前置：{{ item.preconditions.join('；') }}</p>
+          <ol class="e2e-steps">
+            <li v-for="(step, index) in item.steps" :key="index">
+              <span class="mono">{{ step.action }}</span>
+              <span v-if="step.selector" class="mono"> · {{ step.selector }}</span>
+              <span v-if="step.value"> · {{ step.value }}</span>
+            </li>
+          </ol>
+          <p class="e2e-detail"><strong>预期：</strong>{{ item.expected }}</p>
+        </article>
       </div>
     </template>
 
@@ -213,6 +241,14 @@ function paramsText(params: Record<string, unknown> | undefined): string {
   border-color: var(--accent-glow);
   color: var(--accent-strong);
 }
+
+.tag-e2e { background: var(--warning-dim); color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, var(--border)); }
+.e2e-count { margin-left: var(--space-2); color: var(--text-3); font-weight: 400; }
+.e2e-note, .e2e-detail { color: var(--text-2); font-size: var(--text-sm); }
+.e2e-case { padding: var(--space-3) 0; border-top: 1px solid var(--border); }
+.e2e-head { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; font-size: var(--text-sm); }
+.e2e-steps { margin: var(--space-2) 0; padding-left: 24px; font-size: var(--text-sm); color: var(--text-2); }
+.e2e-steps li { margin: 4px 0; }
 
 .tag[data-category='normal'] {
   background: var(--accent-dim);

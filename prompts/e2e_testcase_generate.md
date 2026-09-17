@@ -1,0 +1,49 @@
+<!-- 可选 E2E 用例生成：需求级测试点 → 受限浏览器动作。 -->
+
+---
+version: 1.0
+spec: F-GEN-E2E-01
+owner: 甲
+sampling:
+  temperature: 0.2
+  top_p: 0.9
+---
+
+## 输出格式要求（必须）
+
+只输出纯 JSON，不要 Markdown 或解释：
+
+```
+{
+  "cases": [
+    {
+      "requirement_id": "REQ-001",
+      "title": "用户可见的功能场景",
+      "preconditions": ["可选前置条件"],
+      "steps": [
+        {"action": "goto", "value": "/login"},
+        {"action": "fill", "selector": "placeholder=用户名", "value": "{{AUTH_USERNAME}}"},
+        {"action": "click", "selector": "role=button[name=登 录]"},
+        {"action": "expect_url", "selector": "", "value": "/dashboard"}
+      ],
+      "expected": "登录成功后展示用户名称"
+    }
+  ]
+}
+```
+
+规则：
+
+- 只为输入中的 `requirements` 和 `testpoints` 生成；`requirement_id` 必须原样引用输入，禁止虚构。
+- 每个需求优先覆盖主业务路径；`source=RISK` 的测试点补充异常、权限、空状态或关键提示的可见行为。
+- 输入 `surface.routes` 是浏览器刚刚真实探测到的页面。`goto.value` 只能使用其中的 `path`；每个 selector 必须逐字使用其中的 `selectors`，禁止凭需求猜测路由、控件或文案。
+- `goto` 的 `value` 只能是站内相对路径（以 `/` 开头），不能填写完整 URL。
+- 仅允许动作：`goto`、`click`、`fill`、`check`、`select`、`expect_text`、`expect_url`。不得输出 JavaScript、shell、下载、上传、等待或任意代码。
+- selector 优先按可访问语义写：`role=button[name=保存]`、`label=用户名`、`placeholder=用户名`、`text=提交成功`、`testid=save-button`。页面结构不确定时，不要猜测 CSS class、XPath、路由或控件。
+- 登录用户名和密码一律使用 `{{AUTH_USERNAME}}`、`{{AUTH_PASSWORD}}`；运行时才替换，禁止在产物中写真实或猜测凭据。
+- `expect_text` 使用 selector 指向可见文本；`expect_url` 的 value 写预期站内路径，selector 置空字符串。
+- 最多生成输入 `max_cases` 条。不能确认选择器、页面路径或用户可见结果时宁可少产或输出空数组，不能杜撰页面元素。
+
+## 任务
+
+你是功能测试设计师。根据需求、程序化测试点和目标前端地址，生成面向真实用户操作的浏览器自动化用例。重点验证页面流程、输入校验、状态变化和用户可见反馈，不要把 REST 接口调用改写成 E2E 用例。

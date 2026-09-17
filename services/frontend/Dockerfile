@@ -1,35 +1,22 @@
-# Stage 1: 构建 Vue 应用
-FROM node:20-alpine AS builder
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
-WORKDIR /app
+# Vue 真实构建（V2.1 已批准完整 Web 界面；原占位镜像废弃）
+# 构建上下文 = 仓库根（compose 已指向 ../）
+# pnpm 为项目声明包管理器（packageManager 字段 + pnpm-lock.yaml，corepack 启用）
+FROM node:20-alpine AS build
 
-COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+WORKDIR /build
 
-COPY . .
-RUN pnpm build
+RUN corepack enable
 
-# Stage 2: nginx 托管构建产物
+COPY services/frontend/package.json services/frontend/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY services/frontend/ ./
+RUN pnpm run build
+
 FROM nginx:1.27-alpine
-COPY --from=builder /app/dist /usr/share/nginx/html
-COPY <<'NGINX' /etc/nginx/conf.d/default.conf
-server {
-    listen 80;
-    root   /usr/share/nginx/html;
-    index  index.html;
 
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-
-    # 反向代理：前端 /api/* 请求转发到 orchestrator（Docker 内部网络）
-    location /api/ {
-        proxy_pass http://orchestrator:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-}
-NGINX
+COPY --from=build /build/dist /usr/share/nginx/html
+# 同源反代：/api → orchestrator（前端 client.ts 全部走相对路径）
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80

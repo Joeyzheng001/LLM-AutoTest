@@ -63,6 +63,7 @@ async def test_complete_success_writes_trace(tmp_path: Path) -> None:
     assert record["call_id"] == "LLM-abc12345-001"
     assert record["node"] == "req_parse"
     assert record["prompt_file"] == "req_parse@1.0"
+    assert record["knowledge_refs"] == []
     assert record["prompt_version"] == "1.0"
     assert record["sampling"]["model"] == "glm-5.3"
     assert record["tokens"] == 128
@@ -154,3 +155,37 @@ async def test_call_id_continues_after_restart(tmp_path: Path) -> None:
         await client.complete("req_parse", _PROMPT, "内容")
     ids = [json.loads(line)["call_id"] for line in trace.read_text(encoding="utf-8").splitlines()]
     assert ids == ["LLM-abc12345-001", "LLM-abc12345-002"]
+
+
+async def test_think_blocks_stripped(tmp_path: Path) -> None:
+    """C-17：推理模型思考块（<think>…</think>）被剥离；留痕 digest 取原始输出。"""
+    raw = '<think>\n思考过程不应进入解析\n</think>\n\n```json\n{"cases": []}\n```'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": raw}}], "usage": {"total_tokens": 64}}
+        )
+
+    trace = tmp_path / "job-abc12345-0" / "llm_calls.jsonl"
+    client = LlmClient(
+        _settings(), "job-abc12345-def-6", trace, transport=httpx.MockTransport(handler)
+    )
+    result = await client.complete("req_parse", _PROMPT, "内容")
+    # 思考块已剥离，仅剩正文（代码围栏由节点层 _strip_code_fence 处理）
+    assert result.text == '```json\n{"cases": []}\n```'
+    # 诚实红线：留痕 output_digest 取原始输出（含思考块）
+    import hashlib
+
+    expected = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    record = json.loads(trace.read_text(encoding="utf-8").strip())
+    assert record["output_digest"] == expected
+
+
+def test_strip_think_blocks_variants() -> None:
+    """无标记原样返回；不闭合标记不静默截断（交由下游解析报 X-LLM-02）。"""
+    from orchestrator.llm.client import strip_think_blocks
+
+    assert strip_think_blocks("纯正文") == "纯正文"
+    assert strip_think_blocks("<think>只有开头不闭合") == "<think>只有开头不闭合"
+    assert strip_think_blocks("<think>a</think> 前文 <think>b</think> 后文") == "前文  后文"
+    assert strip_think_blocks('<think>{"cases": []}</think>') == '<think>{"cases": []}</think>'

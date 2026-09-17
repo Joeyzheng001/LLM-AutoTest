@@ -18,31 +18,57 @@ interface NavView {
   key: string
   label: string
   component: Component
+  section: '工作台' | '分析与设计' | '验证与交付'
+  child?: boolean
 }
 
-const views: NavView[] = [
-  { key: 'config', label: '任务配置', component: TaskConfigView },
-  { key: 'overview', label: '流水线总览', component: PipelineOverviewView },
+const coreViews: NavView[] = [
+  { key: 'config', label: '任务配置', component: TaskConfigView, section: '工作台' },
+  { key: 'overview', label: '流水线总览', component: PipelineOverviewView, section: '工作台' },
   // C-10：三个产物独立展示屏（需求解析 / 源码扫描与接口还原 / 用例生成）
-  { key: 'requirements', label: '需求解析', component: RequirementsView },
-  { key: 'scan', label: '源码扫描与接口还原', component: CodeScanView },
-  { key: 'cases', label: '用例生成', component: TestCasesView },
-  { key: 'review', label: 'Code Review', component: CodeReviewView },
-  { key: 'report', label: '测试报告', component: TestReportView },
-  { key: 'defects', label: '缺陷闭环', component: DefectLoopView },
-  { key: 'regression', label: '回归沉淀与度量', component: RegressionMetricsView },
+  { key: 'requirements', label: '需求解析', component: RequirementsView, section: '分析与设计' },
+  { key: 'scan', label: '源码扫描与接口还原', component: CodeScanView, section: '分析与设计' },
+  { key: 'review', label: 'Code Review', component: CodeReviewView, section: '分析与设计' },
+  { key: 'cases', label: '测试点与接口用例', component: TestCasesView, section: '分析与设计' },
+  { key: 'defects', label: '缺陷闭环', component: DefectLoopView, section: '验证与交付' },
+  { key: 'regression', label: '回归沉淀与度量', component: RegressionMetricsView, section: '验证与交付' },
 ]
 
+// E2E 是任务级可选子流程：只有当前查看的任务启用时才加入导航，且不改变 9 个核心节点。
+const views = computed<NavView[]>(() => {
+  const result = [...coreViews]
+  const insertAt = result.findIndex((view) => view.key === 'defects')
+  const optional: NavView[] = []
+  if (navigation.e2e?.generateCases) {
+    optional.push({ key: 'e2e-cases', label: 'E2E 用例', component: TestCasesView, section: '分析与设计', child: true })
+  }
+  // 执行必然依赖生成；不合法历史输入也不展示一个无法解释的独立入口。
+  if (navigation.e2e?.generateCases && navigation.e2e.executeCases) {
+    optional.push({ key: 'e2e-execution', label: 'E2E 执行', component: TestReportView, section: '验证与交付', child: true })
+  }
+  result.splice(insertAt, 0, ...optional, { key: 'report', label: '测试报告', component: TestReportView, section: '验证与交付' })
+  return result
+})
+const navSections = computed(() =>
+  (['工作台', '分析与设计', '验证与交付'] as const).map((title) => ({
+    title,
+    views: views.value.filter((view) => view.section === title),
+  })),
+)
+
 const activeKey = ref('overview')
-const active = computed(() => views.find((view) => view.key === activeKey.value))
+const active = computed(() => views.value.find((view) => view.key === activeKey.value))
 
 // C-16：总览页节点卡跳转（navigation.view 变化 → 切页；jobId 随 prop 下发）
 watch(
   () => navigation.view,
   (view) => {
-    if (view && views.some((v) => v.key === view)) activeKey.value = view
+    if (view && views.value.some((v) => v.key === view)) activeKey.value = view
   },
 )
+watch(views, (next) => {
+  if (!next.some((view) => view.key === activeKey.value)) activeKey.value = 'overview'
+})
 </script>
 
 <template>
@@ -53,19 +79,24 @@ watch(
         <span class="brand-mark mono">LA</span>
         <span class="brand-name">LLM-AutoTest</span>
       </header>
-      <ul class="nav-list">
-        <li v-for="view in views" :key="view.key">
+      <div class="nav-list">
+        <section v-for="section in navSections" :key="section.title" class="nav-section">
+          <h2>{{ section.title }}</h2>
+          <ul>
+        <li v-for="view in section.views" :key="view.key">
           <button
             type="button"
             class="nav-item"
-            :class="{ active: view.key === activeKey }"
+            :class="{ active: view.key === activeKey, child: view.child }"
             @click="activeKey = view.key"
           >
             <span class="nav-dot" aria-hidden="true" />
             {{ view.label }}
           </button>
         </li>
-      </ul>
+          </ul>
+        </section>
+      </div>
       <footer class="side-foot">
         <span class="mono version">v0.1.0</span>
         <span class="env">dev</span>
@@ -96,7 +127,7 @@ watch(
 .side {
   display: flex;
   flex-direction: column;
-  background: var(--bg-elev);
+  background: linear-gradient(180deg, var(--bg-elev), var(--bg));
   border-right: 1px solid var(--border);
 }
 
@@ -104,7 +135,7 @@ watch(
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-4) var(--space-4);
+  padding: var(--space-5) var(--space-4);
   border-bottom: 1px solid var(--border);
 }
 
@@ -129,9 +160,28 @@ watch(
 }
 
 .nav-list {
-  list-style: none;
-  padding: var(--space-3) var(--space-2);
+  padding: var(--space-4) var(--space-2);
   flex: 1;
+  overflow-y: auto;
+}
+
+.nav-section {
+  margin-bottom: var(--space-4);
+}
+
+.nav-section h2 {
+  margin: 0 0 var(--space-2);
+  padding: 0 var(--space-3);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.nav-section ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .nav-item {
@@ -140,7 +190,7 @@ watch(
   gap: var(--space-3);
   width: 100%;
   padding: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-1);
+  margin-bottom: 2px;
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
@@ -173,6 +223,12 @@ watch(
 .nav-item.active .nav-dot {
   background: var(--accent);
   box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.nav-item.child {
+  padding-left: calc(var(--space-3) + 18px);
+  font-size: var(--text-sm);
+  color: var(--text-3);
 }
 
 .side-foot {

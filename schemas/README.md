@@ -9,11 +9,12 @@
 3. LLM 输出（需求条目、接口还原、用例草案、Review 标注）必须通过对应 Schema 校验后才可进入下游产物；
 4. **横切约定**（三人公共语言，详见 [docs/11](../docs/11_三人分工任务书.md) §5.4）：ID 命名 `REQ-001` / `CAND-001` / `IF-<协议>-001` / `TC-001` / `DEF-001`；时间戳 UTC ISO-8601；协议枚举小写 `rest/grpc/graphql/soap/mq`；`is_fallback` 全链路透传；错误结构 `{code, message, node_id?, details}`。
 
-## 目录规划（10 个产物 Schema，与 docs/11 §5.3 主笔表同一事实源）
+## 目录规划（11 个产物 Schema，与 docs/11 §5.3 主笔表同一事实源）
 
 | 文件 | 对应产物 | 主笔 | 依据 |
 |------|----------|------|------|
 | `requirement_items.json` | 需求解析条目 | 甲 | 模块 1（REQ） |
+| `requirement_review.json` | 需求质量评审（REQ 子阶段） | 甲 | 模块 1（REQ） |
 | `code_inventory.json` | 源码清单（仓库四态） | 乙 | 模块 2（CODE） |
 | `interface_candidates.json` | 接口候选清单（与契约 ExtractJob 一致） | 乙 | 模块 3（REV 静态侧） |
 | `interfaces.json` | 接口还原清单（LLM 补全后） | 甲 | 模块 3（REV） |

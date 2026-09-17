@@ -16,17 +16,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import io
 import json
 import logging
 import os
 import shutil
 import uuid
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from orchestrator.artifacts import ArtifactStore, ensure_job_id
@@ -88,6 +90,24 @@ class AuthConfig(BaseModel):
     insecure_tls: bool = True
 
 
+class LlmConfig(BaseModel):
+    """本次任务的 MiniMax 运行时配置；密钥只驻留后台任务内存。"""
+
+    api_key: str = Field(min_length=8, max_length=512)
+    model: str = Field(default="MiniMax-M3", min_length=1, max_length=128)
+    base_url: str = Field(default="https://api.minimaxi.com/v1", min_length=8, max_length=256)
+    max_tokens: int = Field(default=16384, ge=1024, le=16384)
+
+
+class E2eConfig(BaseModel):
+    """可选浏览器功能测试配置；默认不生成、不执行，保持 API 流程不变。"""
+
+    base_url: str
+    generate_cases: bool = False
+    execute_cases: bool = False
+    insecure_tls: bool = True  # 测试环境常用自签名证书，默认跳过浏览器证书校验
+
+
 class JobSubmitRequest(BaseModel):
     """job 提交请求（文档以 base64 传递，免 python-multipart 依赖）。
 
@@ -104,6 +124,8 @@ class JobSubmitRequest(BaseModel):
     resume: bool = True
     # C-15：鉴权配置（可选；填写则执行前登录被测服务注入凭据头）
     auth: AuthConfig | None = None
+    llm: LlmConfig | None = None
+    e2e: E2eConfig | None = None
 
 
 class RetestRequest(BaseModel):
@@ -121,9 +143,12 @@ class ReviewLogRequest(BaseModel):
 
 
 class RerunRequest(BaseModel):
-    """重跑请求（C-14）：from_node 缺省 = 全量（从 req_parse 级联失效）。"""
+    """重跑请求；可覆盖非敏感执行目标，不暴露既有鉴权或模型密钥。"""
 
     from_node: str | None = None
+    llm: LlmConfig | None = None
+    rest_url: str | None = None
+    e2e: E2eConfig | None = None
 
 
 def create_app(settings: Settings, runner: PipelineRunner | None = None) -> FastAPI:
@@ -141,6 +166,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
     app.state.engine = Engine(orch_store)
     app.state.job_tasks: dict[str, asyncio.Task[None]] = {}  # type: ignore[misc]
     app.state.job_outcomes: dict[str, PipelineOutcome | dict[str, Any]] = {}  # type: ignore[misc]
+    app.state.job_llm_configs = {}  # 仅运行期，禁止落盘 API key
     if runner is None:
         java_client = JavaParserClient(base_url=settings.java_parser_url)
         runner = PipelineRunner(settings, app.state.engine, orch_store, te_store, java_client)
@@ -148,9 +174,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
 
     # C-12：ArtifactStore/节点层拍出的 PipelineError 统一映射 400（协议层不炸 500）
     @app.exception_handler(PipelineError)
-    async def _pipeline_error_handler(
-        _request: Any, exc: PipelineError
-    ) -> JSONResponse:
+    async def _pipeline_error_handler(_request: Any, exc: PipelineError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": exc.message})
 
     # C-12：请求体大小限制（超大提交在解析前拒绝，色 413）
@@ -203,8 +227,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"仓库 {repo.name} 的 language 仅支持 java/python（C-13）："
-                        f"{repo.language}"
+                        f"仓库 {repo.name} 的 language 仅支持 java/python（C-13）：{repo.language}"
                     ),
                 )
             repo_path = Path(repo.path)
@@ -220,6 +243,13 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 )
         if not request.rest_url.startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="rest_url 须为 http(s) 地址")
+        if request.e2e is not None and not request.e2e.base_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="e2e.base_url 须为 http(s) 地址")
+        llm_payload: dict[str, Any] | None = None
+        if request.llm is not None:
+            if not request.llm.base_url.startswith(("http://", "https://")):
+                raise HTTPException(status_code=400, detail="llm.base_url 须为 http(s) 地址")
+            llm_payload = request.llm.model_dump()
         auth_payload: dict[str, Any] | None = None
         if request.auth is not None:
             auth = request.auth
@@ -251,10 +281,21 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             # C-15：凭据随 job 落盘（供 rerun/retest 复用原始输入）；
             # job_input.json 属服务内部元数据，不在产物读取白名单内（不外露）
             job_input["auth"] = auth_payload
+        if llm_payload is not None:
+            # 仅保存可审计的非敏感模型选择；api_key 绝不写入 job_input/产物/调用留痕。
+            job_input["llm"] = {
+                "model": llm_payload["model"],
+                "base_url": llm_payload["base_url"],
+                "max_tokens": llm_payload["max_tokens"],
+            }
+        if request.e2e is not None:
+            job_input["e2e"] = request.e2e.model_dump()
         orch_store.job_dir(job_id).mkdir(parents=True, exist_ok=True)
         (orch_store.job_dir(job_id) / "job_input.json").write_text(
             json.dumps(job_input, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        if llm_payload is not None:
+            app.state.job_llm_configs[job_id] = llm_payload
         _spawn_run(app, job_id)
         return {"job_id": job_id, "status": "queued"}
 
@@ -295,9 +336,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
     async def job_status(job_id: str) -> dict[str, Any]:
         """job 状态：9 节点状态 + 降级清单 + 产物清单（断点诊断，F-ORCH-02）。"""
         _require_job(app, job_id)
-        state = json.loads(
-            (orch_store.job_dir(job_id) / "state.json").read_text(encoding="utf-8")
-        )
+        state = json.loads((orch_store.job_dir(job_id) / "state.json").read_text(encoding="utf-8"))
         artifacts = [
             f.name
             for f in sorted(orch_store.job_dir(job_id).iterdir())
@@ -310,7 +349,50 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "nodes": state.get("nodes", []),
             "degraded": state.get("degraded", []),
             "artifacts": artifacts,
+            # 任务输入仅暴露 E2E 开关和地址，不暴露鉴权/模型密钥；供前端动态呈现可选子流程。
+            "rest_url": _job_rest_url(orch_store, job_id),
+            "e2e": _job_e2e_config(orch_store, job_id),
         }
+
+    @app.get("/api/v1/jobs/{job_id}/logs")
+    async def job_logs(job_id: str) -> dict[str, Any]:
+        """合并当前与历次归档的 LLM 留痕，重跑后仍可在总览查看运行历史。"""
+        _require_job(app, job_id)
+        entries: list[dict[str, Any]] = []
+        for path in orch_store.job_dir(job_id).rglob("*.jsonl"):
+            if path.name not in {"llm_calls.jsonl", "review_log.jsonl", "runtime_log.jsonl"}:
+                continue
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    item = json.loads(line)
+                    if isinstance(item, dict):
+                        entries.append(item)
+            except (OSError, json.JSONDecodeError):
+                continue
+        unique = {str(item.get("call_id", f"{index}")): item for index, item in enumerate(entries)}
+        return {"logs": sorted(unique.values(), key=lambda item: str(item.get("timestamp", "")))}
+
+    @app.get("/api/v1/jobs/{job_id}/export")
+    async def export_job(job_id: str) -> StreamingResponse:
+        """导出用户可见结果产物；排除 job_input、原始文档、密钥与归档内部元数据。"""
+        _require_job(app, job_id)
+        root = orch_store.job_dir(job_id)
+        allowed = set(_ARTIFACT_WHITELIST) | {"test_report.md", "metrics.json"}
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(root.iterdir()):
+                if path.is_file() and path.name in allowed:
+                    archive.writestr(path.name, path.read_bytes())
+            scripts = root / "scripts"
+            if scripts.is_dir():
+                for path in sorted(scripts.rglob("*.py")):
+                    archive.writestr(str(path.relative_to(root)), path.read_bytes())
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{job_id}-results.zip"'},
+        )
 
     @app.get("/api/v1/jobs/{job_id}/artifacts/{name}")
     async def read_artifact(job_id: str, name: str) -> Any:
@@ -385,7 +467,22 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 status_code=400,
                 detail=f"from_node 须为 9 节点之一：{force_node}（可选：{'、'.join(NODE_ORDER)}）",
             )
-        _load_job_input(orch_store, job_id)  # 非 Web 提交无原始输入 → 409 同复测口径
+        job_input = _load_job_input(orch_store, job_id)  # 非 Web 提交无原始输入 → 409 同复测口径
+        if request.rest_url is not None:
+            if not request.rest_url.startswith(("http://", "https://")):
+                raise HTTPException(status_code=400, detail="rest_url 须为 http(s) 地址")
+            job_input["rest_url"] = request.rest_url.rstrip("/")
+        if request.e2e is not None:
+            if not request.e2e.base_url.startswith(("http://", "https://")):
+                raise HTTPException(status_code=400, detail="e2e.base_url 须为 http(s) 地址")
+            job_input["e2e"] = request.e2e.model_dump()
+        if request.rest_url is not None or request.e2e is not None:
+            # 仅更新执行目标，不读取/返回 auth 或 API key。重跑的级联归档仍由 force_node 负责。
+            (orch_store.job_dir(job_id) / "job_input.json").write_text(
+                json.dumps(job_input, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        if request.llm is not None:
+            app.state.job_llm_configs[job_id] = request.llm.model_dump()
         _spawn_run(app, job_id, force_node=force_node)
         return {"job_id": job_id, "status": "rerun-queued", "from_node": force_node}
 
@@ -482,9 +579,7 @@ def _save_docs(orch_store: ArtifactStore, job_id: str, docs: list[DocInput]) -> 
     以落盘顺序为准（LLM 单次解析全部拼接）。
     """
     if len(docs) > MAX_DOCS:
-        raise HTTPException(
-            status_code=400, detail=f"需求文档数超过上限 {MAX_DOCS} 份（C-12）"
-        )
+        raise HTTPException(status_code=400, detail=f"需求文档数超过上限 {MAX_DOCS} 份（C-12）")
     paths: list[Path] = []
     used_names: set[str] = set()
     for doc in docs:
@@ -538,6 +633,31 @@ def _load_job_input(orch_store: ArtifactStore, job_id: str) -> dict[str, Any]:
     return payload
 
 
+def _job_e2e_config(orch_store: ArtifactStore, job_id: str) -> dict[str, Any] | None:
+    """读取任务的非敏感 E2E 开关；历史/CLI 任务缺输入时按未启用处理。"""
+    try:
+        payload = _load_job_input(orch_store, job_id).get("e2e")
+    except HTTPException:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "base_url": str(payload.get("base_url", "")),
+        "generate_cases": bool(payload.get("generate_cases")),
+        "execute_cases": bool(payload.get("execute_cases")),
+        "insecure_tls": bool(payload.get("insecure_tls", True)),
+    }
+
+
+def _job_rest_url(orch_store: ArtifactStore, job_id: str) -> str | None:
+    """供重跑表单预填的非敏感接口目标地址。"""
+    try:
+        value = _load_job_input(orch_store, job_id).get("rest_url")
+    except HTTPException:
+        return None
+    return str(value) if value else None
+
+
 def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None:
     """后台驱动 PipelineRunner（同一入口 F-ORCH-01；force_node 归档留痕）。"""
     job_input = _load_job_input(app.state.orch_store, job_id)
@@ -548,18 +668,25 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
         doc_paths = [Path(job_input["doc_path"])]
     # C-15：鉴权配置随原始输入复用（rerun/retest 全量同样生效）
     auth = job_input.get("auth")
+    # 重跑优先复用仍在内存中的密钥；服务重启后回退部署环境变量，绝不从磁盘读密钥。
+    llm_config = app.state.job_llm_configs.get(job_id)
 
     async def _run() -> None:
         runner: PipelineRunner = app.state.runner
         try:
-            outcome = await runner.run(
-                job_id=job_id,
-                doc_paths=doc_paths,
-                repositories=repositories,
-                rest_base_url=job_input["rest_url"],
-                force_node=force_node,
-                auth=auth,
-            )
+            run_args: dict[str, Any] = {
+                "job_id": job_id,
+                "doc_paths": doc_paths,
+                "repositories": repositories,
+                "rest_base_url": job_input["rest_url"],
+                "force_node": force_node,
+                "auth": auth,
+            }
+            if job_input.get("e2e") is not None:
+                run_args["e2e"] = job_input["e2e"]
+            if llm_config is not None:
+                run_args["llm_config"] = llm_config
+            outcome = await runner.run(**run_args)
             app.state.job_outcomes[job_id] = outcome
             logger.info("job %s 完成（force_node=%s）", job_id, force_node)
         except Exception:

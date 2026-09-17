@@ -16,6 +16,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from helpers import requirement_review_payload
 from orchestrator.api import create_app
 from orchestrator.config import Settings
 from orchestrator.pipeline import NODE_ORDER, NodeStatus
@@ -42,6 +43,7 @@ class FakeRunner:
         rest_base_url: str,
         force_node: str | None = None,
         auth: dict[str, Any] | None = None,
+        llm_config: dict[str, Any] | None = None,
     ) -> PipelineOutcome:
         self.calls.append(
             {
@@ -51,6 +53,7 @@ class FakeRunner:
                 "rest_base_url": rest_base_url,
                 "force_node": force_node,
                 "auth": auth,
+                "llm_config": llm_config,
             }
         )
         job_dir = self.orch_store.job_dir(job_id)
@@ -64,6 +67,9 @@ class FakeRunner:
         )
         self.orch_store.write(
             job_id, "requirement_items.json", self._payload("requirement_items", job_id)
+        )
+        self.orch_store.write(
+            job_id, "requirement_review.json", requirement_review_payload(job_id)
         )
         self.orch_store.write(
             job_id, "code_inventory.json", self._payload("code_inventory", job_id)
@@ -505,6 +511,35 @@ async def test_submit_job_auth_persisted_and_passed(
     assert response.status_code == 202
     await _await_task(app, "job-api-auth2")
     assert fake.calls[-1]["auth"] is None
+
+
+async def test_submit_job_llm_key_is_runtime_only(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """MiniMax 配置传给本次 Runner，但 API Key 不得进入 job_input.json。"""
+    app, fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-llm1")
+    body["llm"] = {
+        "api_key": "sk-test-key-123456",
+        "model": "MiniMax-M2",
+        "base_url": "https://api.minimaxi.com/v1",
+        "max_tokens": 8192,
+    }
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 202
+    await _await_task(app, "job-api-llm1")
+    saved = json.loads(
+        (
+            Path(str(app.state.settings.artifacts_root)) / "job-api-llm1" / "job_input.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert saved["llm"] == {
+        "model": "MiniMax-M2",
+        "base_url": "https://api.minimaxi.com/v1",
+        "max_tokens": 8192,
+    }
+    assert "api_key" not in saved["llm"]
+    assert fake.calls[-1]["llm_config"]["api_key"] == "sk-test-key-123456"
 
 
 async def test_job_status_and_artifacts(

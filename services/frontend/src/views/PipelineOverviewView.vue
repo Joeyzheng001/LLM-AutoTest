@@ -3,10 +3,10 @@
 // 运行中每 3s 轮询，离开页面即停）+ 自动化率卡片（metrics.json 后端汇总，前端不计算）。
 // C-16：节点卡可点击跳转对应页面（携带 jobId）；接口还原清单移除（独立页「源码扫描与接口还原」已有）。
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { getJobStatus, getMetrics, listJobs, rerunJob } from '../api/client'
-import type { JobListItem, JobStatus, MetricsPayload, NodeState } from '../api/types'
+import { exportJobResults, getJobStatus, getLlmCallLogs, getMetrics, listJobs, rerunJob } from '../api/client'
+import type { JobListItem, JobStatus, LlmCallLog, MetricsPayload, NodeState } from '../api/types'
 import { NODE_LABELS, STATUS_LABELS } from '../api/labels'
-import { navigateTo } from '../api/navigation'
+import { navigateTo, navigation } from '../api/navigation'
 
 const POLL_INTERVAL_MS = 3000
 const LIST_REFRESH_MS = 10000
@@ -18,6 +18,7 @@ const selectedId = ref('')
 const status = ref<JobStatus | null>(null)
 const statusError = ref('')
 const metrics = ref<MetricsPayload | null>(null)
+const llmLogs = ref<LlmCallLog[]>([])
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -26,6 +27,12 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 const rerunning = ref(false)
 const rerunError = ref('')
 const rerunFromNode = ref('req_parse')
+const rerunApiKey = ref('')
+const rerunModel = ref('MiniMax-M3')
+const rerunRestUrl = ref('')
+const rerunE2eUrl = ref('')
+const rerunE2eInsecureTls = ref(true)
+let configForJobId = ''
 
 // 重跑起始节点选项（req_parse = 全量；其余从该节点起级联失效下游）
 const rerunOptions = Object.entries(NODE_LABELS).map(([name, label]) => ({
@@ -39,7 +46,23 @@ async function handleRerun(): Promise<void> {
   rerunError.value = ''
   try {
     const from = rerunFromNode.value || 'req_parse'
-    await rerunJob(selectedId.value, from === 'req_parse' ? undefined : from)
+    await rerunJob(selectedId.value, {
+      ...(from === 'req_parse' ? {} : { from_node: from }),
+      ...(rerunRestUrl.value.trim() ? { rest_url: rerunRestUrl.value.trim() } : {}),
+      ...(status.value?.e2e && rerunE2eUrl.value.trim()
+        ? {
+            e2e: {
+              base_url: rerunE2eUrl.value.trim(),
+              generate_cases: status.value.e2e.generate_cases,
+              execute_cases: status.value.e2e.execute_cases,
+              insecure_tls: rerunE2eInsecureTls.value,
+            },
+          }
+        : {}),
+      ...(rerunApiKey.value
+        ? { llm: { api_key: rerunApiKey.value, model: rerunModel.value, base_url: 'https://api.minimaxi.com/v1', max_tokens: 16384 } }
+        : {}),
+    })
     // 入队后立即刷新：级联失效 → 节点状态翻转为运行中 → watch 接管轮询
     await refreshDetail()
   } catch (err) {
@@ -66,13 +89,27 @@ async function refreshDetail(): Promise<void> {
   if (!selectedId.value) {
     status.value = null
     metrics.value = null
+    navigation.e2e = null
     return
   }
   statusError.value = ''
   try {
     status.value = await getJobStatus(selectedId.value)
+    if (configForJobId !== selectedId.value) {
+      configForJobId = selectedId.value
+      rerunRestUrl.value = status.value.rest_url ?? ''
+      rerunE2eUrl.value = status.value.e2e?.base_url ?? ''
+      rerunE2eInsecureTls.value = status.value.e2e?.insecure_tls ?? true
+    }
+    navigation.e2e = status.value.e2e
+      ? {
+          generateCases: status.value.e2e.generate_cases,
+          executeCases: status.value.e2e.execute_cases,
+        }
+      : null
   } catch (err) {
     status.value = null
+    navigation.e2e = null
     statusError.value = err instanceof Error ? err.message : 'job 状态加载失败'
   }
   // 派生产物独立加载：节点未跑到时如实提示，不阻塞状态展示
@@ -81,6 +118,7 @@ async function refreshDetail(): Promise<void> {
   } catch {
     metrics.value = null
   }
+  llmLogs.value = await getLlmCallLogs(selectedId.value)
 }
 
 function stopPolling(): void {
@@ -139,15 +177,25 @@ const NODE_VIEW: Record<string, string> = {
   test_report: 'report',
   defect_list: 'defects',
   retest_regression: 'regression',
+  e2e_case_generate: 'e2e-cases',
+  e2e_execute: 'e2e-execution',
 }
 
 const nodesInOrder = computed<OrderedNode[]>(() => {
   const byName = new Map((status.value?.nodes ?? []).map((node) => [node.name, node]))
-  return Object.entries(NODE_LABELS).map(([name, label]) => ({
-    name,
-    label,
-    node: byName.get(name),
-  }))
+  const result: OrderedNode[] = []
+  for (const [name, label] of Object.entries(NODE_LABELS)) {
+    const node = byName.get(name)
+    result.push({ name, label, node })
+    // 可选子节点继承父节点的生命周期展示，但不写入 state.json/自动化率分母。
+    if (name === 'testcase_generate' && status.value?.e2e?.generate_cases) {
+      result.push({ name: 'e2e_case_generate', label: '└ E2E 用例生成（可选）', node })
+    }
+    if (name === 'auto_execute' && status.value?.e2e?.generate_cases && status.value.e2e.execute_cases) {
+      result.push({ name: 'e2e_execute', label: '└ E2E 浏览器执行（可选）', node })
+    }
+  }
+  return result
 })
 
 /* C-16：节点卡跳转——已完成/降级节点可点（有产物可看），pending/running 灰置 */
@@ -170,7 +218,29 @@ function formatRate(value: number | null): string {
 }
 
 function formatTime(iso: string | null): string {
-  return iso ? iso.replace('T', ' ').replace('Z', ' UTC').slice(0, 23) : '—'
+  if (!iso) return '—'
+  const value = new Date(iso)
+  return Number.isNaN(value.getTime()) ? iso : value.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).replaceAll('/', '-')
+}
+
+function formatLogMessage(entry: LlmCallLog): string {
+  if (entry.event === 'started') {
+    return `第 ${entry.batch?.index}/${entry.batch?.total} 批已发起（${entry.batch?.requirements} 条需求）`
+  }
+  if (entry.event === 'e2e_started') return entry.message ?? `开始执行 ${entry.total ?? 0} 条前端 E2E 用例`
+  if (entry.event === 'e2e_case_started') {
+    return `E2E ${entry.index}/${entry.total} · ${entry.case_id ?? '用例'} 开始执行`
+  }
+  if (entry.event === 'e2e_case_completed') {
+    const outcome = entry.ok ? '通过' : `失败 · ${entry.message ?? '未知原因'}`
+    return `E2E ${entry.index}/${entry.total} · ${entry.case_id ?? '用例'} ${outcome}${entry.duration_ms ? ` · ${entry.duration_ms}ms` : ''}`
+  }
+  return entry.ok
+    ? `模型调用完成 · ${entry.duration_ms ?? 0}ms${entry.tokens ? ` · ${entry.tokens} tokens` : ''}`
+    : `调用失败 · ${entry.error ?? '未知错误'}`
 }
 </script>
 
@@ -202,8 +272,13 @@ function formatTime(iso: string | null): string {
     <!-- 右：选中 job 详情 -->
     <section v-if="status" class="detail">
       <header class="detail-head">
-        <h2 class="mono">{{ status.job_id }}</h2>
-        <span class="mono detail-meta">{{ formatTime(status.updated_at) }}</span>
+        <div>
+          <h2 class="mono">{{ status.job_id }}</h2>
+          <p class="detail-subtitle">{{ status.running ? '任务正在运行，状态与日志会自动刷新' : '任务已停止，可查看结果或从指定节点重跑' }}</p>
+        </div>
+        <span class="mono detail-meta">更新于 {{ formatTime(status.updated_at) }}</span>
+      </header>
+      <div class="action-bar">
         <div class="rerun-controls">
           <select v-model="rerunFromNode" class="mono rerun-select" aria-label="重跑起始节点">
             <option v-for="option in rerunOptions" :key="option.name" :value="option.name">
@@ -218,47 +293,51 @@ function formatTime(iso: string | null): string {
           >
             {{ rerunning ? '重跑中…' : '重跑' }}
           </button>
+          <button class="rerun-btn secondary" type="button" :disabled="!selectedId" @click="exportJobResults(selectedId)">导出结果</button>
         </div>
-      </header>
+        <div class="model-control">
+          <input
+            v-model="rerunApiKey"
+            class="rerun-key"
+            type="password"
+            autocomplete="off"
+            placeholder="重启服务后请填 API Key"
+            aria-label="重跑 LLM API Key"
+          />
+          <select v-model="rerunModel" class="mono rerun-select" aria-label="重跑语言模型">
+            <option>MiniMax-M3</option>
+            <option>MiniMax-M2.7</option>
+            <option>MiniMax-M2.5</option>
+          </select>
+        </div>
+        <div class="rerun-targets">
+          <label title="填写服务根地址，不要填写具体接口（例如 /api/auth/login）">接口目标
+            <input v-model="rerunRestUrl" class="rerun-url mono" type="url" placeholder="https://host:port" aria-label="重跑接口目标地址" />
+          </label>
+          <label v-if="status.e2e">E2E 目标
+            <input v-model="rerunE2eUrl" class="rerun-url mono" type="url" placeholder="https://host:port" aria-label="重跑 E2E 目标地址" />
+          </label>
+          <label v-if="status.e2e" class="rerun-check"><input v-model="rerunE2eInsecureTls" type="checkbox" /> 跳过 E2E 证书校验</label>
+        </div>
+      </div>
 
       <p v-if="rerunError" class="state-error" role="alert">{{ rerunError }}</p>
       <p class="rerun-note">
-        重跑会将目标节点及其全部下游旧产物归档（带时间戳防覆盖）并重置后重跑（C-14，避免新旧数据混用）。
+        可修改接口/E2E 目标后重跑：仅改执行地址时请选择「从自动执行起」，不会重新调用 LLM；改需求、仓库或 E2E 生成开关请新建任务，避免混入旧分析产物。
       </p>
 
       <p v-if="statusError" class="state-error" role="alert">{{ statusError }}</p>
-
-      <!-- 自动化率（数值来自后端 metrics.json 程序化汇总） -->
-      <div class="rate-row">
-        <div v-if="metrics" class="rate-block">
-          <span class="rate-value mono">{{ formatRate(metrics.automation_rate.value) }}</span>
-          <span class="rate-label">
-            自动化率 ·
-            <span class="mono"
-              >{{ metrics.automation_rate.numerator }}/{{
-                metrics.automation_rate.denominator
-              }}</span
-            >
-            （分母固定 9）
-          </span>
-        </div>
-        <div v-else class="rate-block rate-pending">
-          <span class="rate-value mono">—</span>
-          <span class="rate-label">自动化率 · metrics 尚未生成（任务未完整跑完）</span>
-        </div>
-        <div v-if="metrics && metrics.automation_rate.value === null" class="hint hint-warning">
-          数据不完整，不输出误导数值（X-MTR-02）
-        </div>
-      </div>
 
       <!-- 降级清单（D1：如实标注，分母不缩减） -->
       <div v-for="record in status.degraded" :key="record.node" class="hint hint-warning">
         降级 · {{ NODE_LABELS[record.node] ?? record.node }}：{{ record.reason }}（按人工介入计入）
       </div>
 
-      <!-- 9 节点流水线（R-MTR-01 固定口径；C-16 点击跳转对应页面） -->
-      <div class="pipeline">
-        <div v-for="(entry, index) in nodesInOrder" :key="index" class="node-wrap">
+      <div class="flow-layout">
+        <section class="flow-panel">
+          <header class="flow-title">执行流程 <span>9 个核心节点 · E2E 按配置显示</span></header>
+          <div class="pipeline">
+            <div v-for="(entry, index) in nodesInOrder" :key="index" class="node-wrap" :class="{ optional: entry.name.startsWith('e2e_') }">
           <div
             v-if="entry.node"
             class="node"
@@ -270,15 +349,50 @@ function formatTime(iso: string | null): string {
             @click="handleNodeClick(entry)"
             @keydown.enter="handleNodeClick(entry)"
           >
-            <span class="node-index mono">{{ String(index + 1).padStart(2, '0') }}</span>
-            <span class="node-label">{{ entry.label }}</span>
-            <span class="node-status">{{
-              STATUS_LABELS[entry.node.status] ?? entry.node.status
-            }}</span>
-            <span v-if="entry.node.error" class="node-error">{{ entry.node.error.message }}</span>
+            <span class="node-index mono">{{ entry.name.startsWith('e2e_') ? '·' : String(index + 1).padStart(2, '0') }}</span>
+            <span class="node-main"><span class="node-label">{{ entry.label }}</span><span v-if="entry.node.error" class="node-error">{{ entry.node.error.message }}</span></span>
+            <span class="node-status"><i class="status-dot" aria-hidden="true" />{{ STATUS_LABELS[entry.node.status] ?? entry.node.status }}</span>
           </div>
-        </div>
+            </div>
+          </div>
+        </section>
+        <aside class="progress-panel">
+          <header class="flow-title">核心进度</header>
+          <template v-if="metrics">
+            <span class="rate-value mono">{{ formatRate(metrics.automation_rate.value) }}</span>
+            <span class="rate-label">自动化率 · <span class="mono">{{ metrics.automation_rate.numerator }}/{{ metrics.automation_rate.denominator }}</span>（分母固定 9）</span>
+          </template>
+          <template v-else><span class="rate-value mono">—</span><span class="rate-label">任务尚未完整跑完</span></template>
+          <div v-if="metrics && metrics.automation_rate.value === null" class="hint hint-warning">数据不完整，暂不输出自动化率</div>
+          <div class="progress-divider" />
+          <div class="progress-summary">
+            <span>当前阶段</span>
+            <strong>{{ status.running ? '执行中' : '任务已结束' }}</strong>
+          </div>
+          <div class="progress-summary">
+            <span>E2E 子流程</span>
+            <strong>{{ status.e2e?.execute_cases ? '已启用浏览器执行' : status.e2e?.generate_cases ? '仅生成用例' : '未启用' }}</strong>
+          </div>
+          <p class="progress-note">可选 E2E 不计入核心节点自动化率；结果会在独立 E2E 页面与测试报告中展示。</p>
+        </aside>
       </div>
+
+      <section class="run-log" aria-live="polite">
+        <div class="run-log-head">
+          <h3>运行日志</h3>
+          <span>{{ status.running ? '实时刷新中' : '任务已停止' }} · {{ llmLogs.length }} 条</span>
+        </div>
+        <p v-if="!llmLogs.length" class="run-log-empty">
+          {{ status.running ? '正在准备任务，首个模型调用完成后会显示进度。' : '暂无模型调用记录。' }}
+        </p>
+        <ol v-else class="run-log-list">
+          <li v-for="(entry, index) in llmLogs.slice().reverse()" :key="entry.call_id ?? `${entry.timestamp}-${index}`">
+            <span class="mono">{{ formatTime(entry.timestamp) }}</span>
+            <b>{{ NODE_LABELS[entry.node] ?? entry.node }}</b>
+            <span>{{ formatLogMessage(entry) }}</span>
+          </li>
+        </ol>
+      </section>
     </section>
 
     <section v-else class="detail">
@@ -416,6 +530,12 @@ function formatTime(iso: string | null): string {
   word-break: break-all;
 }
 
+.detail-subtitle {
+  margin: var(--space-1) 0 0;
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
 .detail-meta {
   color: var(--text-3);
   font-size: var(--text-sm);
@@ -440,6 +560,56 @@ function formatTime(iso: string | null): string {
   gap: var(--space-2);
 }
 
+.action-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  margin: 0 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.model-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.rerun-targets {
+  display: flex;
+  align-items: center;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.rerun-targets label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.rerun-url {
+  width: min(280px, 32vw);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+
+.rerun-check { white-space: nowrap; }
+
 .rerun-select {
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border);
@@ -448,6 +618,17 @@ function formatTime(iso: string | null): string {
   color: var(--text-2);
   font-size: var(--text-xs);
   max-width: 220px;
+}
+
+.rerun-key {
+  min-width: 0;
+  width: min(260px, 34vw);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-2);
+  background: var(--surface);
+  font-size: var(--text-xs);
 }
 
 .rerun-btn {
@@ -459,6 +640,12 @@ function formatTime(iso: string | null): string {
   font-size: var(--text-sm);
   cursor: pointer;
   white-space: nowrap;
+}
+
+.rerun-btn.secondary {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--text-2);
 }
 
 .rerun-btn:hover:not(:disabled) {
@@ -476,6 +663,21 @@ function formatTime(iso: string | null): string {
   font-size: var(--text-xs);
   color: var(--text-3);
 }
+
+.run-log {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.run-log-head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
+.run-log-head h3 { margin: 0; font-size: var(--text-sm); }
+.run-log-head span, .run-log-empty { color: var(--text-3); font-size: var(--text-xs); }
+.run-log-empty { margin: var(--space-2) 0 0; }
+.run-log-list { display: grid; gap: var(--space-2); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+.run-log-list li { display: grid; grid-template-columns: 150px 130px 1fr; gap: var(--space-2); color: var(--text-2); font-size: var(--text-xs); }
 
 /* 自动化率 */
 .rate-row {
@@ -529,27 +731,66 @@ function formatTime(iso: string | null): string {
   border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
 }
 
-/* 9 节点流水线 */
-.pipeline {
+/* 9 核心节点 + 按配置显示的 E2E 子流程 */
+.flow-layout {
+  display: grid;
+  grid-template-columns: minmax(380px, 1.1fr) minmax(320px, 0.9fr);
+  gap: var(--space-4);
+  align-items: start;
+  margin: var(--space-4) 0;
+}
+
+.flow-panel,
+.progress-panel {
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.flow-title {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4) var(--space-2);
-  margin-top: var(--space-4);
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.flow-title span {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 400;
+}
+
+.pipeline {
+  display: grid;
+  gap: var(--space-2);
+  /* 节点较多时在流程卡片内滚动，避免把紧随其后的实时日志推到首屏之外。 */
+  max-height: 430px;
+  padding-right: var(--space-1);
+  overflow-y: auto;
 }
 
 .node-wrap {
-  display: flex;
-  align-items: center;
+  min-width: 0;
+}
+
+.node-wrap.optional {
+  margin-left: var(--space-4);
+  padding-left: var(--space-3);
+  border-left: 1px dashed var(--border-strong);
 }
 
 .node {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 104px;
-  max-width: 132px;
-  padding: var(--space-3);
-  background: var(--surface-2);
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 46px;
+  padding: 9px var(--space-3);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
 }
@@ -570,6 +811,12 @@ function formatTime(iso: string | null): string {
   color: var(--text-3);
 }
 
+.node-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
 .node-label {
   font-size: var(--text-md);
   font-weight: 500;
@@ -577,28 +824,89 @@ function formatTime(iso: string | null): string {
 }
 
 .node-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: var(--text-xs);
   color: var(--text-3);
+  white-space: nowrap;
 }
 
 .node-error {
-  font-size: 10px;
+  display: block;
+  max-width: 100%;
+  max-height: 34px;
+  overflow: auto;
+  font-size: var(--text-xs);
   color: var(--warning);
-  word-break: break-all;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.node[data-status='completed'] .status-dot { background: var(--accent-strong); }
+.node[data-status='running'] .status-dot { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-dim); }
+.node[data-status='manual_intervention'] .status-dot { background: var(--warning); }
+
+.progress-panel .rate-value {
+  margin-top: var(--space-4);
+}
+
+.progress-panel .hint {
+  margin-top: var(--space-3);
+}
+
+.progress-divider {
+  height: 1px;
+  margin: var(--space-4) 0 var(--space-3);
+  background: var(--border);
+}
+
+.progress-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.progress-summary strong {
+  color: var(--text-2);
+  font-weight: 500;
+  text-align: right;
+}
+
+.progress-note {
+  margin: var(--space-3) 0 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  line-height: 1.6;
 }
 
 .node[data-status='completed'] {
-  border-color: var(--accent-glow);
-  background: var(--accent-dim);
+  border-color: var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--surface);
 }
 
 .node[data-status='completed'] .node-label,
 .node[data-status='completed'] .node-status {
-  color: var(--accent-strong);
+  color: var(--text-2);
 }
 
 .node[data-status='running'] {
   border-color: var(--accent-glow);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-dim);
   animation: breathe 1.8s ease-in-out infinite;
 }
 
@@ -630,5 +938,19 @@ function formatTime(iso: string | null): string {
   .running-dot {
     animation: none;
   }
+}
+
+@media (max-width: 960px) {
+  .flow-layout { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+  .action-bar, .model-control, .rerun-controls { align-items: stretch; }
+  .action-bar, .model-control { flex-direction: column; }
+  .rerun-controls { flex-wrap: wrap; }
+  .rerun-key { width: 100%; }
+  .node { grid-template-columns: 24px minmax(0, 1fr); }
+  .node-status { grid-column: 2; }
+  .run-log-list li { grid-template-columns: 1fr; gap: 2px; }
 }
 </style>

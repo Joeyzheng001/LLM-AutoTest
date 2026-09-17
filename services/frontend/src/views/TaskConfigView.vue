@@ -3,7 +3,7 @@
 // 被测服务地址 + 断点续跑开关 + 鉴权配置（C-15，可选）→ POST /api/v1/jobs（后台驱动同一 PipelineRunner，F-ORCH-01）。
 // 红线：协议范围由源码扫描自动识别（非表单参数）；鉴权走表单兜底（C-15，D8 升版），
 // 其余 fixtures 前置数据仍在流程启动前预置，不在本表单收集。
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { submitJob } from '../api/client'
 import type { JobSubmitPayload } from '../api/types'
 
@@ -38,8 +38,61 @@ const auth = reactive({
   insecureTls: true,
 })
 
+// 真实模型配置：随任务提交；可由用户选择仅保存在当前浏览器，避免重复填写。
+const LLM_BROWSER_CONFIG_KEY = 'llm-autotest.llm-config.v1'
+const llmEnabled = ref(true)
+const rememberLlm = ref(true)
+const llm = reactive({
+  apiKey: '',
+  model: 'MiniMax-M3',
+  baseUrl: 'https://api.minimaxi.com/v1',
+  maxTokens: 16384,
+})
+const e2eEnabled = ref(false)
+const e2e = reactive({
+  baseUrl: 'http://47.83.181.191:8080',
+  generateCases: false,
+  executeCases: false,
+  insecureTls: true,
+})
+
+onMounted(() => {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(LLM_BROWSER_CONFIG_KEY) ?? 'null')
+    if (!saved || typeof saved !== 'object') return
+    const config = saved as Record<string, unknown>
+    if (typeof config.apiKey === 'string') llm.apiKey = config.apiKey
+    if (typeof config.model === 'string') llm.model = config.model
+    if (typeof config.baseUrl === 'string') llm.baseUrl = config.baseUrl
+    if (typeof config.maxTokens === 'number') llm.maxTokens = config.maxTokens
+  } catch {
+    // 私密浏览/损坏缓存时继续使用空配置，不阻断任务提交。
+  }
+})
+
+function saveLlmConfig(): void {
+  try {
+    if (!rememberLlm.value) {
+      localStorage.removeItem(LLM_BROWSER_CONFIG_KEY)
+      return
+    }
+    localStorage.setItem(
+      LLM_BROWSER_CONFIG_KEY,
+      JSON.stringify({
+        apiKey: llm.apiKey.trim(),
+        model: llm.model,
+        baseUrl: llm.baseUrl.trim(),
+        maxTokens: llm.maxTokens,
+      }),
+    )
+  } catch {
+    // 浏览器拒绝存储时只影响预填，不影响本次模型调用。
+  }
+}
+
 const docFiles = reactive<DocRow[]>([])
 const docError = ref('')
+const docInput = ref<HTMLInputElement | null>(null)
 const repos = reactive<RepoRow[]>([
   {
     name: 'user-service',
@@ -97,9 +150,23 @@ const authValid = computed(
       auth.password !== ''),
 )
 
+const llmValid = computed(
+  () =>
+    !llmEnabled.value ||
+    (llm.apiKey.trim().length >= 8 &&
+      llm.model.trim() !== '' &&
+      llm.baseUrl.trim().startsWith('http') &&
+      llm.maxTokens >= 1024 &&
+      llm.maxTokens <= 16384),
+)
+
 const formValid = computed(
   () =>
-    docFiles.length >= 1 && reposValid.value && form.restUrl.startsWith('http') && authValid.value,
+    docFiles.length >= 1 &&
+    reposValid.value &&
+    form.restUrl.startsWith('http') &&
+    authValid.value &&
+    llmValid.value,
 )
 
 function pickDocs(event: Event): void {
@@ -119,6 +186,22 @@ function pickDocs(event: Event): void {
     docFiles.push({ name: file.name, size: file.size, file })
   }
   input.value = '' // 允许移除后重选同一文件
+}
+
+function openDocPicker(): void {
+  // showPicker 是 Chromium 的直接用户激活通道；其他浏览器退回原生 click。
+  const input = docInput.value
+  if (!input) {
+    docError.value = '文件选择器尚未就绪，请刷新页面后重试。'
+    return
+  }
+  try {
+    if (typeof input.showPicker === 'function') input.showPicker()
+    else input.click()
+  } catch {
+    // Safari / 受限 WebView 不支持 showPicker 时，click 仍是标准后备。
+    input.click()
+  }
 }
 
 function readFileAsBase64(file: File): Promise<string> {
@@ -145,6 +228,7 @@ async function handleSubmit(): Promise<void> {
   submitError.value = ''
   submittedJobId.value = ''
   try {
+    if (llmEnabled.value) saveLlmConfig()
     // C-10：docs 列表逐份 base64（后端分节拼接单次送 LLM）
     const docs = await Promise.all(
       docFiles.map(async (row) => ({
@@ -177,6 +261,26 @@ async function handleSubmit(): Promise<void> {
             },
           }
         : {}),
+      ...(llmEnabled.value
+        ? {
+            llm: {
+              api_key: llm.apiKey.trim(),
+              model: llm.model,
+              base_url: llm.baseUrl.trim(),
+              max_tokens: llm.maxTokens,
+            },
+          }
+        : {}),
+      ...(e2eEnabled.value
+        ? {
+            e2e: {
+              base_url: e2e.baseUrl.trim(),
+              generate_cases: e2e.generateCases,
+              execute_cases: e2e.executeCases,
+              insecure_tls: e2e.insecureTls,
+            },
+          }
+        : {}),
     }
     const trimmedJobId = form.jobId.trim()
     if (trimmedJobId && !trimmedJobId.startsWith('job-')) {
@@ -206,10 +310,18 @@ async function handleSubmit(): Promise<void> {
             校验由后端统一执行（F-REQ-04）</span
           >
         </header>
-        <label class="doc-upload" for="doc-file">
-          <input id="doc-file" type="file" accept=".md,.docx,.xlsx" multiple @change="pickDocs" />
-          <span class="doc-placeholder">选择需求文档文件（可多选，至少 1 份）…</span>
-        </label>
+        <input
+          id="doc-file"
+          ref="docInput"
+          class="doc-file-input"
+          type="file"
+          accept=".md,.docx,.xlsx"
+          multiple
+          @change="pickDocs"
+        />
+        <button class="doc-upload" type="button" @click="openDocPicker">
+          选择需求文档文件（可多选，至少 1 份）…
+        </button>
         <ul v-if="docFiles.length" class="doc-list">
           <li v-for="(row, index) in docFiles" :key="row.name" class="doc-item">
             <span class="mono">{{ row.name }}</span>
@@ -221,6 +333,18 @@ async function handleSubmit(): Promise<void> {
         <p class="switch-note">
           多文档在后端按文件名分节拼接后单次送 LLM 解析（需求条目统一编号）；至少上传 1 份。
         </p>
+      </section>
+
+      <section class="field-group">
+        <header class="group-title">前端 E2E 功能测试（可选）</header>
+        <label class="switch-row"><input v-model="e2eEnabled" type="checkbox" /><span>启用前端功能测试配置</span></label>
+        <template v-if="e2eEnabled">
+          <label class="field"><span class="field-label">前端访问地址</span><input v-model="e2e.baseUrl" type="url" placeholder="http://47.83.181.191:8080" /></label>
+          <label class="switch-row"><input v-model="e2e.generateCases" type="checkbox" /><span>生成 E2E 测试用例</span></label>
+          <label class="switch-row"><input v-model="e2e.executeCases" type="checkbox" :disabled="!e2e.generateCases" /><span>执行 E2E 用例（Playwright）</span></label>
+          <label class="switch-row"><input v-model="e2e.insecureTls" type="checkbox" /><span>跳过 HTTPS 证书校验（测试环境自签名证书）</span></label>
+          <p class="switch-note">默认关闭，不影响接口用例；执行前会使用真实浏览器访问上述地址。</p>
+        </template>
       </section>
 
       <!-- 被测仓库（C-10：≥1；R-CODE-01 本地路径口径；D5：兜底分列） -->
@@ -327,6 +451,60 @@ async function handleSubmit(): Promise<void> {
           协议范围由源码扫描自动识别（R-CODE-01，非表单参数）；鉴权可由下方「鉴权配置」提供（C-15，D8
           升版：fixtures 优先、表单兜底）；造数等其余前置数据仍预置于 fixtures，不在本表单收集。
         </p>
+      </section>
+
+      <section class="field-group">
+        <header class="group-title">大模型配置</header>
+        <label class="switch-row">
+          <input v-model="llmEnabled" type="checkbox" />
+          <span>使用本次填写的 MiniMax 配置运行语义节点</span>
+        </label>
+        <template v-if="llmEnabled">
+          <label class="switch-row">
+            <input v-model="rememberLlm" type="checkbox" @change="saveLlmConfig" />
+            <span>在此浏览器记住模型配置和 API Key</span>
+          </label>
+          <label class="field">
+            <span class="field-label">MiniMax API Key</span>
+            <input
+              v-model="llm.apiKey"
+              type="password"
+              autocomplete="new-password"
+              placeholder="sk-…"
+            />
+          </label>
+          <div class="two-col">
+            <label class="field">
+              <span class="field-label">模型</span>
+              <select v-model="llm.model">
+                <option value="MiniMax-M3">MiniMax M3</option>
+                <option value="MiniMax-M2.7">MiniMax M2.7</option>
+                <option value="MiniMax-M2.5">MiniMax M2.5</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">单次最大输出 Token</span>
+              <input
+                v-model.number="llm.maxTokens"
+                type="number"
+                min="1024"
+                max="16384"
+                step="1024"
+              />
+            </label>
+          </div>
+          <label class="field">
+            <span class="field-label">OpenAI 兼容地址</span>
+            <input v-model="llm.baseUrl" type="url" class="mono" />
+          </label>
+          <p v-if="!llmValid" class="field-error">
+            请填写有效 API Key、模型、服务地址和 1024–16384 的 Token 上限。
+          </p>
+          <p class="switch-note">
+            勾选“记住”后，密钥仅保存在当前浏览器的本地存储，不会写入 job_input、产物或 LLM 调用留痕；
+            取消勾选会立即清除。需求解析、接口还原、Code Review、用例生成会按章节或实体分批调用，再由程序校验并合并。
+          </p>
+        </template>
       </section>
 
       <!-- C-15：鉴权配置（可选；执行前登录被测服务注入凭据头，数值/凭据不经 LLM） -->
@@ -464,15 +642,19 @@ async function handleSubmit(): Promise<void> {
   transition: border-color 0.15s;
 }
 
+.doc-file-input {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .doc-upload:hover,
 .doc-upload:focus-within {
   border-color: var(--accent);
 }
 
-.doc-upload input[type='file'] {
-  color: var(--text-2);
-  font-size: var(--text-sm);
-}
 
 /* C-10：已选文档清单 */
 .doc-list {

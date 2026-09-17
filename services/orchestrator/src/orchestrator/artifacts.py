@@ -28,6 +28,7 @@ JOB_ID_RE = re.compile(r"^job-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # 丙负责的执行侧产物由 test-executor 直接写入产物卷。
 ARTIFACT_FILES: tuple[str, ...] = (
     "requirement_items.json",
+    "requirement_review.json",
     "code_inventory.json",
     "interface_candidates.json",
     "interfaces.json",
@@ -42,6 +43,7 @@ _MD_ARTIFACTS: tuple[str, ...] = ("test_report.md",)
 
 _WRITE_OWNERS: dict[str, str] = {
     "requirement_items.json": "orchestrator",
+    "requirement_review.json": "orchestrator",
     "code_inventory.json": "orchestrator",
     "interface_candidates.json": "orchestrator",
     "interfaces.json": "orchestrator",

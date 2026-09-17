@@ -1,11 +1,16 @@
 # 编排唯一事实来源（docs/09 第十一章）
 # 使用：docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
+# 构建相对路径以本文件所在目录（deploy/）为基准：
+# orchestrator/frontend 上下文 = 仓库根（Dockerfile 内 COPY prompts/schemas/nginx.conf）
 services:
   java-parser:
     build: ../services/java-parser
     image: llm-autotest/java-parser:0.1.0
     ports:
       - "8081:8080"
+    environment:
+      # 2C/888MB 小规格机器：JVM 堆上限显式约束（JVM 原生识别该变量）
+      JAVA_TOOL_OPTIONS: "-Xmx192m -Xms64m"
     volumes:
       - artifacts:/data/llm-autotest
     healthcheck:
@@ -16,7 +21,9 @@ services:
     restart: unless-stopped
 
   orchestrator:
-    build: ../services/orchestrator
+    build:
+      context: ..
+      dockerfile: services/orchestrator/Dockerfile
     image: llm-autotest/orchestrator:0.1.0
     ports:
       - "8000:8000"
@@ -26,13 +33,17 @@ services:
       - .env
     volumes:
       - artifacts:/data/llm-autotest
+      # 被测仓库宿主机目录（代码扫描/接口还原直读本地路径；只读）
+      - /opt/repos:/opt/repos:ro
     depends_on:
       java-parser:
         condition: service_healthy
     restart: unless-stopped
 
   frontend:
-    build: ../services/frontend
+    build:
+      context: ..
+      dockerfile: services/frontend/Dockerfile
     image: llm-autotest/frontend:0.1.0
     ports:
       - "8080:80"

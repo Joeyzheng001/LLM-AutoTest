@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/requirement_review",
+  "title": "需求质量评审（模块 1 REQ 子阶段）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "job_id", "source_files", "score", "quality_grade", "summary",
+    "dimension_scores", "quality_assessment", "issues", "readable_issue_points",
+    "completeness_issues", "consistency_issues", "untestable_items", "risk_flags",
+    "testable_features", "mindmap"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "job_id": { "type": "string", "pattern": "^job-" },
+    "source_files": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "quality_grade": { "type": "string", "enum": ["A", "B", "C", "D"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "dimension_scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["需求完整性", "一致性与逻辑性", "可测试性", "清晰度与规范性", "风险与依赖描述"],
+      "properties": {
+        "需求完整性": { "$ref": "#/$defs/dimension" },
+        "一致性与逻辑性": { "$ref": "#/$defs/dimension" },
+        "可测试性": { "$ref": "#/$defs/dimension" },
+        "清晰度与规范性": { "$ref": "#/$defs/dimension" },
+        "风险与依赖描述": { "$ref": "#/$defs/dimension" }
+      }
+    },
+    "quality_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grade", "grade_name", "summary_reason"],
+      "properties": {
+        "grade": { "type": "string", "enum": ["A", "B", "C", "D"] },
+        "grade_name": { "type": "string", "minLength": 1 },
+        "summary_reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "issues": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/issue" } },
+    "readable_issue_points": { "type": "array", "maxItems": 10, "items": { "type": "string", "minLength": 1 } },
+    "completeness_issues": { "type": "array", "maxItems": 20, "items": { "type": "string" } },
+    "consistency_issues": { "type": "array", "maxItems": 20, "items": { "type": "string" } },
+    "untestable_items": { "type": "array", "maxItems": 20, "items": { "type": "string" } },
+    "risk_flags": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "desc"],
+        "properties": { "type": { "type": "string", "minLength": 1 }, "desc": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "testable_features": { "type": "array", "maxItems": 30, "items": { "type": "string", "minLength": 1 } },
+    "mindmap": { "$ref": "#/$defs/mindmap" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "quality_grade": { "const": "A" } } },
+      "then": { "properties": { "quality_assessment": { "properties": { "grade": { "const": "A" } } } } }
+    },
+    {
+      "if": { "properties": { "quality_grade": { "const": "B" } } },
+      "then": { "properties": { "quality_assessment": { "properties": { "grade": { "const": "B" } } } } }
+    },
+    {
+      "if": { "properties": { "quality_grade": { "const": "C" } } },
+      "then": { "properties": { "quality_assessment": { "properties": { "grade": { "const": "C" } } } } }
+    },
+    {
+      "if": { "properties": { "quality_grade": { "const": "D" } } },
+      "then": { "properties": { "quality_assessment": { "properties": { "grade": { "const": "D" } } } } }
+    }
+  ],
+  "$defs": {
+    "dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["weight", "score", "reason"],
+      "properties": {
+        "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "priority", "location", "question", "reason", "impact"],
+      "properties": {
+        "type": { "type": "string", "enum": ["缺失信息", "歧义", "冲突", "不可测", "其它", "建议"] },
+        "priority": { "type": "string", "enum": ["高", "中", "低"] },
+        "location": { "type": "string", "minLength": 1 },
+        "question": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "impact": { "type": "string", "minLength": 1 }
+      }
+    },
+    "mindmap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["主题", "子主题"],
+      "properties": {
+        "主题": { "type": "string", "minLength": 1 },
+        "子主题": { "type": "array", "maxItems": 12, "items": { "$ref": "#/$defs/mindmap" } }
+      }
+    }
+  }
+}

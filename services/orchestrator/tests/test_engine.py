@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from helpers import requirement_review_payload
 from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import NODE_ARTIFACTS, Engine, JobState
 from orchestrator.errors import PipelineError
@@ -90,6 +91,7 @@ def test_full_lifecycle_one_node(env: tuple[Engine, ArtifactStore]) -> None:
     assert state.node("req_parse").error is not None
 
     # 产物落盘后置完成
+    store.write(_JOB, "requirement_review.json", requirement_review_payload(_JOB))
     store.write(_JOB, "requirement_items.json", _VALID_REQUIREMENT_ITEMS)
     engine.mark_completed(state, "req_parse")
     assert state.node("req_parse").status is NodeStatus.COMPLETED
@@ -108,6 +110,7 @@ def test_reconcile_repairs_state_from_artifacts(env: tuple[Engine, ArtifactStore
     """对账以产物为准：产物在而状态未记 → 补 completed（崩溃恢复场景）。"""
     engine, store = env
     engine.init_job(_JOB)
+    store.write(_JOB, "requirement_review.json", requirement_review_payload(_JOB))
     store.write(_JOB, "requirement_items.json", _VALID_REQUIREMENT_ITEMS)
     state = engine.open_job(_JOB)  # state 里 req_parse 仍是 pending
     assert state.node("req_parse").status is NodeStatus.COMPLETED
@@ -117,6 +120,7 @@ def test_reconcile_downgrades_on_artifact_loss(env: tuple[Engine, ArtifactStore]
     """对账诚实降级：状态 completed 但产物失效 → 回 pending 并记错误。"""
     engine, store = env
     state = engine.init_job(_JOB)
+    store.write(_JOB, "requirement_review.json", requirement_review_payload(_JOB))
     store.write(_JOB, "requirement_items.json", _VALID_REQUIREMENT_ITEMS)
     engine.mark_completed(state, "req_parse")
     # 产物被外力破坏（内容改为不合规）
@@ -130,6 +134,7 @@ def test_mark_degraded_keeps_denominator(env: tuple[Engine, ArtifactStore]) -> N
     """降级按 manual_intervention 计入：automation_rate = completed/9（D1 分母不缩减）。"""
     engine, store = env
     state = engine.init_job(_JOB)
+    store.write(_JOB, "requirement_review.json", requirement_review_payload(_JOB))
     store.write(_JOB, "requirement_items.json", _VALID_REQUIREMENT_ITEMS)
     engine.mark_completed(state, "req_parse")
     engine.mark_degraded(state, "code_scan", "仓库不可达，转为人工扫描")

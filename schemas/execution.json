@@ -13,8 +13,9 @@
         "type": "object",
         "required": ["case_id", "interface_id", "passed", "timestamp"],
         "properties": {
-          "case_id": { "type": "string", "pattern": "^TC-\\d{3}$" },
-          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
+          "case_id": { "type": "string", "pattern": "^(TC|E2E)-\\d{3}$" },
+          "interface_id": { "type": "string", "pattern": "^(IF-[A-Z]+|UI-E2E)-\\d{3}$" },
+          "case_type": { "type": "string", "enum": ["api", "e2e"] },
           "passed": { "type": "boolean" },
           "failure_kind": {
             "type": ["string", "null"],
@@ -22,6 +23,9 @@
             "description": "R-EXEC-03 二态：断言失败进缺陷清单；环境失败隔离待环境确认（X-EXEC-01）"
           },
           "failure_reason": { "type": "string" },
+          "expected": { "type": "string", "description": "用例预期断言，供失败明细对照" },
+          "actual_status": { "type": "integer", "minimum": 0, "description": "实际响应状态" },
+          "actual_body": { "description": "实际响应体（已脱敏、截断）" },
           "timeout": { "type": "boolean", "description": "X-EXEC-02 执行超时" },
           "skipped_reason": { "type": "string", "enum": ["前置缺失"], "description": "X-EXEC-05：前置数据无法准备时跳过并记录" },
           "duration_ms": { "type": "integer", "minimum": 0 },

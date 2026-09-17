@@ -29,6 +29,7 @@ const environmentFailures = computed(() =>
 const skippedResults = computed(() =>
   results.value.filter((result) => result.skipped_reason != null),
 )
+const e2eResults = computed(() => results.value.filter((result) => result.case_type === 'e2e'))
 
 async function load(): Promise<void> {
   if (!_jobId.value) return
@@ -114,6 +115,21 @@ watch(_jobId, () => void load())
         {{ summary.skipped }} 条用例跳过执行（脚本不可加载或前置缺失，如实分列）
       </div>
 
+      <div v-if="e2eResults.length" class="card e2e-result-card">
+        <header class="card-title">前端 E2E 执行结果</header>
+        <table class="result-table">
+          <thead><tr><th scope="col">用例</th><th scope="col">结果</th><th scope="col">耗时</th><th scope="col">说明</th></tr></thead>
+          <tbody>
+            <tr v-for="result in e2eResults" :key="result.case_id">
+              <td><span class="mono">{{ result.case_id }}</span></td>
+              <td><span class="tag" :class="result.passed ? 'tag-pass' : 'tag-fail'">{{ result.passed ? '通过' : result.failure_kind === 'environment' ? '环境失败' : '断言失败' }}</span></td>
+              <td class="mono">{{ result.duration_ms ?? '—' }} ms</td>
+              <td class="detail-cell">{{ result.failure_reason ?? result.expected ?? '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <!-- 失败二态明细（R-EXEC-03） -->
       <div v-if="assertionFailures.length" class="card">
         <header class="card-title">断言失败明细（进入缺陷清单 · R-DEF-01）</header>
@@ -121,8 +137,11 @@ watch(_jobId, () => void load())
           <thead>
             <tr>
               <th scope="col">用例</th>
+              <th scope="col">类型</th>
               <th scope="col">接口</th>
-              <th scope="col">失败原因</th>
+              <th scope="col">预期</th>
+              <th scope="col">实际返回</th>
+              <th scope="col">判定</th>
               <th scope="col">超时</th>
             </tr>
           </thead>
@@ -131,9 +150,12 @@ watch(_jobId, () => void load())
               <td>
                 <span class="mono">{{ result.case_id }}</span>
               </td>
+              <td><span class="tag" :class="result.case_type === 'e2e' ? 'tag-e2e' : ''">{{ result.case_type === 'e2e' ? '前端 E2E' : '接口' }}</span></td>
               <td>
                 <span class="mono">{{ result.interface_id }}</span>
               </td>
+              <td class="detail-cell">{{ result.expected ?? '—' }}</td>
+              <td class="detail-cell"><span class="mono">HTTP {{ result.actual_status ?? '—' }}</span><pre v-if="result.actual_body !== undefined" class="actual-body">{{ JSON.stringify(result.actual_body, null, 2) }}</pre></td>
               <td>{{ result.failure_reason ?? '—' }}</td>
               <td>{{ result.timeout ? '是' : '否' }}</td>
             </tr>
@@ -149,7 +171,10 @@ watch(_jobId, () => void load())
           <thead>
             <tr>
               <th scope="col">用例</th>
+              <th scope="col">类型</th>
               <th scope="col">接口</th>
+              <th scope="col">预期</th>
+              <th scope="col">实际返回</th>
               <th scope="col">失败原因</th>
               <th scope="col">超时</th>
             </tr>
@@ -159,9 +184,12 @@ watch(_jobId, () => void load())
               <td>
                 <span class="mono">{{ result.case_id }}</span>
               </td>
+              <td><span class="tag" :class="result.case_type === 'e2e' ? 'tag-e2e' : ''">{{ result.case_type === 'e2e' ? '前端 E2E' : '接口' }}</span></td>
               <td>
                 <span class="mono">{{ result.interface_id }}</span>
               </td>
+              <td class="detail-cell">{{ result.expected ?? '—' }}</td>
+              <td class="detail-cell"><span class="mono">HTTP {{ result.actual_status ?? '—' }}</span><pre v-if="result.actual_body !== undefined" class="actual-body">{{ JSON.stringify(result.actual_body, null, 2) }}</pre></td>
               <td>{{ result.failure_reason ?? '—' }}</td>
               <td>{{ result.timeout ? '是' : '否' }}</td>
             </tr>
@@ -252,6 +280,15 @@ watch(_jobId, () => void load())
   border-color: var(--accent-glow);
   color: var(--accent-strong);
 }
+
+.tag-e2e {
+  background: color-mix(in srgb, var(--warning) 13%, var(--surface));
+  border-color: color-mix(in srgb, var(--warning) 35%, var(--border));
+  color: var(--warning);
+}
+
+.tag-pass { background: var(--accent-dim); color: var(--accent-strong); border-color: var(--accent-glow); }
+.tag-fail { background: var(--warning-dim); color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, var(--border)); }
 
 /* KPI（数值来自后端 summary；不展示前端计算的比率） */
 .kpi-row {
@@ -358,6 +395,9 @@ watch(_jobId, () => void load())
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
+
+.detail-cell { min-width: 180px; white-space: pre-wrap; word-break: break-word; }
+.actual-body { margin: var(--space-1) 0 0; max-width: 360px; max-height: 150px; overflow: auto; font-size: var(--text-xs); white-space: pre-wrap; }
 
 /* 报告原文 */
 .report-md {

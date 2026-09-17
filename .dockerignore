@@ -1,0 +1,19 @@
+# 仓库根构建上下文瘦身（orchestrator/frontend 镜像按仓库根上下文构建）
+.git
+.github
+**/node_modules
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/target
+**/dist
+**/*.tsbuildinfo
+services/frontend/coverage
+deploy/evidence
+deploy/golden
+deploy/demo-repos
+docs
+.rings
+.playwright-mcp
+.DS_Store

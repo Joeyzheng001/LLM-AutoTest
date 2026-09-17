@@ -23,7 +23,8 @@ _STATE_VERSION = "1.0"
 
 # docs/12 §1.1 节点完成判据（产物文件名）；interface_reconstruct 需两份产物同时合规
 NODE_ARTIFACTS: dict[str, tuple[str, ...]] = {
-    "req_parse": ("requirement_items.json",),
+    # req_parse 内含「需求质量评审 + 条目提取」两个受控子阶段；两份产物均合规才完成。
+    "req_parse": ("requirement_review.json", "requirement_items.json"),
     "code_scan": ("code_inventory.json",),
     "interface_reconstruct": ("interface_candidates.json", "interfaces.json"),
     "code_review": ("review_mapping.json",),

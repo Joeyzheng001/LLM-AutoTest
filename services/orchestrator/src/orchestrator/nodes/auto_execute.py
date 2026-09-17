@@ -21,13 +21,19 @@
 
 from __future__ import annotations
 
+import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 import httpx
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
 
 from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import Engine, JobState
@@ -36,6 +42,7 @@ from orchestrator.errors import X_ORCH_01, PipelineError
 NODE_NAME = "auto_execute"
 
 _DEFAULT_TIMEOUT_S = 10.0  # X-EXEC-02：单用例执行超时上限
+_SENSITIVE_RESPONSE_KEYS = {"token", "access_token", "refresh_token", "password", "secret"}
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,8 @@ class InvokeRequest:
 
     interface: dict[str, Any]
     params: dict[str, Any]
+    # inherit：使用任务登录会话；missing：不带认证；invalid：明确伪造认证。
+    auth_mode: str = "inherit"
     timeout_s: float = _DEFAULT_TIMEOUT_S
 
 
@@ -70,10 +79,11 @@ class Runner(Protocol):
 class RestRunner:
     """REST 执行器：按 signature.method/path 与参数位置（query/body/path/header）调用。
 
-    C-15：auth_headers 非空时注入登录凭据头（Authorization/Cookie）；
+    C-15：auth_headers 非空时注入登录凭据头（Authorization/Cookie）；登录接口
+    自身位于 auth_exempt_paths 时不注入预登录凭据；
     verify=False 用于 https 自签场景（表单「跳过证书校验」）；
-    P-12：Django APPEND_SLASH 301 补偿——无尾斜杠路径被 301 到同路径加 "/" 时
-    同 method 重发一次（扫描候选无尾斜杠，实测被测服务为 Django 口径）。
+    P-12：Django APPEND_SLASH 补偿——无尾斜杠路径被 301，或被 Nginx 前置层
+    直接拒为 405 时，均向同路径加 "/" 同 method 重发一次。
     """
 
     def __init__(
@@ -82,29 +92,40 @@ class RestRunner:
         transport: httpx.AsyncBaseTransport | None = None,
         auth_headers: dict[str, str] | None = None,
         verify: bool = True,
+        auth_exempt_paths: set[str] | None = None,
+        prefer_trailing_slash: bool = False,
     ) -> None:
         """transport 仅测试注入，生产留 None。"""
         self._base_url = base_url
         self._transport = transport
         self._auth_headers = auth_headers or {}
         self._verify = verify
+        self._auth_exempt_paths = {path.rstrip("/") or "/" for path in auth_exempt_paths or set()}
+        self._prefer_trailing_slash = prefer_trailing_slash
+
+    def replace_auth_headers(self, auth_headers: dict[str, str]) -> None:
+        """更换后续请求使用的会话凭据（例如登出用例撤销了旧 token）。"""
+        self._auth_headers = auth_headers
 
     async def invoke(self, request: InvokeRequest) -> InvokeResponse:
         """按接口签名拼请求并调用；连接/超时归环境类错误。"""
         signature = request.interface.get("signature") or {}
         method = str(signature.get("method", "GET")).upper()
         path = str(signature.get("path", "/"))
-        param_defs = {
-            str(p.get("name")): str(p.get("in", "query"))
-            for p in request.interface.get("params") or []
-        }
+        if self._prefer_trailing_slash and path != "/" and not path.endswith("/"):
+            path = f"{path}/"
+        param_defs = {str(p.get("name")): p for p in request.interface.get("params") or []}
         query: dict[str, Any] = {}
         body: dict[str, Any] = {}
         headers: dict[str, str] = {}
         for name, value in request.params.items():
-            position = param_defs.get(name, "query")
+            param_def = param_defs.get(name) or {}
+            position = str(param_def.get("in", "query"))
+            # 扫描器无法展开 serializer 时，会留下 account_data/filter_params 等
+            # unknown 包装参数。值为对象时按实际 HTTP 载荷扁平传递，不能多包一层。
+            unwrap_container = str(param_def.get("type")) == "unknown" and isinstance(value, dict)
             if position == "body":
-                body[name] = value
+                body.update(value) if unwrap_container else body.__setitem__(name, value)
             elif position == "header":
                 headers[name] = str(value)
             elif position == "path":
@@ -121,9 +142,20 @@ class RestRunner:
                 transport=self._transport,
                 verify=self._verify,
             ) as client:
-                merged = {**self._auth_headers, **headers}
+                path_key = path.rstrip("/") or "/"
+                inherited_headers = (
+                    {} if path_key in self._auth_exempt_paths else self._auth_headers
+                )
+                if request.auth_mode == "missing":
+                    inherited_headers = {}
+                elif request.auth_mode == "invalid":
+                    inherited_headers = {"Authorization": "Token invalid-autotest-token"}
+                merged = {**inherited_headers, **headers}
                 response = await client.request(
-                    method, path, params=query or None, json=body or None,
+                    method,
+                    path,
+                    params=query or None,
+                    json=body or None,
                     headers=merged or None,
                 )
                 # P-12：Django APPEND_SLASH 301 补偿（同 method 重发一次）
@@ -133,26 +165,51 @@ class RestRunner:
                     redirect_path = httpx.URL(location).path
                     if redirect_path.rstrip("/") == path.rstrip("/"):
                         response = await client.request(
-                            method, redirect_path, params=query or None, json=body or None,
+                            method,
+                            redirect_path,
+                            params=query or None,
+                            json=body or None,
                             headers=merged or None,
                         )
+                # 部分 Django 部署由 Nginx 代理，POST 无尾斜杠不会收到 APPEND_SLASH
+                # 的 301，而是被前置层直接 405。只对非根路径做一次同路径斜杠补偿。
+                if response.status_code == 405 and path != "/" and not path.endswith("/"):
+                    response = await client.request(
+                        method,
+                        f"{path}/",
+                        params=query or None,
+                        json=body or None,
+                        headers=merged or None,
+                    )
         except httpx.TimeoutException as exc:
             return InvokeResponse(
-                ok=False, status=None, body=None, error=f"执行超时（X-EXEC-02）：{exc}",
-                timed_out=True, duration_ms=_elapsed_ms(started),
+                ok=False,
+                status=None,
+                body=None,
+                error=f"执行超时（X-EXEC-02）：{exc}",
+                timed_out=True,
+                duration_ms=_elapsed_ms(started),
             )
         except httpx.TransportError as exc:
             return InvokeResponse(
-                ok=False, status=None, body=None, error=f"连接失败（X-EXEC-01）：{exc}",
-                timed_out=False, duration_ms=_elapsed_ms(started),
+                ok=False,
+                status=None,
+                body=None,
+                error=f"连接失败（X-EXEC-01）：{exc}",
+                timed_out=False,
+                duration_ms=_elapsed_ms(started),
             )
         try:
             payload: Any = response.json()
         except ValueError:
             payload = response.text
         return InvokeResponse(
-            ok=True, status=response.status_code, body=payload, error=None,
-            timed_out=False, duration_ms=_elapsed_ms(started),
+            ok=True,
+            status=response.status_code,
+            body=payload,
+            error=None,
+            timed_out=False,
+            duration_ms=_elapsed_ms(started),
         )
 
 
@@ -175,7 +232,12 @@ def _semantic_mismatches(expected: str, body: Any) -> list[str]:
         key, _, raw_value = token.partition("=")
         key = key.strip()
         raw_value = raw_value.strip()
-        if key == "status":
+        # 仅解析显式机器断言（field=value）。旧版中文描述中如“响应含
+        # fund_code='000330'”不是完整 token，不能被误判为字段断言。
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", key):
+            continue
+        # HTTP 状态断言由 _expected_statuses 单独判定；它们不是响应体字段。
+        if key in ("status", "status_class"):
             continue
         if key not in body:
             mismatches.append(f"字段 {key} 不在响应体中（期望 {raw_value}）")
@@ -190,13 +252,10 @@ def _semantic_mismatches(expected: str, body: Any) -> list[str]:
     return mismatches
 
 
-def _expected_status(expected: str) -> int | None:
-    """解析 expected 中的 status=<n> token（预期 HTTP 状态码，C-05 扩展）。
-
-    boundary/exception 类用例允许非 2xx 的预期响应（如「不存在用户返回 400」）——
-    该 token 命中时按状态码等值判定，不再要求 2xx。解析失败返回 None（不影响
-    默认 2xx 判定，宁停不猜的反面：演示态保持宽松）。
-    """
+def _expected_statuses(expected: str) -> tuple[set[int], set[int]]:
+    """解析预期中的精确状态码和状态码段，如 ``status=401``、``HTTP 4xx``。"""
+    explicit: set[int] = set()
+    classes: set[int] = set()
     for token in expected.replace("；", ";").replace("，", ",").split(";"):
         token = token.strip()
         if "=" not in token:
@@ -204,21 +263,28 @@ def _expected_status(expected: str) -> int | None:
         key, _, raw_value = token.partition("=")
         if key.strip() == "status":
             try:
-                return int(raw_value.strip())
+                explicit.add(int(raw_value.strip()))
             except ValueError:
-                return None
-    return None
+                pass
+        elif key.strip() == "status_class":
+            match = re.fullmatch(r"([1-5])xx", raw_value.strip(), re.I)
+            if match:
+                classes.add(int(match.group(1)))
+    for match in re.finditer(r"\bHTTP\s*((?:[1-5]\d{2})(?:\s*/\s*[1-5]\d{2})*)\b", expected, re.I):
+        explicit.update(int(code) for code in re.findall(r"[1-5]\d{2}", match.group(1)))
+    classes.update(int(group) for group in re.findall(r"\bHTTP\s*([1-5])xx\b", expected, re.I))
+    return explicit, classes
 
 
 def _judge_assertion(expected: str, status: int, body: Any) -> tuple[bool, list[str]]:
-    """断言判定（auto_execute 与 retest 同源）：status token > 2xx + 语义等值对。
+    """断言判定：精确/区间 HTTP 状态码 > 默认 2xx + 语义等值对。
 
     Returns:
         (是否通过, 语义失配清单)。
     """
-    allowed_status = _expected_status(expected)
-    if allowed_status is not None:
-        is_pass = status == allowed_status
+    allowed_statuses, allowed_classes = _expected_statuses(expected)
+    if allowed_statuses or allowed_classes:
+        is_pass = status in allowed_statuses or status // 100 in allowed_classes
     else:
         is_pass = 200 <= status < 300
     if is_pass:
@@ -227,6 +293,12 @@ def _judge_assertion(expected: str, status: int, body: Any) -> tuple[bool, list[
     else:
         semantic_failures = []
     return is_pass, semantic_failures
+
+
+def _expects_404(expected: str) -> bool:
+    """负向资源用例允许 404 时，不把业务性不存在误报为路由未部署。"""
+    statuses, classes = _expected_statuses(expected)
+    return 404 in statuses or 4 in classes
 
 
 class MockDemoRunner:
@@ -326,11 +398,45 @@ async def login_for_headers(
     raise PipelineError(
         code="X-EXEC-01",
         message=(
-            f"登录响应无凭据可提取（C-15）：{login_url}"
-            "（响应体无 token 字段且无 Set-Cookie）"
+            f"登录响应无凭据可提取（C-15）：{login_url}（响应体无 token 字段且无 Set-Cookie）"
         ),
         node_id=NODE_NAME,
     )
+
+
+def auth_exempt_paths(auth: dict[str, Any] | None) -> set[str]:
+    """返回登录接口路径，供执行器跳过预登录凭据注入。"""
+    if not auth:
+        return set()
+    path = urlparse(str(auth.get("login_url", ""))).path
+    return {path} if path else set()
+
+
+def prefers_django_trailing_slash(auth: dict[str, Any] | None) -> bool:
+    """登录 API 本身以 / 结尾时，按同一 Django 服务的路由口径执行 REST 用例。"""
+    return any(path.endswith("/") for path in auth_exempt_paths(auth))
+
+
+def mutates_auth_session(interface: dict[str, Any]) -> bool:
+    """识别会使当前会话失效的接口，避免用例之间错误共享已登出的 token。"""
+    signature = interface.get("signature") or {}
+    path = str(signature.get("path", "")).lower().rstrip("/")
+    summary = str(signature.get("summary", "")).lower()
+    return path.endswith("/logout") or "退出登录" in summary or "logout" in summary
+
+
+def resolved_auth_mode(case: dict[str, Any]) -> str:
+    """读取显式认证模式，并为旧产物识别典型的未认证/伪 token 反例。"""
+    explicit = str(case.get("auth_mode", "")).lower()
+    if explicit in {"inherit", "missing", "invalid"}:
+        return explicit
+    expected = str(case.get("expected", "")).lower()
+    category = str(case.get("category", ""))
+    auth_words = ("token", "认证", "未认证", "401", "403")
+    expects_auth_error = any(word in expected for word in auth_words) and any(
+        mark in expected for mark in ("4xx", "401", "403")
+    )
+    return "missing" if category in {"boundary", "exception"} and expects_auth_error else "inherit"
 
 
 async def run_auto_execute(
@@ -340,6 +446,7 @@ async def run_auto_execute(
     rest_base_url: str,
     transport: httpx.AsyncBaseTransport | None = None,
     auth: dict[str, Any] | None = None,
+    e2e: dict[str, Any] | None = None,
 ) -> Path:
     """执行 auto_execute 全流程：读用例 → 探测 → 分协议执行 → 落盘。
 
@@ -360,10 +467,12 @@ async def run_auto_execute(
     engine.mark_running(state, NODE_NAME)
     try:
         testcases = _load_json_array(store, state.job_id, "testcases.json", "cases")
+        testcase_payload = store.read_json(state.job_id, "testcases.json")
+        e2e_cases = testcase_payload.get("e2e_cases", [])
+        if not isinstance(e2e_cases, list):
+            e2e_cases = []
         interfaces = _load_json_array(store, state.job_id, "interfaces.json", "interfaces")
-        interface_by_id = {
-            str(i.get("id", "")): i for i in interfaces if i.get("id")
-        }
+        interface_by_id = {str(i.get("id", "")): i for i in interfaces if i.get("id")}
 
         # C-15：登录注入（凭据由代码提取，不经 LLM）；https 自签同步作用于探活/执行
         auth_headers: dict[str, str] = {}
@@ -374,7 +483,14 @@ async def run_auto_execute(
 
         # R-EXEC-02：环境探测优先于执行
         rest_ready = await probe_rest(rest_base_url, transport, verify)
-        rest_runner = RestRunner(rest_base_url, transport, auth_headers, verify)
+        rest_runner = RestRunner(
+            rest_base_url,
+            transport,
+            auth_headers,
+            verify,
+            auth_exempt_paths(auth),
+            prefers_django_trailing_slash(auth),
+        )
         demo_runner = MockDemoRunner()
 
         results: list[dict[str, Any]] = []
@@ -394,6 +510,53 @@ async def run_auto_execute(
                     degraded_protocols,
                 )
             )
+            # 登出等接口可能撤销当前 token。测试用例必须相互隔离，不能让它污染
+            # 同一批中随后“已认证用户”场景；重新登录只作用于下一条 REST 用例。
+            if auth and protocol == "rest" and mutates_auth_session(interface):
+                auth_headers = await login_for_headers(auth, transport)
+                rest_runner.replace_auth_headers(auth_headers)
+
+        if e2e and bool(e2e.get("execute_cases")):
+            base_url = str(e2e.get("base_url", "")).rstrip("/")
+            ignore_https_errors = bool(e2e.get("insecure_tls", True))
+            total = len(e2e_cases)
+            _append_runtime_log(
+                store,
+                state.job_id,
+                event="e2e_started",
+                total=total,
+                message=f"开始执行 {total} 条前端 E2E 用例",
+            )
+            for index, case in enumerate(e2e_cases, start=1):
+                case_id = str(case.get("id", f"E2E-{index:03d}"))
+                _append_runtime_log(
+                    store,
+                    state.job_id,
+                    event="e2e_case_started",
+                    index=index,
+                    total=total,
+                    case_id=case_id,
+                    message=f"正在执行 {case_id}",
+                )
+                result = await _execute_e2e_case(
+                    dict(case), base_url, ignore_https_errors, _e2e_runtime_values(auth)
+                )
+                results.append(result)
+                _append_runtime_log(
+                    store,
+                    state.job_id,
+                    event="e2e_case_completed",
+                    index=index,
+                    total=total,
+                    case_id=case_id,
+                    ok=bool(result.get("passed")),
+                    duration_ms=result.get("duration_ms"),
+                    message=(
+                        "通过"
+                        if result.get("passed")
+                        else str(result.get("failure_reason", "执行失败"))
+                    ),
+                )
 
         payload: dict[str, Any] = {
             "schema_version": "1.0",
@@ -412,6 +575,132 @@ async def run_auto_execute(
         raise
 
 
+async def _execute_e2e_case(
+    case: dict[str, Any], base_url: str, ignore_https_errors: bool = True,
+    runtime_values: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """执行受限的 Playwright 动作；浏览器缺失、页面不可达归环境失败。"""
+    base: dict[str, Any] = {
+        "case_id": case.get("id"),
+        "case_type": "e2e",
+        "interface_id": "UI-E2E-001",
+        "expected": str(case.get("expected", "")),
+        "timestamp": _now_iso(),
+    }
+    started = time.monotonic()
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            context = await browser.new_context(ignore_https_errors=ignore_https_errors)
+            page = await context.new_page()
+            # E2E 单步骤不能默认等待 30 秒，否则错误定位器会令整个批次长时间无进度。
+            page.set_default_timeout(10_000)
+            try:
+                for step in case.get("steps", []):
+                    await _run_e2e_step(page, dict(step), base_url, runtime_values or {})
+            finally:
+                await context.close()
+                await browser.close()
+    except PlaywrightTimeoutError as exc:
+        base.update(
+            {
+                "passed": False,
+                "failure_kind": "environment",
+                "failure_reason": f"前端自动化超时（X-E2E-02）：{exc}",
+                "timeout": True,
+                "duration_ms": _elapsed_ms(started),
+            }
+        )
+        return base
+    except PlaywrightError as exc:
+        base.update(
+            {
+                "passed": False,
+                "failure_kind": "environment",
+                "failure_reason": f"前端自动化环境失败（X-E2E-01）：{exc}",
+                "timeout": False,
+                "duration_ms": _elapsed_ms(started),
+            }
+        )
+        return base
+    except AssertionError as exc:
+        base.update(
+            {
+                "passed": False,
+                "failure_kind": "assertion",
+                "failure_reason": str(exc),
+                "timeout": False,
+                "duration_ms": _elapsed_ms(started),
+            }
+        )
+        return base
+    base.update({"passed": True, "timeout": False, "duration_ms": _elapsed_ms(started)})
+    return base
+
+
+async def _run_e2e_step(
+    page: Any, step: dict[str, str], base_url: str, runtime_values: dict[str, str]
+) -> None:
+    """解释白名单动作；定位器格式由 prompt 约束为 role/label/text/testid。"""
+    action = step["action"]
+    value = _resolve_e2e_value(step.get("value", ""), runtime_values)
+    if action == "goto":
+        await page.goto(f"{base_url}{value}", wait_until="domcontentloaded")
+        return
+    if action == "expect_url":
+        if value not in page.url:
+            raise AssertionError(f"页面 URL 为 {page.url}，预期包含 {value}")
+        return
+    selector = step["selector"]
+    locator = _e2e_locator(page, selector)
+    if action == "click":
+        await locator.click()
+    elif action == "fill":
+        await locator.fill(value)
+    elif action == "check":
+        await locator.check()
+    elif action == "select":
+        await locator.select_option(value)
+    elif action == "expect_text":
+        text = await locator.inner_text()
+        if value not in text:
+            raise AssertionError(f"元素文本为 {text!r}，预期包含 {value!r}")
+
+
+def _e2e_locator(page: Any, selector: str) -> Any:
+    """仅支持可访问语义定位，禁止将模型输出直接作为 CSS/XPath 执行。"""
+    if selector.startswith("text="):
+        return page.get_by_text(selector.removeprefix("text="), exact=False)
+    if selector.startswith("label="):
+        return page.get_by_label(selector.removeprefix("label="), exact=False)
+    if selector.startswith("placeholder="):
+        return page.get_by_placeholder(selector.removeprefix("placeholder="), exact=False)
+    if selector.startswith("testid="):
+        return page.get_by_test_id(selector.removeprefix("testid="))
+    if selector.startswith("role="):
+        role, _, name = selector.removeprefix("role=").partition("[name=")
+        if name.endswith("]"):
+            name = name[:-1]
+        return page.get_by_role(role, name=name or None, exact=False)
+    raise AssertionError(f"不支持的 E2E 语义定位器：{selector}")
+
+
+def _e2e_runtime_values(auth: dict[str, Any] | None) -> dict[str, str]:
+    """认证信息只在运行时替换，不进入 E2E 用例产物。"""
+    if not auth:
+        return {}
+    return {
+        "{{AUTH_USERNAME}}": str(auth.get("username", "")),
+        "{{AUTH_PASSWORD}}": str(auth.get("password", "")),
+    }
+
+
+def _resolve_e2e_value(value: str, runtime_values: dict[str, str]) -> str:
+    if value in {"{{AUTH_USERNAME}}", "{{AUTH_PASSWORD}}"} and not runtime_values.get(value):
+        raise AssertionError(f"E2E 用例需要认证配置中的 {value}，当前任务未提供")
+    return runtime_values.get(value, value)
+
+
 async def _execute_case(
     case: dict[str, Any],
     interface: dict[str, Any],
@@ -425,6 +714,7 @@ async def _execute_case(
     base: dict[str, Any] = {
         "case_id": case.get("id"),
         "interface_id": case.get("interface_id"),
+        "expected": str(case.get("expected", "")),
         "timestamp": _now_iso(),
     }
     raw_params = case.get("params")
@@ -466,7 +756,9 @@ async def _execute_case(
             }
         runner = demo_runner
 
-    response = await runner.invoke(InvokeRequest(interface=interface, params=params))
+    response = await runner.invoke(
+        InvokeRequest(interface=interface, params=params, auth_mode=resolved_auth_mode(case))
+    )
 
     if not response.ok:
         base.update(
@@ -482,10 +774,12 @@ async def _execute_case(
 
     # 断言判定（与 retest 同源）：status token > 2xx + 语义等值对（docs/13 C-05）
     status = response.status or 0
+    base["actual_status"] = status
+    base["actual_body"] = _safe_actual_body(response.body)
     # X-EXEC-01 同类：HTTP 404 = 路由不存在（接口未部署或指向了别的服务地址）——
     # 归环境失败，不判缺陷（R-EXEC-03/R-DEF-01；业务级「资源不存在」由服务以
     # 4xx 业务码表达，不与 404 混淆）
-    if status == 404:
+    if status == 404 and not _expects_404(str(case.get("expected", ""))):
         base.update(
             {
                 "passed": False,
@@ -512,9 +806,7 @@ async def _execute_case(
             detail = ";".join(semantic_failures)
             entry["failure_reason"] = f"HTTP {status} 语义断言失败：{detail}"
         else:
-            entry["failure_reason"] = (
-                f"HTTP {status}（语义断言：{case.get('expected', '')}）"
-            )
+            entry["failure_reason"] = f"HTTP {status}（语义断言：{case.get('expected', '')}）"
     base.update(entry)
     return base
 
@@ -537,6 +829,27 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     if skipped:
         summary["skipped"] = skipped
     return summary
+
+
+def _append_runtime_log(
+    store: ArtifactStore,
+    job_id: str,
+    *,
+    event: str,
+    message: str,
+    **fields: Any,
+) -> None:
+    """追加脱敏运行事件；执行中的前端可据此显示 E2E 实时进度。"""
+    entry = {
+        "timestamp": _now_iso(),
+        "node": NODE_NAME,
+        "event": event,
+        "message": message,
+        **fields,
+    }
+    path = store.job_dir(job_id) / "runtime_log.jsonl"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _load_json_array(
@@ -564,6 +877,26 @@ def _load_json_array(
 def _elapsed_ms(started: float) -> int:
     """耗时（毫秒）。"""
     return int((time.monotonic() - started) * 1000)
+
+
+def _safe_actual_body(value: Any, depth: int = 0) -> Any:
+    """供 UI 展示的脱敏、截断响应副本，避免 token 或超长数据进入产物。"""
+    if depth > 4:
+        return "…"
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                "***"
+                if str(key).lower() in _SENSITIVE_RESPONSE_KEYS
+                else _safe_actual_body(item, depth + 1)
+            )
+            for key, item in list(value.items())[:40]
+        }
+    if isinstance(value, list):
+        return [_safe_actual_body(item, depth + 1) for item in value[:20]]
+    if isinstance(value, str):
+        return value[:2000] + ("…" if len(value) > 2000 else "")
+    return value
 
 
 def _now_iso() -> str:

@@ -12,11 +12,20 @@ from typing import Any
 import httpx
 import pytest
 
+from helpers import requirement_review_payload
 from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import Engine
 from orchestrator.errors import X_ORCH_02, PipelineError
 from orchestrator.nodes import run_auto_execute
-from orchestrator.nodes.auto_execute import InvokeRequest, RestRunner, login_for_headers
+from orchestrator.nodes.auto_execute import (
+    InvokeRequest,
+    RestRunner,
+    _judge_assertion,
+    _expects_404,
+    login_for_headers,
+    mutates_auth_session,
+    resolved_auth_mode,
+)
 from orchestrator.pipeline import NodeStatus
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
@@ -105,6 +114,7 @@ def env(tmp_path: Path) -> tuple[Engine, ArtifactStore, ArtifactStore]:
     state = engine.init_job(_JOB)
     # （节点名，产物文件，写入卷，载荷）
     orch_artifacts: list[tuple[str, str, dict[str, Any]]] = [
+        ("req_parse", "requirement_review.json", requirement_review_payload(_JOB)),
         (
             "req_parse",
             "requirement_items.json",
@@ -546,6 +556,29 @@ async def test_auto_execute_expected_status_token(
     assert result.get("failure_kind") is None
 
 
+def test_judge_assertion_accepts_status_class_and_legacy_http_class() -> None:
+    """边界/异常用例的 4xx 区间既支持新 token，也兼容既有自然语言产物。"""
+    for expected in ("status_class=4xx；密码应被拒绝", "HTTP 4xx 或返回校验失败提示"):
+        is_pass, semantic_failures = _judge_assertion(expected, 401, {})
+        assert is_pass is True
+        assert semantic_failures == []
+
+
+def test_judge_assertion_supports_multiple_legacy_statuses_and_ignores_prose_equals() -> None:
+    """旧用例的 HTTP 200/204 和自然语言示例不能制造伪断言失败。"""
+    is_pass, semantic_failures = _judge_assertion(
+        "HTTP 200/204；响应体为对象（含 fund_code='000330'）", 204, {}
+    )
+    assert is_pass is True
+    assert semantic_failures == []
+
+
+def test_expects_404_recognizes_exact_and_class_status() -> None:
+    assert _expects_404("status=404；资源不存在")
+    assert _expects_404("HTTP 4xx；资源不存在")
+    assert not _expects_404("status=200")
+
+
 # ---- C-15 鉴权：登录提取凭据头（数值/凭据不经 LLM）----
 
 _AUTH: dict[str, Any] = {
@@ -705,6 +738,82 @@ async def test_rest_runner_301_append_slash_compensation() -> None:
     assert hits == ["POST /api/auth/login", "POST /api/auth/login/"]
 
 
+async def test_rest_runner_405_append_slash_compensation() -> None:
+    """Nginx 将无尾斜杠 POST 直接拒为 405 时，补斜杠后重发一次。"""
+    hits: list[str] = []
+
+    def slash_service(request: httpx.Request) -> httpx.Response:
+        hits.append(f"{request.method} {request.url.path}")
+        if request.url.path == "/api/auth/login":
+            return httpx.Response(405)
+        if request.url.path == "/api/auth/login/":
+            return httpx.Response(200, json={"token": "tok-x"})
+        return httpx.Response(404)
+
+    runner = RestRunner("http://mock:9000", httpx.MockTransport(slash_service))
+    response = await runner.invoke(
+        InvokeRequest(
+            interface={
+                "signature": {"method": "POST", "path": "/api/auth/login"},
+                "params": [],
+            },
+            params={},
+        )
+    )
+    assert response.status == 200
+    assert hits == ["POST /api/auth/login", "POST /api/auth/login/"]
+
+
+async def test_rest_runner_does_not_attach_session_to_login_path() -> None:
+    """登录用例必须使用自身用户名密码，不能携带预登录会话。"""
+    seen_headers: dict[str, str] = {}
+
+    def service(request: httpx.Request) -> httpx.Response:
+        seen_headers.update(request.headers)
+        return httpx.Response(200, json={"token": "tok-x"})
+
+    runner = RestRunner(
+        "http://mock:9000",
+        httpx.MockTransport(service),
+        {"Authorization": "Token existing-session"},
+        auth_exempt_paths={"/api/auth/login/"},
+    )
+    response = await runner.invoke(
+        InvokeRequest(
+            interface={
+                "signature": {"method": "POST", "path": "/api/auth/login"},
+                "params": [
+                    {"name": "username", "in": "body"},
+                    {"name": "password", "in": "body"},
+                ],
+            },
+            params={"username": "u", "password": "p"},
+        )
+    )
+    assert response.status == 200
+    assert "authorization" not in seen_headers
+
+
+async def test_rest_runner_prefers_django_trailing_slash() -> None:
+    """已知服务使用 Django 尾斜杠路由时，首发即使用正确路径。"""
+    hits: list[str] = []
+
+    def service(request: httpx.Request) -> httpx.Response:
+        hits.append(request.url.path)
+        return httpx.Response(200, json={})
+
+    runner = RestRunner(
+        "http://mock:9000", httpx.MockTransport(service), prefer_trailing_slash=True
+    )
+    response = await runner.invoke(
+        InvokeRequest(
+            interface={"signature": {"method": "GET", "path": "/api/products"}}, params={}
+        )
+    )
+    assert response.status == 200
+    assert hits == ["/api/products/"]
+
+
 async def test_rest_runner_301_to_other_path_not_compensated() -> None:
     """301 指向不同路径（真实重定向）不补偿——防把页面重定向当成功。"""
     hits: list[str] = []
@@ -727,3 +836,44 @@ async def test_rest_runner_301_to_other_path_not_compensated() -> None:
     )
     assert hits == ["GET /api/v1/users"]  # 仅一次请求，不跟随异路径 301
     assert response.status == 301
+
+
+def test_mutates_auth_session_recognizes_logout_only() -> None:
+    """登出用例完成后要刷新 token；普通已认证查询不应额外登录。"""
+    assert mutates_auth_session(
+        {"signature": {"path": "/api/auth/logout", "summary": "用户退出登录"}}
+    )
+    assert not mutates_auth_session(
+        {"signature": {"path": "/api/auth/user", "summary": "获取当前登录用户"}}
+    )
+
+
+def test_resolved_auth_mode_supports_explicit_and_legacy_negative_cases() -> None:
+    assert resolved_auth_mode({"auth_mode": "invalid"}) == "invalid"
+    assert resolved_auth_mode({"category": "exception", "expected": "HTTP 401；token 无效"}) == "missing"
+    assert resolved_auth_mode({"category": "normal", "expected": "status=200"}) == "inherit"
+
+
+async def test_rest_runner_unwraps_unknown_container_and_can_omit_auth() -> None:
+    """unknown 包装参数按真实载荷展开；认证反例不能继承全局 token。"""
+    captured: dict[str, Any] = {}
+
+    def service(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        captured["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={})
+
+    runner = RestRunner(
+        "http://mock:9000", httpx.MockTransport(service), {"Authorization": "Token valid"}
+    )
+    response = await runner.invoke(
+        InvokeRequest(
+            interface={"signature": {"method": "POST", "path": "/accounts"}, "params": [
+                {"name": "account_data", "in": "body", "type": "unknown"}
+            ]},
+            params={"account_data": {"name": "Alice"}},
+            auth_mode="missing",
+        )
+    )
+    assert response.status == 200
+    assert captured == {"json": {"name": "Alice"}, "authorization": None}

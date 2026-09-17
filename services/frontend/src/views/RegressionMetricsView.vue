@@ -102,7 +102,7 @@ function nodeLabel(name: string): string {
           回归资产树（R-REG-02 按协议组织 · 归档为移动非复制 R-REG-01）
         </header>
         <p v-if="!index || !index.suites.length" class="state-line">
-          回归资产尚未沉淀（需任务跑到回归沉淀节点之后）。
+          {{ index?.empty_reason ?? '暂无符合沉淀原则的资产：需存在执行通过或缺陷复测通过，且具备可加载脚本与需求溯源。' }}
         </p>
         <template v-else>
           <div v-for="suite in index.suites" :key="suite.protocol" class="suite">

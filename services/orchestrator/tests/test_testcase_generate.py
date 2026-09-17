@@ -11,11 +11,13 @@ from typing import Any
 
 import pytest
 
+from helpers import requirement_review_payload
 from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import Engine
 from orchestrator.errors import X_ORCH_02, PipelineError
 from orchestrator.llm import LlmResult
 from orchestrator.nodes import run_testcase_generate
+from orchestrator.nodes.testcase_generate import _parse_e2e_cases
 from orchestrator.pipeline import NodeStatus
 from orchestrator.prompts_loader import PromptSpec
 
@@ -54,7 +56,7 @@ _INTERFACES: list[dict[str, Any]] = [
     },
 ]
 
-_LLM_GOOD = '''{
+_LLM_GOOD = """{
   "cases": [
     {"interface_id": "IF-REST-001", "requirement_id": "REQ-001", "category": "normal",
      "title": "正常按 ID 查询用户", "params": {"id": 1},
@@ -75,7 +77,7 @@ _LLM_GOOD = '''{
      "title": "order_id 非法字符", "params": {"order_id": "@@@@"},
      "expected": "错误码 INVALID"}
   ]
-}'''
+}"""
 
 
 class _StubLlm:
@@ -102,6 +104,7 @@ def env(
     te_store = ArtifactStore(tmp_path, _SCHEMAS, "test-executor")
     engine = Engine(store)
     state = engine.init_job(_JOB)
+    store.write(_JOB, "requirement_review.json", requirement_review_payload(_JOB))
     payloads: list[tuple[str, str, dict[str, Any] | None]] = [
         (
             "req_parse",
@@ -217,9 +220,7 @@ async def test_testcase_generate_success(env: tuple[Engine, ArtifactStore, Artif
     engine, store, te_store = env
     state = engine.open_job(_JOB)
 
-    path = await run_testcase_generate(
-        engine, state, te_store, _StubLlm([_LLM_GOOD]), _PROMPTS
-    )
+    path = await run_testcase_generate(engine, state, te_store, _StubLlm([_LLM_GOOD]), _PROMPTS)
 
     assert path.is_file()
     payload = store.read_json(_JOB, "testcases.json")
@@ -289,7 +290,7 @@ async def test_testcase_generate_skip_interface_warning(
     engine, store, te_store = env
     state = engine.open_job(_JOB)
     # 只产 GRPC 用例（REST 漏产）
-    grpc_only = '''{
+    grpc_only = """{
       "cases": [
         {"interface_id": "IF-GRPC-001", "requirement_id": "REQ-002", "category": "normal",
          "title": "正常查询订单", "params": {"order_id": "ORDER-001"},
@@ -301,7 +302,7 @@ async def test_testcase_generate_skip_interface_warning(
          "title": "order_id 非法字符", "params": {"order_id": "@@@@"},
          "expected": "错误码 INVALID"}
       ]
-    }'''
+    }"""
 
     await run_testcase_generate(engine, state, te_store, _StubLlm([grpc_only]), _PROMPTS)
 
@@ -348,6 +349,65 @@ async def test_testcase_generate_fabricated_interface(
     assert err.value.code == "X-LLM-02"
 
 
+async def test_testcase_generate_auth_context(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """C-17：auth 凭据进生成上下文（登录类正向用例可真实通过）。"""
+    engine, _store, te_store = env
+    state = engine.open_job(_JOB)
+    llm = _StubLlm([_LLM_GOOD])
+
+    await run_testcase_generate(
+        engine,
+        state,
+        te_store,
+        llm,
+        _PROMPTS,
+        auth={
+            "login_url": "https://svc/api/auth/login/",
+            "username": "admin",
+            "password": "admin123",
+            "insecure_tls": True,
+        },
+    )
+
+    import json as _json
+
+    context = _json.loads(llm.received[0])
+    assert context["auth"] == {
+        "login_url": "https://svc/api/auth/login/",
+        "username": "admin",
+        "password": "admin123",
+    }  # insecure_tls 不进 LLM 上下文（与用例设计无关）
+
+
+async def test_testcase_generate_no_auth_context(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """无 auth：上下文不含该键（旧行为不变）。"""
+    engine, _store, te_store = env
+    state = engine.open_job(_JOB)
+    llm = _StubLlm([_LLM_GOOD])
+
+    await run_testcase_generate(engine, state, te_store, llm, _PROMPTS)
+
+    import json as _json
+
+    context = _json.loads(llm.received[0])
+    assert "auth" not in context
+
+
+def test_e2e_expect_url_does_not_require_selector() -> None:
+    """expect_url 是页面级断言，Prompt 约定 selector 为空，不能被元素定位校验拒绝。"""
+    cases = _parse_e2e_cases(
+        '{"cases":[{"requirement_id":"REQ-001","title":"登录",'
+        '"expected":"跳转首页","steps":['
+        '{"action":"goto","value":"/login"},'
+        '{"action":"expect_url","selector":"","value":"/home"}]}]}'
+    )
+    assert cases[0]["steps"][-1] == {"action": "expect_url", "value": "/home"}
+
+
 async def test_testcase_generate_skip_order_guard(
     env: tuple[Engine, ArtifactStore, ArtifactStore],
 ) -> None:
@@ -357,8 +417,6 @@ async def test_testcase_generate_skip_order_guard(
     state.node("code_review").status = NodeStatus.PENDING
 
     with pytest.raises(PipelineError) as err:
-        await run_testcase_generate(
-            engine, state, te_store, _StubLlm([_LLM_GOOD]), _PROMPTS
-        )
+        await run_testcase_generate(engine, state, te_store, _StubLlm([_LLM_GOOD]), _PROMPTS)
 
     assert err.value.code == X_ORCH_02

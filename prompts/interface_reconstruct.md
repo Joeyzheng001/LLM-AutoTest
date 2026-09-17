@@ -1,10 +1,11 @@
 <!-- R-REV-02②：静态候选 → LLM 语义解析补全。输出经 schemas/interfaces.json 校验（条目级字段经代码回填溯源字段后落盘），失败即节点失败。 -->
 
 ---
-version: 1.0
+version: 1.1
 spec: R-REV-02
 owner: 甲
 changelog:
+  - 1.1 | 2026-09-16 | 大候选集分批输入：读取 candidates 字段并仅输出当前批次条目
   - 1.0 | 2026-09-15 | 初版（输入为 java-parser 静态候选清单，含 snippet/related_files 上下文）
 sampling:
   temperature: 0.2
@@ -37,6 +38,7 @@ sampling:
 ```
 
 字段规则：
+- 输入可能为 `{ "batch": {"index", "total"}, "candidates": [...] }`；只处理 `candidates` 内的当前批候选，禁止引用其他批次 ID；
 - `candidate_id` 必须原样使用输入候选的 ID，**一个候选最多输出一个条目，禁止虚构输入中不存在的候选**；
 - 只输出 `interfaces` 数组——`id` / `schema_version` / `job_id` / `code_location` / `is_fallback` / `confidence` 由系统从候选回填，你**不得**输出这些字段；
 - 语义解析只做**证据可支撑的补全**：优先依据 snippet 与 related_files 的源码上下文；类型无法确定时填 `"unknown"` 并给 `default`（X-REV-02 口径），禁止编造类型；
@@ -45,4 +47,4 @@ sampling:
 
 ## 任务
 
-你是接口语义分析师。用户消息是一份接口候选清单（JSON 数组），来自静态源码扫描：每条含 `candidate_id`、`protocol`、静态 `signature`、`snippet`（接口定义源码片段）与 `related_files`（Controller→Service→DTO 关联上下文）。请逐条做语义解析，补全为上述 JSON 结构。
+你是接口语义分析师。用户消息是一份接口候选清单，或包含 `candidates` 的分批对象，来自静态源码扫描：每条含 `candidate_id`、`protocol`、静态 `signature`、`snippet`（接口定义源码片段）与 `related_files`（Controller→Service→DTO 关联上下文）。请逐条做语义解析，补全为上述 JSON 结构。

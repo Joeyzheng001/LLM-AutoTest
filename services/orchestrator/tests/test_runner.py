@@ -37,6 +37,28 @@ _REQ_ITEMS = {
     ]
 }
 
+_REQ_REVIEW = {
+    "score": 80,
+    "quality_grade": "B",
+    "summary": "需求主流程清晰，可开始测试设计。",
+    "dimension_scores": {
+        "需求完整性": {"weight": 0.35, "score": 80, "reason": "范围明确"},
+        "一致性与逻辑性": {"weight": 0.20, "score": 80, "reason": "流程一致"},
+        "可测试性": {"weight": 0.25, "score": 80, "reason": "可验证"},
+        "清晰度与规范性": {"weight": 0.10, "score": 80, "reason": "术语统一"},
+        "风险与依赖描述": {"weight": 0.10, "score": 80, "reason": "依赖明确"},
+    },
+    "quality_assessment": {"grade": "B", "grade_name": "合格", "summary_reason": "可设计测试"},
+    "issues": [],
+    "readable_issue_points": [],
+    "completeness_issues": [],
+    "consistency_issues": [],
+    "untestable_items": [],
+    "risk_flags": [],
+    "testable_features": ["用户查询"],
+    "mindmap": {"主题": "测试思维导图", "子主题": []},
+}
+
 _INTERFACES = [
     {
         "candidate_id": "CAND-001",
@@ -83,20 +105,24 @@ class StubLlm:
     def __init__(self, scripts: dict[str, str] | None = None) -> None:
         self.scripts = scripts
         self.calls: list[str] = []
+        self.prompt_refs: list[str] = []
 
     async def complete(
         self, node: str, prompt: PromptSpec, user_content: str
     ) -> LlmResult:
         """返回该节点的预置输出。"""
-        _ = prompt, user_content
+        _ = user_content
         self.calls.append(node)
-        text = (self.scripts or {}).get(node, "")
+        self.prompt_refs.append(prompt.ref)
+        key = prompt.name if prompt.name == "requirement_review" else node
+        text = (self.scripts or {}).get(key, "")
         text = "```json\n" + text + "\n```"
         return LlmResult(text=text, tokens=10, call_id=f"LLM-stub-{len(self.calls)}")
 
 
 def _default_llm_scripts() -> dict[str, str]:
     return {
+        "requirement_review": json.dumps(_REQ_REVIEW, ensure_ascii=False),
         "req_parse": json.dumps(_REQ_ITEMS, ensure_ascii=False),
         "interface_reconstruct": json.dumps({"interfaces": _INTERFACES}, ensure_ascii=False),
         "code_review": json.dumps(_REVIEW, ensure_ascii=False),
@@ -234,7 +260,9 @@ class _ScriptedRunner(PipelineRunner):
         elif node_name == "code_review":
             await run_code_review(self._engine, state, self._orch_store, self.llm, _PROMPTS)
         elif node_name == "testcase_generate":
-            await run_testcase_generate(self._engine, state, self._te_store, self.llm, _PROMPTS)
+            await run_testcase_generate(
+                self._engine, state, self._te_store, self.llm, _PROMPTS, auth=auth
+            )
         elif node_name == "auto_execute":
             await run_auto_execute(
                 self._engine, state, self._te_store, rest_base_url,
@@ -299,6 +327,7 @@ async def test_runner_full_pipeline_e2e(tmp_path: Path) -> None:
     job_dir = tmp_path / _JOB
     for filename in (
         "requirement_items.json",
+        "requirement_review.json",
         "code_inventory.json",
         "interface_candidates.json",
         "interfaces.json",
@@ -312,10 +341,11 @@ async def test_runner_full_pipeline_e2e(tmp_path: Path) -> None:
         # 注：stub LLM 不经 LlmClient，故无 llm_calls.jsonl 留痕（生产路径有）
     ):
         assert (job_dir / filename).is_file(), filename
-    # LLM 只在 4 个语义节点被调用
+    # 需求节点包含评审与条目提取两个子阶段，LLM 共调用 5 次。
     assert llm.calls == [
-        "req_parse", "interface_reconstruct", "code_review", "testcase_generate"
+        "req_parse", "req_parse", "interface_reconstruct", "code_review", "testcase_generate"
     ]
+    assert llm.prompt_refs[:2] == ["requirement_review@1.3", "req_parse@1.0"]
     # 收尾刷新（docs/13 P-10）：metrics.json 为九节点终态版，自动化率 9/9
     metrics = json.loads((job_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["automation_rate"] == {
@@ -474,6 +504,7 @@ async def test_runner_force_node_archives_old_artifacts(tmp_path: Path) -> None:
     # 旧产物已归档（C-14：时间戳前缀防多次重跑覆盖，禁止原地覆盖）
     archived = sorted((job_dir / "archive" / "req_parse").glob("*_requirement_items.json"))
     assert len(archived) == 1, f"应恰有一份带时间戳前缀的归档：{archived}"
+    assert sorted((job_dir / "archive" / "req_parse").glob("*_requirement_review.json"))
     # 新产物是重跑结果（2 条需求项）
     new_items = json.loads((job_dir / "requirement_items.json").read_text(encoding="utf-8"))
     assert len(new_items["items"]) == 2

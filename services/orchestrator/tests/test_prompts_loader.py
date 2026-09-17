@@ -42,6 +42,17 @@ def test_load_prompt_parses_meta(tmp_path: Path) -> None:
     assert spec.ref == "req_parse@1.2"
 
 
+def test_load_prompt_injects_node_skill_and_memory() -> None:
+    """正式 Prompt 包按节点选择知识，不加载无关节点经验。"""
+    prompts = Path(__file__).resolve().parents[3] / "prompts"
+    spec = load_prompt(prompts, "requirement_review")
+    assert "受控知识：skills/requirement-output-stability" in spec.body
+    assert spec.knowledge_refs == (
+        "skills/requirement-output-stability@1.0",
+        "memory/model-output-drift@1.0",
+    )
+
+
 def test_load_prompt_missing_file(tmp_path: Path) -> None:
     """文件缺失 → X-LLM-03（配置错误，人工介入）。"""
     with pytest.raises(PipelineError) as excinfo:

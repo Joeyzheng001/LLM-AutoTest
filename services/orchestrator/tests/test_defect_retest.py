@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
+from helpers import requirement_review_payload
 from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import Engine
 from orchestrator.errors import X_ORCH_01, X_ORCH_02, PipelineError
@@ -258,6 +259,7 @@ def env(tmp_path: Path) -> tuple[Engine, ArtifactStore, ArtifactStore]:
     te_store = ArtifactStore(tmp_path, _SCHEMAS, "test-executor")
     engine = Engine(orch_store)
     state = engine.init_job(_JOB)
+    orch_store.write(_JOB, "requirement_review.json", requirement_review_payload(_JOB))
     for node_name in (
         "req_parse",
         "code_scan",
@@ -379,7 +381,7 @@ async def test_retest_regression_pass_and_archive(
     job_dir = te_store.job_dir(_JOB)
     assert not (job_dir / "scripts/test_TC_002.py").exists()
     assert not (job_dir / "scripts/test_TC_003.py").exists()
-    assert (job_dir / "scripts/test_TC_001.py").exists()  # 非缺陷用例不动
+    assert not (job_dir / "scripts/test_TC_001.py").exists()  # 已执行通过的基线也沉淀
     # F-REG-02：溯源随档 + R-REG-02 按协议组织
     index = te_store.read_json(_JOB, "regression_index.json")
     assert index["suites"] == [
@@ -393,13 +395,20 @@ async def test_retest_regression_pass_and_archive(
                     "interface_id": "IF-REST-001",
                     "archived_at": defects[0]["history"][-1]["timestamp"],
                 },
-                {
-                    "case_id": "TC-003",
-                    "script_path": "scripts/regression/rest/test_TC_003.py",
-                    "requirement_id": "REQ-002",
-                    "interface_id": "IF-REST-002",
-                    "archived_at": defects[1]["history"][-1]["timestamp"],
-                },
+                    {
+                        "case_id": "TC-003",
+                        "script_path": "scripts/regression/rest/test_TC_003.py",
+                        "requirement_id": "REQ-002",
+                        "interface_id": "IF-REST-002",
+                        "archived_at": defects[1]["history"][-1]["timestamp"],
+                    },
+                    {
+                        "case_id": "TC-001",
+                        "script_path": "scripts/regression/rest/test_TC_001.py",
+                        "requirement_id": "REQ-001",
+                        "interface_id": "IF-REST-001",
+                        "archived_at": index["suites"][0]["scripts"][2]["archived_at"],
+                    },
             ],
         }
     ]
@@ -426,9 +435,9 @@ async def test_retest_regression_still_failed_retained(
     job_dir = te_store.job_dir(_JOB)
     assert (job_dir / "scripts/test_TC_002.py").exists()
     assert not (job_dir / "scripts/regression/rest/test_TC_002.py").exists()
-    # 回归索引为空 suites（合法：无可沉淀资产）
+    # 即使缺陷仍失败，已执行通过的非缺陷基线仍可沉淀
     index = te_store.read_json(_JOB, "regression_index.json")
-    assert index["suites"] == []
+    assert [s["case_id"] for s in index["suites"][0]["scripts"]] == ["TC-001"]
 
 
 async def test_retest_regression_script_missing_skipped(
@@ -456,9 +465,9 @@ async def test_retest_regression_script_missing_skipped(
     assert len(payload["warnings"]) == 1
     assert "X-DEF-02" in payload["warnings"][0]
     assert "TC-002" in payload["warnings"][0]
-    # 归档只含 TC-003
+    # 复测通过的 TC-003 与已执行通过的 TC-001 均归档
     index = te_store.read_json(_JOB, "regression_index.json")
-    assert [s["case_id"] for s in index["suites"][0]["scripts"]] == ["TC-003"]
+    assert [s["case_id"] for s in index["suites"][0]["scripts"]] == ["TC-003", "TC-001"]
 
 
 async def test_retest_regression_no_requirement_skips_archive(
@@ -488,9 +497,9 @@ async def test_retest_regression_no_requirement_skips_archive(
     job_dir = te_store.job_dir(_JOB)
     assert (job_dir / "scripts/test_TC_002.py").exists()
     assert not (job_dir / "scripts/regression/rest/test_TC_002.py").exists()
-    # 索引只含 TC-003
+    # 无溯源的 TC-002 不沉淀；TC-003 与已执行通过的 TC-001 均沉淀
     index = te_store.read_json(_JOB, "regression_index.json")
-    assert [s["case_id"] for s in index["suites"][0]["scripts"]] == ["TC-003"]
+    assert [s["case_id"] for s in index["suites"][0]["scripts"]] == ["TC-003", "TC-001"]
 
 
 async def test_retest_regression_missing_defects(

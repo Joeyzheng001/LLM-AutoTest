@@ -22,6 +22,8 @@ class Settings:
     llm_seed: int | None
     llm_timeout_s: float  # docs/12 §三：单次调用超时
     schemas_dir: str  # 产物 Schema 目录（校验用）
+    # 单次模型最大输出，长结果由节点分批生成而非无限提高该值。
+    llm_max_tokens: int = 16384
 
     @property
     def public_summary(self) -> str:
@@ -49,6 +51,7 @@ class Settings:
                 llm_seed=int(source["LLM_SEED"]) if source.get("LLM_SEED") else None,
                 llm_timeout_s=float(source.get("LLM_TIMEOUT_S", "120")),
                 schemas_dir=source.get("SCHEMAS_DIR", "schemas"),
+                llm_max_tokens=int(source.get("LLM_MAX_TOKENS", "16384")),
             )
         except KeyError as exc:
             msg = f"缺少必填环境变量：{exc}"

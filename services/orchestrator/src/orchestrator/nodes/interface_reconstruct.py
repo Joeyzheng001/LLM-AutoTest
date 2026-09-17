@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -30,6 +31,8 @@ from orchestrator.engine import Engine, JobState
 from orchestrator.errors import X_LLM_02, X_ORCH_01, PipelineError
 from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
 from orchestrator.llm import LlmResult
+from orchestrator.llm_batch import chunk_json_items
+from orchestrator.llm_repair import complete_with_json_repair
 from orchestrator.nodes.req_parse import _strip_code_fence
 from orchestrator.prompts_loader import PromptSpec, load_prompt
 from orchestrator.python_scan import scan_repository
@@ -119,12 +122,29 @@ async def run_interface_reconstruct(
             },
         )
 
-        # 第②步：LLM 语义解析（候选含 snippet 上下文）
+        # 第②步：LLM 语义解析（候选含 snippet 上下文）。候选多时分批，
+        # 每批 JSON 独立且可校验，避免单次返回过长被模型截断。
         prompt = load_prompt(prompts_dir, NODE_NAME)
-        result = await llm.complete(
-            NODE_NAME, prompt, json.dumps(candidates, ensure_ascii=False)
-        )
-        interfaces = _merge_llm_output(result.text, candidates)
+        interfaces: list[dict[str, Any]] = []
+        candidate_batches = chunk_json_items(candidates)
+        for index, batch in enumerate(candidate_batches, start=1):
+            user_content = json.dumps(
+                {
+                    "batch": {"index": index, "total": len(candidate_batches)},
+                    "candidates": batch,
+                },
+                ensure_ascii=False,
+            )
+            interfaces.extend(
+                await complete_with_json_repair(
+                    llm,
+                    NODE_NAME,
+                    prompt,
+                    user_content,
+                    partial(_merge_llm_output, candidates=batch),
+                )
+            )
+        interfaces = _renumber_interfaces(interfaces)
 
         payload: dict[str, Any] = {
             "schema_version": "1.0",
@@ -245,10 +265,28 @@ def _merge_llm_output(text: str, candidates: list[dict[str, Any]]) -> list[dict[
         if cand.get("confidence") is not None:
             entry["confidence"] = cand["confidence"]
         interfaces.append(entry)
+    missing = sorted(set(by_id) - used)
+    if missing:
+        raise PipelineError(
+            code=X_LLM_02,
+            message=f"LLM 未覆盖当前批候选：{missing[:10]}",
+            node_id=NODE_NAME,
+        )
     if not interfaces:
         raise PipelineError(
             code=X_LLM_02,
             message="LLM 输出的 interfaces 为空（候选均未产出条目）",
             node_id=NODE_NAME,
         )
+    return interfaces
+
+
+def _renumber_interfaces(interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """批次合并后统一重编 IF ID，保证跨批唯一且按协议顺序稳定。"""
+    counters: dict[str, int] = {}
+    for entry in interfaces:
+        protocol = str(entry.get("protocol", "rest"))
+        counters[protocol] = counters.get(protocol, 0) + 1
+        prefix = _PROTOCOL_PREFIX.get(protocol, protocol.upper())
+        entry["id"] = f"IF-{prefix}-{counters[protocol]:03d}"
     return interfaces

@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 import pytest
 
+from helpers import requirement_review_payload
 from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import Engine
 from orchestrator.errors import X_ORCH_02, X_ORCH_03, PipelineError
@@ -89,6 +90,7 @@ def env(tmp_path: Path) -> tuple[Engine, ArtifactStore]:
     state = engine.init_job(_JOB)
     # 前置节点 req_parse 完成（写合法产物 + 状态推进）
     engine.mark_running(state, "req_parse")
+    store.write(_JOB, "requirement_review.json", requirement_review_payload(_JOB))
     store.write(
         _JOB,
         "requirement_items.json",

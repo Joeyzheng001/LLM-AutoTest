@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -89,9 +89,11 @@ class PipelineRunner:
         rest_base_url: str,
         force_node: str | None = None,
         auth: dict[str, Any] | None = None,
+        llm_config: dict[str, Any] | None = None,
+        e2e: dict[str, Any] | None = None,
     ) -> PipelineOutcome:
         """按固定顺序驱动 9 节点（F-ORCH-01）。
-    
+
         state.json 已存在时经产物判据续跑（F-ORCH-02）；
         doc_paths：需求文档列表（C-10 多文档，至少 1 份）；
         force_node：重跑已完成节点（旧产物先移入 archive/，禁止原地覆盖——留痕红 线）；
@@ -103,7 +105,7 @@ class PipelineRunner:
             # C-14：级联失效——目标节点及全部下游归档重置（防新旧数据混用）
             self._reset_from_node(state, force_node)
         llm = LlmClient(
-            settings=self._settings,
+            settings=self._runtime_llm_settings(llm_config),
             job_id=job_id,
             trace_path=self._orch_store.job_dir(job_id) / "llm_calls.jsonl",
         )
@@ -121,13 +123,33 @@ class PipelineRunner:
                 continue
 
             await self._run_node_with_retry(
-                node_name, state, llm, prompts_dir, doc_paths, repositories, rest_base_url,
-                outcome, auth,
+                node_name,
+                state,
+                llm,
+                prompts_dir,
+                doc_paths,
+                repositories,
+                rest_base_url,
+                outcome,
+                auth,
+                e2e,
             )
 
         self._refresh_final_metrics(state)
         outcome.artifacts_dir = self._orch_store.job_dir(job_id)
         return outcome
+
+    def _runtime_llm_settings(self, llm_config: dict[str, Any] | None) -> Settings:
+        """构造本次任务独享的模型配置，不修改服务级默认值。"""
+        if not llm_config:
+            return self._settings
+        return replace(
+            self._settings,
+            llm_base_url=str(llm_config.get("base_url", self._settings.llm_base_url)).rstrip("/"),
+            llm_model_name=str(llm_config.get("model", self._settings.llm_model_name)),
+            llm_api_key=str(llm_config.get("api_key", self._settings.llm_api_key)),
+            llm_max_tokens=int(llm_config.get("max_tokens", self._settings.llm_max_tokens)),
+        )
 
     def _refresh_final_metrics(self, state: JobState) -> None:
         """收尾刷新 metrics.json 为九节点终态版（docs/13 P-10）。
@@ -151,22 +173,41 @@ class PipelineRunner:
         rest_base_url: str,
         outcome: PipelineOutcome,
         auth: dict[str, Any] | None = None,
+        e2e: dict[str, Any] | None = None,
     ) -> None:
         """单节点治理：LLM 类失败重试一次，再失败或非 LLM 类失败 → 降级并继续（D1）。"""
         attempts = state.node(node_name).attempts
         while attempts < MAX_NODE_ATTEMPTS:
             try:
-                await self._invoke_node(
-                    node_name, state, llm, prompts_dir, doc_paths, repositories, rest_base_url,
-                    auth,
-                )
+                if e2e is None:
+                    # 保留自定义 Runner / 历史集成的调用签名兼容性。
+                    await self._invoke_node(
+                        node_name,
+                        state,
+                        llm,
+                        prompts_dir,
+                        doc_paths,
+                        repositories,
+                        rest_base_url,
+                        auth,
+                    )
+                else:
+                    await self._invoke_node(
+                        node_name,
+                        state,
+                        llm,
+                        prompts_dir,
+                        doc_paths,
+                        repositories,
+                        rest_base_url,
+                        auth,
+                        e2e,
+                    )
                 outcome.completed.append(node_name)
                 return
             except PipelineError as exc:
                 attempts += 1
-                logger.warning(
-                    "节点 %s 第 %d 次尝试失败：%s", node_name, attempts, exc.message
-                )
+                logger.warning("节点 %s 第 %d 次尝试失败：%s", node_name, attempts, exc.message)
                 # 设计 §1.3：节点级自动重试仅 LLM 调用类失败（网络级重试在 LlmClient 内）
                 if not exc.code.startswith("X-LLM-"):
                     attempts = MAX_NODE_ATTEMPTS
@@ -187,12 +228,11 @@ class PipelineRunner:
         repositories: list[RepositoryInput],
         rest_base_url: str,
         auth: dict[str, Any] | None = None,
+        e2e: dict[str, Any] | None = None,
     ) -> None:
         """分派到对应节点实现（甲/乙产物走 orch_store，丙产物走 te_store）。"""
         if node_name == "req_parse":
-            await run_req_parse(
-                self._engine, state, self._orch_store, llm, prompts_dir, doc_paths
-            )
+            await run_req_parse(self._engine, state, self._orch_store, llm, prompts_dir, doc_paths)
         elif node_name == "code_scan":
             await run_code_scan(
                 self._engine, state, self._orch_store, self._java_client, repositories
@@ -211,11 +251,11 @@ class PipelineRunner:
             await run_code_review(self._engine, state, self._orch_store, llm, prompts_dir)
         elif node_name == "testcase_generate":
             await run_testcase_generate(
-                self._engine, state, self._te_store, llm, prompts_dir
+                self._engine, state, self._te_store, llm, prompts_dir, auth=auth, e2e=e2e
             )
         elif node_name == "auto_execute":
             await run_auto_execute(
-                self._engine, state, self._te_store, rest_base_url, auth=auth
+                self._engine, state, self._te_store, rest_base_url, auth=auth, e2e=e2e
             )
         elif node_name == "test_report":
             await run_test_report(self._engine, state, self._orch_store)

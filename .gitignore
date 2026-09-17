@@ -21,6 +21,9 @@ dist/
 .env
 .env.*
 !deploy/.env.example
+deploy/.env
+# 部署辅助脚本含服务器凭据（C-18 云部署），绝不入库
+deploy/remote_exec.py
 
 # 运行时产物（按任务 ID 分目录，运行时生成，不入库）
 /data/
@@ -31,3 +34,5 @@ volumes/
 .vscode/
 .DS_Store
 services/frontend/tsconfig.tsbuildinfo
+.rings/
+.playwright-mcp/

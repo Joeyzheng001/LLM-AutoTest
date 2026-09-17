@@ -5,6 +5,7 @@ import { reactive } from 'vue'
 export const navigation = reactive({
   view: '', // 目标视图 key（App.vue views 清单同源）
   jobId: '', // 跨页携带的 job 标识
+  e2e: null as null | { generateCases: boolean; executeCases: boolean },
 })
 
 /** 总览页节点卡等入口调用：切换视图并携带 jobId */

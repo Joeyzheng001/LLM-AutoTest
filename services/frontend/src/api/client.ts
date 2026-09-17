@@ -11,15 +11,19 @@ import type {
   JobStatus,
   JobSubmitPayload,
   JobSubmitResponse,
+  LlmCallLog,
   MetricsPayload,
   MissingFeature,
   RegressionIndexPayload,
   RemovedFile,
   RepoInventory,
+  RerunPayload,
   RerunResponse,
   TestCaseEntry,
+  E2eTestCaseEntry,
   UnmatchedChangedFile,
   RequirementItem,
+  RequirementReview,
   RetestResponse,
   ReviewLogResponse,
   ReviewMapping,
@@ -61,10 +65,10 @@ export function retestFull(jobId: string): Promise<RetestResponse> {
 }
 
 // C-14：重跑（fromNode 缺省 = 全量；目标节点及其下游级联失效后重跑）
-export function rerunJob(jobId: string, fromNode?: string): Promise<RerunResponse> {
+export function rerunJob(jobId: string, payload: RerunPayload = {}): Promise<RerunResponse> {
   return request(`/api/v1/jobs/${jobId}/rerun`, {
     method: 'POST',
-    body: JSON.stringify(fromNode ? { from_node: fromNode } : {}),
+    body: JSON.stringify(payload),
   })
 }
 
@@ -102,6 +106,27 @@ export function getRequirementItems(jobId: string): Promise<{
   return request(`/api/v1/jobs/${jobId}/artifacts/requirement_items.json`)
 }
 
+export function getRequirementReview(jobId: string): Promise<RequirementReview> {
+  return request(`/api/v1/jobs/${jobId}/artifacts/requirement_review.json`)
+}
+
+/** 读取已脱敏的 LLM 调用留痕；不包含 API Key、输入内容或模型原文。 */
+export async function getLlmCallLogs(jobId: string): Promise<LlmCallLog[]> {
+  const response = await fetch(`/api/v1/jobs/${jobId}/logs`)
+  if (!response.ok) return []
+  const payload = (await response.json()) as { logs?: LlmCallLog[] }
+  return Array.isArray(payload.logs) ? payload.logs : []
+}
+
+export function exportJobResults(jobId: string): void {
+  const anchor = document.createElement('a')
+  anchor.href = `/api/v1/jobs/${encodeURIComponent(jobId)}/export`
+  anchor.download = `${jobId}-results.zip`
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
 // C-10：源码扫描清单（独立展示页数据源）
 export function getCodeInventory(jobId: string): Promise<{ repositories: RepoInventory[] }> {
   return request(`/api/v1/jobs/${jobId}/artifacts/code_inventory.json`)
@@ -110,6 +135,7 @@ export function getCodeInventory(jobId: string): Promise<{ repositories: RepoInv
 // C-10：用例清单（独立展示页数据源）
 export function getTestcases(jobId: string): Promise<{
   cases: TestCaseEntry[]
+  e2e_cases?: E2eTestCaseEntry[]
   warnings?: string[]
 }> {
   return request(`/api/v1/jobs/${jobId}/artifacts/testcases.json`)

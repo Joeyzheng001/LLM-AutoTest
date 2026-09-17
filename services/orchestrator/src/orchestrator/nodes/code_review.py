@@ -28,6 +28,8 @@ code_inventory.json 无 changed_files 键（未配基线分支）时两视图为
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -35,6 +37,8 @@ from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import Engine, JobState
 from orchestrator.errors import X_LLM_02, X_ORCH_01, PipelineError
 from orchestrator.llm import LlmResult
+from orchestrator.llm_batch import chunk_json_items
+from orchestrator.llm_repair import complete_with_json_repair
 from orchestrator.nodes.req_parse import _strip_code_fence
 from orchestrator.prompts_loader import PromptSpec, load_prompt
 
@@ -72,14 +76,36 @@ async def run_code_review(
         requirements = _load_requirements(store, state.job_id)
         interfaces = _load_interfaces(store, state.job_id)
         inventory = _load_code_inventory(store, state.job_id)
+        behavior_evidence = _behavior_evidence(inventory)
 
         prompt = load_prompt(prompts_dir, NODE_NAME)
-        user_content = json.dumps(
-            {"requirements": requirements, "interfaces": interfaces},
-            ensure_ascii=False,
-        )
-        result = await llm.complete(NODE_NAME, prompt, user_content)
-        mappings = _merge_llm_mappings(result.text, requirements, interfaces)
+        # 以需求为独立审查单元分批；接口只发送映射所需的紧凑字段，避免源码上下文重复。
+        interface_index = _compact_interfaces(interfaces)
+        mappings: list[dict[str, Any]] = []
+        # Review 同时携带接口和服务端行为证据，单批预算应明显小于普通 JSON 节点。
+        requirement_batches = chunk_json_items(requirements, max_chars=5_000)
+        for index, batch in enumerate(requirement_batches, start=1):
+            _append_review_progress(
+                store, state.job_id, index, len(requirement_batches), len(batch)
+            )
+            user_content = json.dumps(
+                {
+                    "batch": {"index": index, "total": len(requirement_batches)},
+                    "requirements": batch,
+                    "interfaces": interface_index,
+                    "behavior_evidence": behavior_evidence,
+                },
+                ensure_ascii=False,
+            )
+            mappings.extend(
+                await complete_with_json_repair(
+                    llm,
+                    NODE_NAME,
+                    prompt,
+                    user_content,
+                    partial(_merge_llm_mappings, requirements=batch, interfaces=interfaces),
+                )
+            )
 
         change_scope, removed_files, unmatched = _derive_change_scope(
             inventory, interfaces, mappings
@@ -159,6 +185,70 @@ def _load_code_inventory(store: ArtifactStore, job_id: str) -> dict[str, Any]:
         return dict(store.read_json(job_id, "code_inventory.json"))
     except FileNotFoundError:
         return {}
+
+
+def _compact_interfaces(interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """审查提示只保留需求映射需要的字段，代码溯源仍由程序回填。"""
+    return [
+        {
+            "id": item.get("id"),
+            "protocol": item.get("protocol"),
+            "signature": item.get("signature"),
+            "params": item.get("params", []),
+            "returns": item.get("returns"),
+        }
+        for item in interfaces
+    ]
+
+
+def _behavior_evidence(inventory: dict[str, Any]) -> list[dict[str, str]]:
+    """从扫描清单选出服务端行为相关文件，避免 Review 只盯 Controller/API。"""
+    keywords = (
+        "auth",
+        "session",
+        "jwt",
+        "token",
+        "setting",
+        "config",
+        "middleware",
+        "security",
+        "cache",
+        "serializ",
+        "model",
+        "service",
+        "message",
+    )
+    evidence: list[dict[str, str]] = []
+    for repo in inventory.get("repositories") or []:
+        if not isinstance(repo, dict):
+            continue
+        for file in repo.get("files") or []:
+            if not isinstance(file, dict):
+                continue
+            path = str(file.get("path", ""))
+            if any(word in path.lower() for word in keywords):
+                evidence.append({"repo": str(repo.get("name", "")), "file": path})
+    return evidence[:120]
+
+
+def _append_review_progress(
+    store: ArtifactStore, job_id: str, index: int, total: int, count: int
+) -> None:
+    """长批次调用前落一条无敏感信息的进度事件，供总览实时展示。"""
+    entry = {
+        "call_id": f"REVIEW-{index:03d}",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "node": NODE_NAME,
+        "event": "started",
+        "batch": {"index": index, "total": total, "requirements": count},
+        "ok": True,
+        "duration_ms": 0,
+        "tokens": None,
+    }
+    path = store.job_dir(job_id) / "review_log.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _derive_change_scope(
@@ -364,9 +454,7 @@ def _derive_missing(
 ) -> list[dict[str, Any]]:
     """视图三（R-REVW-02）：提取 missing 条目，title 从需求回填（程序派生）。"""
     title_by_id: dict[str, str] = {
-        str(item["id"]): str(item.get("title", ""))
-        for item in requirements
-        if item.get("id")
+        str(item["id"]): str(item.get("title", "")) for item in requirements if item.get("id")
     }
     missing: list[dict[str, Any]] = []
     for entry in mappings:

@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 from orchestrator.javaparser_client import RepositoryInput
-from orchestrator.python_scan import scan_repository
+from orchestrator.python_scan import _normalize_django_path, scan_repository
 
 _CONFIG_URLS = '''
 from django.urls import path, include
@@ -65,6 +65,12 @@ class ProductConfigViewSet(ModelViewSet):
 def cancel_order(request):
     return None
 '''
+
+
+def test_normalize_django_path_preserves_trailing_slash() -> None:
+    """Django 的 path('x/') 必须保留末尾 /，否则 POST 可能被代理层拒绝。"""
+    assert _normalize_django_path("api/", "auth/login/") == "/api/auth/login/"
+    assert _normalize_django_path("api/", "auth/login") == "/api/auth/login"
 
 _FASTAPI_APP = '''
 from fastapi import FastAPI
@@ -139,24 +145,24 @@ def test_python_scan_django_tree_candidates(tmp_path: Path) -> None:
 
     # ModelViewSet 继承 → 6 条标准路由（0.80），detail 路由带 {pk}
     for sig in (
-        "GET /api/orders/products",
-        "POST /api/orders/products",
-        "GET /api/orders/products/{pk}",
-        "PUT /api/orders/products/{pk}",
-        "PATCH /api/orders/products/{pk}",
-        "DELETE /api/orders/products/{pk}",
+        "GET /api/orders/products/",
+        "POST /api/orders/products/",
+        "GET /api/orders/products/{pk}/",
+        "PUT /api/orders/products/{pk}/",
+        "PATCH /api/orders/products/{pk}/",
+        "DELETE /api/orders/products/{pk}/",
     ):
         assert sig in by_sig, f"缺标准路由：{sig}"
         assert by_sig[sig]["confidence"] == 0.80
 
     # @action(detail=False, url_path="active") 自定义路由
-    assert "GET /api/orders/products/active" in by_sig
+    assert "GET /api/orders/products/active/" in by_sig
 
     # 候选全量（2 login + 7 products + 1 cancel）+ 装饰器 4 条
     assert len(signatures) == 14, signatures
 
     # 溯源：@action 指向定义文件 views.py 而非 urls.py
-    active = by_sig["GET /api/orders/products/active"]
+    active = by_sig["GET /api/orders/products/active/"]
     assert active["code_location"]["file"] == "orders/views.py"
     # 溯源：候选 ID 为 CAND-### 顺序编号
     assert [c["candidate_id"] for c in result.candidates] == [
@@ -178,7 +184,7 @@ def test_python_scan_decorator_routes(tmp_path: Path) -> None:
 
 
 def test_python_scan_path_normalization(tmp_path: Path) -> None:
-    """路径归一：首斜杠补齐、尾斜杠去除、<converter:name> → {name}。"""
+    """路径归一：首斜杠补齐、末尾斜杠保留、<converter:name> → {name}。"""
     root = tmp_path / "norm-repo"
     root.mkdir()
     (root / "urls.py").write_text(
@@ -189,7 +195,7 @@ def test_python_scan_path_normalization(tmp_path: Path) -> None:
     )
     (root / "views.py").write_text("def health(request):\n    return None\n", encoding="utf-8")
     result = scan_repository(_repo(root))
-    assert [c["signature"] for c in result.candidates] == ["GET /api/v1/health"]
+    assert [c["signature"] for c in result.candidates] == ["GET /api/v1/health/"]
 
 
 def test_python_scan_missing_path_error(tmp_path: Path) -> None:

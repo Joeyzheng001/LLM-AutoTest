@@ -28,9 +28,16 @@ export interface JobStatus {
   job_id: string
   running: boolean
   updated_at: string | null
+  rest_url?: string | null
   nodes: NodeState[]
   degraded: DegradedRecord[]
   artifacts: string[]
+  e2e?: {
+    base_url: string
+    generate_cases: boolean
+    execute_cases: boolean
+    insecure_tls?: boolean
+  } | null
 }
 
 export interface JobSubmitResponse {
@@ -63,6 +70,30 @@ export interface RerunResponse {
   from_node: string
 }
 
+export interface RerunPayload {
+  from_node?: string
+  llm?: LlmConfig
+  rest_url?: string
+  e2e?: E2eConfig
+}
+
+export interface LlmCallLog {
+  call_id?: string
+  timestamp: string
+  node: string
+  prompt_file?: string
+  duration_ms?: number | null
+  tokens?: number | null
+  ok?: boolean
+  event?: 'started' | 'e2e_started' | 'e2e_case_started' | 'e2e_case_completed'
+  batch?: { index: number; total: number; requirements: number }
+  index?: number
+  total?: number
+  case_id?: string
+  message?: string
+  error?: string | null
+}
+
 export interface RepoConfig {
   name: string
   path: string
@@ -87,6 +118,19 @@ export interface AuthConfig {
   insecure_tls?: boolean // https 自签场景默认跳过证书校验
 }
 
+export interface LlmConfig {
+  api_key: string
+  model: string
+  base_url: string
+  max_tokens: number
+}
+export interface E2eConfig {
+  base_url: string
+  generate_cases: boolean
+  execute_cases: boolean
+  insecure_tls?: boolean
+}
+
 export interface JobSubmitPayload {
   job_id?: string
   docs: DocInput[]
@@ -94,6 +138,8 @@ export interface JobSubmitPayload {
   rest_url: string
   resume?: boolean
   auth?: AuthConfig // C-15：鉴权配置（可选）
+  llm?: LlmConfig // 运行时模型配置；密钥不在任务产物中保存
+  e2e?: E2eConfig
 }
 
 /* ---- 产物形状（只声明页面用到的字段；后端 Schema 为唯一事实源） ---- */
@@ -105,6 +151,36 @@ export interface RequirementItem {
   priority?: string
   stub_note?: string
   source_files?: string[] // C-10：全部来源文档路径
+}
+
+export interface RequirementReviewIssue {
+  type: '缺失信息' | '歧义' | '冲突' | '不可测' | '其它' | '建议'
+  priority: '高' | '中' | '低'
+  location: string
+  question: string
+  reason: string
+  impact: string
+}
+
+export interface RequirementReviewMindmap {
+  主题: string
+  子主题: RequirementReviewMindmap[]
+}
+
+export interface RequirementReview {
+  score: number
+  quality_grade: 'A' | 'B' | 'C' | 'D'
+  summary: string
+  dimension_scores: Record<string, { weight: number; score: number; reason: string }>
+  quality_assessment: { grade: 'A' | 'B' | 'C' | 'D'; grade_name: string; summary_reason: string }
+  issues: RequirementReviewIssue[]
+  readable_issue_points: string[]
+  completeness_issues: string[]
+  consistency_issues: string[]
+  untestable_items: string[]
+  risk_flags: Array<{ type: string; desc: string }>
+  testable_features: string[]
+  mindmap: RequirementReviewMindmap
 }
 
 export interface CodeLocation {
@@ -202,14 +278,34 @@ export interface TestCaseEntry {
   low_confidence?: boolean
 }
 
+export interface E2eTestStep {
+  action: 'goto' | 'click' | 'fill' | 'check' | 'select' | 'expect_text' | 'expect_url'
+  selector?: string
+  value?: string
+}
+
+export interface E2eTestCaseEntry {
+  id: string
+  case_type: 'e2e'
+  requirement_id: string
+  title: string
+  preconditions?: string[]
+  steps: E2eTestStep[]
+  expected: string
+}
+
 export interface ExecResult {
   case_id: string
   interface_id: string
+  case_type?: 'api' | 'e2e'
   passed: boolean
   timeout?: boolean
   duration_ms?: number
   failure_kind?: 'assertion' | 'environment' | null
   failure_reason?: string
+  expected?: string
+  actual_status?: number
+  actual_body?: unknown
   skipped_reason?: string
   timestamp?: string
 }
@@ -236,6 +332,7 @@ export interface DefectEntry {
 
 export interface RegressionIndexPayload {
   suites: RegressionSuite[]
+  empty_reason?: string
   drift_warnings?: Array<{ case_id: string; detail: string }>
 }
 

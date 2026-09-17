@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,6 +28,16 @@ from orchestrator.prompts_loader import PromptSpec
 # docs/12 §三：重试退避间隔（秒）；测试注入 0 加速
 DEFAULT_RETRY_BACKOFF: tuple[float, float] = (5.0, 20.0)
 _MAX_ATTEMPTS = 3  # 1 次首发 + 2 次重试
+
+# C-17：推理模型思考块（如 MiniMax-M2 的 `??…??`）不属回答正文，
+# 不剥离则下游 JSON 解析节点全部 X-LLM-02。留痕 output_digest 仍取原始输出（诚实红线）。
+_THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>")
+
+
+def strip_think_blocks(text: str) -> str:
+    """剥离推理模型思考块；若正文为空则保留原文供节点提取完整 JSON。"""
+    stripped = _THINK_BLOCK_RE.sub("", text).strip()
+    return stripped or text.strip()
 
 
 @dataclass(frozen=True)
@@ -88,6 +99,7 @@ class LlmClient:
                 "node": node,
                 "prompt_file": prompt.ref,
                 "prompt_version": prompt.version,
+                "knowledge_refs": list(prompt.knowledge_refs),
                 "sampling": sampling,
                 "input_digest": _digest(system + "\x00" + user_content),
                 "output_digest": _digest(text) if text is not None else None,
@@ -103,7 +115,8 @@ class LlmClient:
         if text is None:  # pragma: no cover —— ok 分支必有文本
             msg = "unreachable: 调用成功但无文本"
             raise RuntimeError(msg)
-        return LlmResult(text=text, tokens=tokens, call_id=call_id)
+        # C-17：思考块剥离在留痕之后（digest 取原始输出，返回体取规范化正文）
+        return LlmResult(text=strip_think_blocks(text), tokens=tokens, call_id=call_id)
 
     async def _request(self, system: str, user_content: str) -> tuple[str, int | None]:
         """带重试的 HTTP 调用；仅网络/超时类失败重试（docs/12 §三）。"""
@@ -130,6 +143,7 @@ class LlmClient:
             ],
             "temperature": self._settings.llm_temperature,
             "top_p": self._settings.llm_top_p,
+            "max_tokens": self._settings.llm_max_tokens,
             **({"seed": self._settings.llm_seed} if self._settings.llm_seed is not None else {}),
         }
         headers = (
