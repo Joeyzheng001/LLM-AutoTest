@@ -230,7 +230,7 @@ class _ScriptedRunner(PipelineRunner):
 
     async def _invoke_node(  # type: ignore[no-untyped-def]
         self, node_name, state, llm, prompts_dir, doc_paths, repositories, rest_base_url,
-        auth=None, e2e=None, document_pairs=None, rest_insecure_tls=True,
+        auth=None, auth_headers=None, e2e=None, document_pairs=None, rest_insecure_tls=True,
     ):
         """覆写：给 auto_execute/retest 注入 MockTransport（auth 透传 C-15）。"""
         from orchestrator.nodes import (
@@ -268,6 +268,7 @@ class _ScriptedRunner(PipelineRunner):
             await run_auto_execute(
                 self._engine, state, self._te_store, rest_base_url,
                 self._test_rest_transport, auth=auth, e2e=e2e, insecure_tls=rest_insecure_tls,
+                preauthenticated_headers=auth_headers,
             )
         elif node_name == "test_report":
             await run_test_report(self._engine, state, self._orch_store)
@@ -277,6 +278,7 @@ class _ScriptedRunner(PipelineRunner):
             await run_retest_regression(
                 self._engine, state, self._te_store, rest_base_url,
                 self._test_rest_transport, auth=auth, insecure_tls=rest_insecure_tls,
+                preauthenticated_headers=auth_headers,
             )
 
 

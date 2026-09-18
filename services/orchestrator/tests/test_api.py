@@ -44,6 +44,7 @@ class FakeRunner:
         rest_insecure_tls: bool = True,
         force_node: str | None = None,
         auth: dict[str, Any] | None = None,
+        auth_headers: dict[str, str] | None = None,
         llm_config: dict[str, Any] | None = None,
         document_pairs: list[dict[str, str | None]] | None = None,
     ) -> PipelineOutcome:
@@ -56,6 +57,7 @@ class FakeRunner:
                 "rest_insecure_tls": rest_insecure_tls,
                 "force_node": force_node,
                 "auth": auth,
+                "auth_headers": auth_headers,
                 "llm_config": llm_config,
                 "document_pairs": document_pairs,
             }
@@ -558,6 +560,34 @@ async def test_submit_job_auth_persisted_and_passed(
     assert response.status_code == 202
     await _await_task(app, "job-api-auth2")
     assert fake.calls[-1]["auth"] is None
+
+
+async def test_verify_authentication_returns_opaque_session_only(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """配置预检会话不返回 Token；仅服务内存持有，可在保存任务时接管。"""
+    app, _fake, client, _repo_dir = env
+
+    async def fake_login(auth: dict[str, Any]) -> dict[str, str]:
+        assert auth["password"]
+        return {"Authorization": "Token never-return-this-value"}
+
+    monkeypatch.setattr("orchestrator.api.login_for_headers", fake_login)
+    response = await client.post(
+        "/api/v1/auth/verify",
+        json={
+            "login_url": "https://example.test/login/",
+            "username": "admin",
+            "password": "secret-password",
+            "insecure_tls": True,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["authenticated"] is True
+    assert payload["credential_type"] == "token"
+    assert "never-return-this-value" not in response.text
+    assert payload["session_id"] in app.state.pending_auth_sessions
 
 
 async def test_submit_job_llm_key_is_runtime_only(

@@ -31,6 +31,8 @@ import type {
   ReviewLogResponse,
   ReviewMapping,
   DerivedRisk,
+  AuthConfig,
+  AuthVerificationResponse,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -66,6 +68,17 @@ export function submitJob(payload: JobSubmitPayload): Promise<JobSubmitResponse>
 /** 打开运行后端的本机目录选择器；Windows 本地部署可返回真实绝对路径。 */
 export function pickLocalRepositoryDirectory(): Promise<{ path: string; name: string }> {
   return request('/api/v1/system/pick-directory', { method: 'POST', body: '{}' })
+}
+
+/** 配置阶段真实登录；响应不含 Token，仅返回内存会话标识。 */
+export function verifyAuthentication(
+  auth: AuthConfig,
+  jobId?: string,
+): Promise<AuthVerificationResponse> {
+  return request('/api/v1/auth/verify', {
+    method: 'POST',
+    body: JSON.stringify({ ...auth, ...(jobId ? { job_id: jobId } : {}) }),
+  })
 }
 
 export function getJobConfiguration(jobId: string): Promise<JobConfiguration> {

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import io
 import json
 import logging
@@ -36,6 +37,7 @@ from orchestrator.config import Settings
 from orchestrator.engine import NODE_ARTIFACTS, Engine
 from orchestrator.errors import PipelineError
 from orchestrator.javaparser_client import JavaParserClient
+from orchestrator.nodes.auto_execute import login_for_headers
 from orchestrator.nodes.retest_regression import retest_defects
 from orchestrator.pipeline import NODE_ORDER, PipelineState
 from orchestrator.runner import PipelineOutcome, PipelineRunner, repository_inputs_from_config
@@ -97,6 +99,12 @@ class AuthConfig(BaseModel):
     insecure_tls: bool = True
 
 
+class AuthVerificationRequest(AuthConfig):
+    """配置页鉴权预检；Token/Cookie 只驻留服务端内存。"""
+
+    job_id: str | None = None
+
+
 class LlmConfig(BaseModel):
     """本次任务的 MiniMax 运行时配置；密钥只驻留后台任务内存。"""
 
@@ -134,6 +142,7 @@ class JobSubmitRequest(BaseModel):
     resume: bool = True
     # C-15：鉴权配置（可选；填写则执行前登录被测服务注入凭据头）
     auth: AuthConfig | None = None
+    auth_session_id: str | None = Field(default=None, max_length=64)
     llm: LlmConfig | None = None
     e2e: E2eConfig | None = None
 
@@ -171,6 +180,7 @@ class JobConfigurationUpdateRequest(BaseModel):
     rest_insecure_tls: bool = True
     resume: bool = True
     auth: EditableAuthConfig | None = None
+    auth_session_id: str | None = Field(default=None, max_length=64)
     llm: EditableLlmConfig | None = None
     e2e: E2eConfig | None = None
 
@@ -214,6 +224,8 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
     app.state.job_tasks: dict[str, asyncio.Task[None]] = {}  # type: ignore[misc]
     app.state.job_outcomes: dict[str, PipelineOutcome | dict[str, Any]] = {}  # type: ignore[misc]
     app.state.job_llm_configs = {}  # 仅运行期，禁止落盘 API key
+    app.state.job_auth_headers: dict[str, dict[str, str]] = {}
+    app.state.pending_auth_sessions: dict[str, dict[str, Any]] = {}
     if runner is None:
         java_client = JavaParserClient(base_url=settings.java_parser_url)
         runner = PipelineRunner(settings, app.state.engine, orch_store, te_store, java_client)
@@ -256,6 +268,28 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         if not selected:
             raise HTTPException(status_code=400, detail="未选择目录")
         return {"path": selected, "name": Path(selected).name}
+
+    @app.post("/api/v1/auth/verify")
+    async def verify_authentication(request: AuthVerificationRequest) -> dict[str, Any]:
+        """配置阶段真实登录；凭据头仅留在当前服务进程，绝不返回浏览器。"""
+        auth_payload = request.model_dump(exclude={"job_id"})
+        try:
+            headers = await login_for_headers(auth_payload)
+        except PipelineError as exc:
+            raise HTTPException(status_code=400, detail=exc.message) from exc
+        session_id = uuid.uuid4().hex
+        app.state.pending_auth_sessions[session_id] = {
+            "headers": headers,
+            "fingerprint": _auth_fingerprint(auth_payload),
+        }
+        if request.job_id:
+            _require_job(app, request.job_id)
+            app.state.job_auth_headers[request.job_id] = headers
+        return {
+            "authenticated": True,
+            "session_id": session_id,
+            "credential_type": "token" if "Authorization" in headers else "cookie",
+        }
 
     @app.get("/api/v1/pipeline/nodes")
     async def list_nodes() -> dict[str, object]:
@@ -335,6 +369,9 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     detail="auth.username/password 超长（C-15：用户名≤128、密码≤256）",
                 )
             auth_payload = auth.model_dump()
+            headers = _take_verified_auth_headers(app, auth_payload, request.auth_session_id)
+            if headers:
+                app.state.job_auth_headers[job_id] = headers
 
         job_input: dict[str, Any] = {
             "job_id": job_id,
@@ -512,6 +549,9 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     status_code=400, detail="auth.username/password 超长（用户名≤128、密码≤256）"
                 )
             auth_payload = {**request.auth.model_dump(), "password": password}
+            headers = _take_verified_auth_headers(app, auth_payload, request.auth_session_id)
+            if headers:
+                app.state.job_auth_headers[job_id] = headers
 
         llm_payload: dict[str, Any] | None = None
         if request.llm is not None:
@@ -995,6 +1035,7 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
         doc_paths = [Path(job_input["doc_path"])]
     # C-15：鉴权配置随原始输入复用（rerun/retest 全量同样生效）
     auth = job_input.get("auth")
+    auth_headers = app.state.job_auth_headers.get(job_id)
     # 重跑优先复用仍在内存中的密钥；服务重启后回退部署环境变量，绝不从磁盘读密钥。
     llm_config = app.state.job_llm_configs.get(job_id)
 
@@ -1010,6 +1051,8 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
                 "force_node": force_node,
                 "auth": auth,
             }
+            if auth_headers:
+                run_args["auth_headers"] = auth_headers
             if job_input.get("e2e") is not None:
                 run_args["e2e"] = job_input["e2e"]
             if isinstance(job_input.get("document_pairs"), list):
@@ -1029,3 +1072,30 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
 def _now_iso() -> str:
     """UTC ISO-8601 时间戳（横切约定）。"""
     return datetime.now(UTC).isoformat()
+
+
+def _auth_fingerprint(auth: dict[str, Any]) -> str:
+    """会话只可复用于完全相同的登录配置；摘要不出服务端。"""
+    material = json.dumps(
+        {
+            "login_url": auth.get("login_url", ""),
+            "username": auth.get("username", ""),
+            "password": auth.get("password", ""),
+            "insecure_tls": bool(auth.get("insecure_tls", True)),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _take_verified_auth_headers(
+    app: FastAPI, auth: dict[str, Any], session_id: str | None
+) -> dict[str, str] | None:
+    """接管同配置预检会话；未点预检则保持原有执行前登录行为。"""
+    pending = app.state.pending_auth_sessions.pop(session_id, None) if session_id else None
+    if pending and pending.get("fingerprint") == _auth_fingerprint(auth):
+        headers = pending.get("headers")
+        if isinstance(headers, dict) and all(isinstance(value, str) for value in headers.values()):
+            return dict(headers)
+    return None

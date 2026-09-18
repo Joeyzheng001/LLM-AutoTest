@@ -91,6 +91,7 @@ class PipelineRunner:
         document_pairs: list[dict[str, str | None]] | None = None,
         force_node: str | None = None,
         auth: dict[str, Any] | None = None,
+        auth_headers: dict[str, str] | None = None,
         llm_config: dict[str, Any] | None = None,
         e2e: dict[str, Any] | None = None,
     ) -> PipelineOutcome:
@@ -135,6 +136,7 @@ class PipelineRunner:
                 rest_insecure_tls,
                 outcome,
                 auth,
+                auth_headers,
                 e2e,
                 document_pairs,
             )
@@ -178,6 +180,7 @@ class PipelineRunner:
         rest_insecure_tls: bool,
         outcome: PipelineOutcome,
         auth: dict[str, Any] | None = None,
+        auth_headers: dict[str, str] | None = None,
         e2e: dict[str, Any] | None = None,
         document_pairs: list[dict[str, str | None]] | None = None,
     ) -> None:
@@ -194,6 +197,7 @@ class PipelineRunner:
                     repositories,
                     rest_base_url,
                     auth,
+                    auth_headers,
                     e2e,
                     document_pairs=document_pairs,
                     rest_insecure_tls=rest_insecure_tls,
@@ -223,6 +227,7 @@ class PipelineRunner:
         repositories: list[RepositoryInput],
         rest_base_url: str,
         auth: dict[str, Any] | None = None,
+        auth_headers: dict[str, str] | None = None,
         e2e: dict[str, Any] | None = None,
         document_pairs: list[dict[str, str | None]] | None = None,
         rest_insecure_tls: bool = True,
@@ -265,6 +270,7 @@ class PipelineRunner:
                 self._te_store,
                 rest_base_url,
                 auth=auth,
+                preauthenticated_headers=auth_headers,
                 e2e=e2e,
                 insecure_tls=rest_insecure_tls,
             )
@@ -279,6 +285,7 @@ class PipelineRunner:
                 self._te_store,
                 rest_base_url,
                 auth=auth,
+                preauthenticated_headers=auth_headers,
                 insecure_tls=rest_insecure_tls,
             )
         else:  # pragma: no cover - NODE_ORDER 固定 9 项，防御性兜底

@@ -462,6 +462,7 @@ async def run_auto_execute(
     auth: dict[str, Any] | None = None,
     e2e: dict[str, Any] | None = None,
     insecure_tls: bool = True,
+    preauthenticated_headers: dict[str, str] | None = None,
 ) -> Path:
     """执行 auto_execute 全流程：读用例 → 探测 → 分协议执行 → 落盘。
 
@@ -492,9 +493,9 @@ async def run_auto_execute(
         interface_by_id = {str(i.get("id", "")): i for i in interfaces if i.get("id")}
 
         # REST 证书策略独立于登录配置，避免「未配置登录 → 自签环境全量不可达」。
-        auth_headers: dict[str, str] = {}
+        auth_headers: dict[str, str] = dict(preauthenticated_headers or {})
         verify = not insecure_tls
-        if auth:
+        if auth and not auth_headers:
             auth_headers = await login_for_headers(auth, transport)
 
         # R-EXEC-02：环境探测优先于执行

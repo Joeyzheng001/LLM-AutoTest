@@ -128,6 +128,12 @@ export interface AuthConfig {
   insecure_tls?: boolean // https 自签场景默认跳过证书校验
 }
 
+export interface AuthVerificationResponse {
+  authenticated: true
+  session_id: string
+  credential_type: 'token' | 'cookie'
+}
+
 export interface LlmConfig {
   api_key: string
   model: string
@@ -150,6 +156,7 @@ export interface JobSubmitPayload {
   rest_insecure_tls?: boolean
   resume?: boolean
   auth?: AuthConfig // C-15：鉴权配置（可选）
+  auth_session_id?: string
   llm?: LlmConfig // 运行时模型配置；密钥不在任务产物中保存
   e2e?: E2eConfig
 }
@@ -177,6 +184,7 @@ export interface JobConfigurationUpdatePayload {
   rest_insecure_tls: boolean
   resume: boolean
   auth?: Omit<AuthConfig, 'password'> & { password?: string }
+  auth_session_id?: string
   llm?: Omit<LlmConfig, 'api_key'> & { api_key?: string }
   e2e?: E2eConfig
 }

@@ -56,6 +56,7 @@ async def run_retest_regression(
     transport: httpx.AsyncBaseTransport | None = None,
     auth: dict[str, Any] | None = None,
     insecure_tls: bool = True,
+    preauthenticated_headers: dict[str, str] | None = None,
 ) -> Path:
     """复测全量缺陷并沉淀回归资产：defects.json（状态流转）+ regression_index.json。
 
@@ -81,6 +82,7 @@ async def run_retest_regression(
             transport,
             auth=auth,
             insecure_tls=insecure_tls,
+            preauthenticated_headers=preauthenticated_headers,
         )
         engine.mark_completed(state, NODE_NAME)
         return Path(str(result["regression_index_path"]))
@@ -97,6 +99,7 @@ async def retest_defects(
     only_defect_ids: set[str] | None = None,
     auth: dict[str, Any] | None = None,
     insecure_tls: bool = True,
+    preauthenticated_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """复测核心（供 9 节点流水线与 REST API 单条复测共用）。
 
@@ -126,9 +129,9 @@ async def retest_defects(
     }
 
     # REST 证书策略与登录独立，复测与首次执行同一口径。
-    auth_headers: dict[str, str] = {}
+    auth_headers: dict[str, str] = dict(preauthenticated_headers or {})
     verify = not insecure_tls
-    if auth:
+    if auth and not auth_headers:
         auth_headers = await login_for_headers(auth, transport)
 
     rest_ready = await probe_rest(rest_base_url, transport, verify)

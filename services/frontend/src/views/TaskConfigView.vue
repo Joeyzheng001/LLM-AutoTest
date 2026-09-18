@@ -9,6 +9,7 @@ import {
   pickLocalRepositoryDirectory,
   submitJob,
   updateJobConfiguration,
+  verifyAuthentication,
 } from '../api/client'
 import { navigateTo } from '../api/navigation'
 import type { JobConfigurationUpdatePayload, JobSubmitPayload } from '../api/types'
@@ -44,6 +45,9 @@ const auth = reactive({
   password: '',
   insecureTls: true,
 })
+const verifyingAuth = ref(false)
+const authVerificationMessage = ref('')
+const authSessionId = ref('')
 
 // 真实模型配置：随任务提交；可由用户选择仅保存在当前浏览器，避免重复填写。
 const LLM_BROWSER_CONFIG_KEY = 'llm-autotest.llm-config.v1'
@@ -155,6 +159,30 @@ function removeDocumentRow(index: number): void {
 function isAbsoluteRepositoryPath(value: string): boolean {
   // POSIX / macOS / Linux，Windows 盘符路径，以及 UNC 网络共享路径。
   return /^(\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/.test(value.trim())
+}
+
+async function verifyAuthBeforeSave(): Promise<void> {
+  if (!authValid.value || !authEnabled.value) return
+  verifyingAuth.value = true
+  authVerificationMessage.value = ''
+  try {
+    const result = await verifyAuthentication(
+      {
+        login_url: auth.loginUrl.trim(),
+        username: auth.username.trim(),
+        password: auth.password,
+        insecure_tls: auth.insecureTls,
+      },
+      editingJobId.value || undefined,
+    )
+    authSessionId.value = result.session_id
+    authVerificationMessage.value = `鉴权成功，已建立本次任务的${result.credential_type === 'token' ? ' Token' : ' Cookie'}会话`
+  } catch (err) {
+    authSessionId.value = ''
+    authVerificationMessage.value = err instanceof Error ? `鉴权失败：${err.message}` : '鉴权失败'
+  } finally {
+    verifyingAuth.value = false
+  }
 }
 
 const reposValid = computed(
@@ -358,6 +386,7 @@ async function handleSubmit(): Promise<void> {
               password: auth.password,
               insecure_tls: auth.insecureTls,
             },
+            ...(authSessionId.value ? { auth_session_id: authSessionId.value } : {}),
           }
         : {}),
       ...(llmEnabled.value
@@ -663,6 +692,19 @@ async function handleSubmit(): Promise<void> {
             <input v-model="auth.insecureTls" type="checkbox" />
             <span>跳过证书校验（https 自签证书场景；被测环境常为自签）</span>
           </label>
+          <div class="inline-action-row">
+            <button
+              class="ghost-btn"
+              type="button"
+              :disabled="!authValid || verifyingAuth"
+              @click="verifyAuthBeforeSave"
+            >
+              {{ verifyingAuth ? '正在验证登录…' : '测试鉴权并保存会话' }}
+            </button>
+            <span v-if="authVerificationMessage" :class="authVerificationMessage.startsWith('鉴权成功') ? 'inline-success' : 'field-error'">
+              {{ authVerificationMessage }}
+            </span>
+          </div>
           <p v-if="!authValid" class="field-error">
             开启鉴权后：登录地址须为 http(s)、用户名与密码必填
           </p>
@@ -671,7 +713,7 @@ async function handleSubmit(): Promise<void> {
           </p>
           <p class="switch-note">
             登录响应含 token 字段 → Authorization: Token 注入；无 token 则回带 Set-Cookie
-            会话。凭据仅随 job 落盘本机（job_input.json，不外露），不经 LLM。
+            会话。点击“测试鉴权”可在启动前验证，并将凭据头仅存于后端内存；Token 不会返回浏览器、不写入任务文件或 LLM。
           </p>
         </template>
       </section>
@@ -791,6 +833,19 @@ async function handleSubmit(): Promise<void> {
   margin: var(--space-1) 0 0;
   font-size: var(--text-sm);
   color: var(--warning);
+}
+
+.inline-action-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.inline-success {
+  color: var(--success);
+  font-size: var(--text-sm);
 }
 
 /* 文档上传 */
