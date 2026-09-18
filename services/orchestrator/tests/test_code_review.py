@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -225,6 +226,26 @@ async def test_code_review_three_views(env: tuple[Engine, ArtifactStore]) -> Non
     # LLM 入参含双视图（需求 + 接口）
     _, user_content = llm.received[0]
     assert "REQ-001" in user_content and "IF-REST-001" in user_content
+
+
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        json.dumps(json.loads(_LLM_GOOD)["mappings"], ensure_ascii=False),
+        '{"data": ' + _LLM_GOOD + "}",
+        '{"评审映射": ' + _LLM_GOOD.split('"mappings": ', 1)[1],
+    ],
+)
+async def test_code_review_accepts_safe_mapping_container_variants(
+    env: tuple[Engine, ArtifactStore], wrapped: str
+) -> None:
+    """模型常见裸数组/包装不应导致降级；内容仍须经同一覆盖率校验。"""
+    engine, store = env
+    state = engine.open_job(_JOB)
+
+    await run_code_review(engine, state, store, _StubLlm(wrapped), _PROMPTS)
+
+    assert len(store.read_json(_JOB, "review_mapping.json")["mappings"]) == 3
 
 
 async def test_code_review_coverage_gap(env: tuple[Engine, ArtifactStore]) -> None:

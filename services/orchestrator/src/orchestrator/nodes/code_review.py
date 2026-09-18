@@ -40,12 +40,23 @@ from orchestrator.errors import X_LLM_02, X_ORCH_01, PipelineError
 from orchestrator.llm import LlmResult
 from orchestrator.llm_batch import chunk_json_items
 from orchestrator.llm_repair import complete_with_json_repair
-from orchestrator.nodes.req_parse import _strip_code_fence
 from orchestrator.prompts_loader import PromptSpec, load_prompt
 
 NODE_NAME = "code_review"
 
 _VALID_STATUSES = ("implemented", "partial", "missing", "undetermined")
+# 模型偶尔会把「只输出 mappings 数组」误解为裸数组，或套入常见的 result/data
+# 包装。只在 Code Review 入参/输出契约内做无损解包；条目内容仍走下方全部硬校验。
+_MAPPING_CONTAINER_KEYS = (
+    "mappings",
+    "review_mappings",
+    "requirement_mappings",
+    "mapping_results",
+    "映射",
+    "映射表",
+    "评审映射",
+)
+_MAPPING_WRAPPER_KEYS = ("data", "result", "output", "review", "code_review")
 
 # 第一批 Review 加强：只提取可证明服务端行为的局部文本，避免把整仓库、凭据或无关源码送入 LLM。
 _EVIDENCE_RULES: dict[str, re.Pattern[str]] = {
@@ -684,19 +695,22 @@ def _merge_llm_mappings(
     Raises:
         PipelineError: X-LLM-02——不可解析 / 覆盖率缺口 / 虚构或重复 REQ / 虚构 IF。
     """
-    cleaned = _strip_code_fence(text)
     try:
-        data = json.loads(cleaned)
+        data = _parse_review_json(text)
     except json.JSONDecodeError as exc:
         raise PipelineError(
             code=X_LLM_02,
             message=f"LLM 输出不是合法 JSON：{exc}",
             node_id=NODE_NAME,
         ) from exc
-    if not isinstance(data, dict) or not isinstance(data.get("mappings"), list):
+    raw_mappings = _extract_mapping_items(data)
+    if raw_mappings is None:
         raise PipelineError(
             code=X_LLM_02,
-            message="LLM 输出缺少 mappings 数组（或结构不符）",
+            message=(
+                'LLM 输出缺少 mappings 数组（根对象须为 {"mappings": [...]}；'
+                "已兼容裸数组及 data/result 包装）"
+            ),
             node_id=NODE_NAME,
         )
 
@@ -705,7 +719,7 @@ def _merge_llm_mappings(
 
     covered: set[str] = set()
     mappings: list[dict[str, Any]] = []
-    for raw in data["mappings"]:
+    for raw in raw_mappings:
         if not isinstance(raw, dict):
             raise PipelineError(
                 code=X_LLM_02,
@@ -779,6 +793,52 @@ def _merge_llm_mappings(
         )
     # 需求条目 ID 存在性已隐含在 req_ids 判定中
     return mappings
+
+
+def _parse_review_json(text: str) -> Any:
+    """从模型输出中读取首个完整 JSON 值（对象或数组）。
+
+    通用 ``_strip_code_fence`` 只提取 JSON 对象，遇到模型错误地返回裸数组时会
+    丢失数组外层；Code Review 在此单独保留数组，以便无损归一后继续执行严格校验。
+    """
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        first_newline = stripped.find("\n")
+        if first_newline != -1:
+            stripped = stripped[first_newline + 1 :].strip()
+        if stripped.rstrip().endswith("```"):
+            stripped = stripped.rstrip()[:-3].strip()
+
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(stripped):
+        if char not in "[{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(stripped[start:])
+        except json.JSONDecodeError:
+            continue
+        return value
+    # 保留原始 json 异常，供上层给用户精确提示。
+    return json.loads(stripped)
+
+
+def _extract_mapping_items(data: Any) -> list[Any] | None:
+    """仅解开约定的 Review 外层，不猜测条目字段或放宽业务质量闸门。"""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return None
+    for key in _MAPPING_CONTAINER_KEYS:
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    for wrapper in _MAPPING_WRAPPER_KEYS:
+        nested = data.get(wrapper)
+        if isinstance(nested, (dict, list)):
+            extracted = _extract_mapping_items(nested)
+            if extracted is not None:
+                return extracted
+    return None
 
 
 def _derive_risks(

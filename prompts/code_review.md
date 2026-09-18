@@ -18,7 +18,7 @@ sampling:
 
 ## 输出格式要求（必须）
 
-你的输出必须是**纯 JSON**（不带任何解释文字、不带 Markdown 代码围栏），结构如下：
+你的输出必须是**纯 JSON 对象**（不带任何解释文字、不带 Markdown 代码围栏），且根对象只能有一个键 `mappings`；**不可输出裸数组，不可使用 `data` / `result` / `output` 等包装键**。结构如下：
 
 ```
 {
@@ -45,7 +45,7 @@ sampling:
 - 输入中的 `code_evidence` 是已脱敏的代码/配置片段，优先级高于文件名线索；`deterministic_checks` 标为 `needs_verification` 时，该需求不得判为 `implemented`，只能判 `undetermined` 或更差状态；
 - `call_chains` 是程序静态提取的接口一跳调用线索，仅在实际提取到时使用；不得把空调用链补造成“没有 Service 调用”的结论。`incremental_focus`（如存在）仅代表本次分支变更的优先核查范围，不代表未变更代码正确；
 - `confidence` 为你对本条判定的置信度（0.0~1.0）：接口语义明确、证据充分取高值；依赖推断或 unknown 类型取低值；
-- 只输出 `mappings` 数组——`risks` / `missing_features` 由系统程序派生，`evidence.code_location` 由系统回填接口位置，你**不得**输出这些字段；
+- 只输出根对象中的 `mappings` 数组——`risks` / `missing_features` 由系统程序派生，`evidence.code_location` 由系统回填接口位置，你**不得**输出这些字段；
 - 判断只依据输入中的信息：需求条目（title/description）与接口清单（signature/params/returns）；禁止依据常识或想象补足输入中不存在的实现细节。
 
 ## 任务
