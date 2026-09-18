@@ -702,6 +702,44 @@ async def test_edit_full_job_configuration_replaces_documents(
     assert not (input_dir / "requirements.md").exists()
 
 
+async def test_edit_configuration_can_save_without_rerun(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """仅保存配置不得创建后台任务、归档产物或消耗模型调用。"""
+    app, fake, client, repo_dir = env
+    assert (
+        await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-saveonly"))
+    ).status_code == 202
+    await _await_task(app, "job-api-saveonly")
+    calls_before = len(fake.calls)
+    response = await client.put(
+        "/api/v1/jobs/job-api-saveonly/configuration",
+        json={
+            "docs": [],
+            "keep_existing_docs": True,
+            "repos": [{"name": "repo-a", "path": str(repo_dir), "branch": "main"}],
+            "rest_url": "http://127.0.0.1:9002",
+            "resume": True,
+            "run_after_save": False,
+        },
+    )
+    assert response.status_code == 202
+    assert response.json() == {
+        "job_id": "job-api-saveonly",
+        "status": "configuration-saved",
+        "from_node": None,
+    }
+    assert len(fake.calls) == calls_before
+    saved = json.loads(
+        (
+            Path(str(app.state.settings.artifacts_root))
+            / "job-api-saveonly"
+            / "job_input.json"
+        ).read_text()
+    )
+    assert saved["rest_url"] == "http://127.0.0.1:9002"
+
+
 async def test_job_status_and_artifacts(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:

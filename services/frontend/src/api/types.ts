@@ -183,6 +183,7 @@ export interface JobConfigurationUpdatePayload {
   rest_url: string
   rest_insecure_tls: boolean
   resume: boolean
+  run_after_save?: boolean
   auth?: Omit<AuthConfig, 'password'> & { password?: string }
   auth_session_id?: string
   llm?: Omit<LlmConfig, 'api_key'> & { api_key?: string }
@@ -191,8 +192,8 @@ export interface JobConfigurationUpdatePayload {
 
 export interface JobConfigurationUpdateResponse {
   job_id: string
-  status: 'configuration-saved-and-rerun-queued'
-  from_node: 'req_parse'
+  status: 'configuration-saved-and-rerun-queued' | 'configuration-saved'
+  from_node: 'req_parse' | null
 }
 
 /* ---- 产物形状（只声明页面用到的字段；后端 Schema 为唯一事实源） ---- */

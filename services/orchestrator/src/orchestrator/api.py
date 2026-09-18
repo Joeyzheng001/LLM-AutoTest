@@ -179,6 +179,7 @@ class JobConfigurationUpdateRequest(BaseModel):
     rest_url: str
     rest_insecure_tls: bool = True
     resume: bool = True
+    run_after_save: bool = True
     auth: EditableAuthConfig | None = None
     auth_session_id: str | None = Field(default=None, max_length=64)
     llm: EditableLlmConfig | None = None
@@ -605,11 +606,16 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         (orch_store.job_dir(job_id) / "job_input.json").write_text(
             json.dumps(job_input, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        _spawn_run(app, job_id, force_node="req_parse")
+        if request.run_after_save:
+            _spawn_run(app, job_id, force_node="req_parse")
         return {
             "job_id": job_id,
-            "status": "configuration-saved-and-rerun-queued",
-            "from_node": "req_parse",
+            "status": (
+                "configuration-saved-and-rerun-queued"
+                if request.run_after_save
+                else "configuration-saved"
+            ),
+            "from_node": "req_parse" if request.run_after_save else None,
         }
 
     @app.get("/api/v1/jobs/{job_id}/logs")

@@ -48,6 +48,7 @@ const auth = reactive({
 const verifyingAuth = ref(false)
 const authVerificationMessage = ref('')
 const authSessionId = ref('')
+const savedOnly = ref(false)
 
 // 真实模型配置：随任务提交；可由用户选择仅保存在当前浏览器，避免重复填写。
 const LLM_BROWSER_CONFIG_KEY = 'llm-autotest.llm-config.v1'
@@ -336,11 +337,12 @@ function readFileAsBase64(file: File): Promise<string> {
   })
 }
 
-async function handleSubmit(): Promise<void> {
+async function handleSubmit(runAfterSave = true): Promise<void> {
   if (!formValid.value || submitting.value) return
   submitting.value = true
   submitError.value = ''
   submittedJobId.value = ''
+  savedOnly.value = Boolean(editingJobId.value && !runAfterSave)
   try {
     if (llmEnabled.value) saveLlmConfig()
     const documentPairs = await Promise.all(
@@ -420,6 +422,7 @@ async function handleSubmit(): Promise<void> {
       const payload: JobConfigurationUpdatePayload = {
         ...commonPayload,
         keep_existing_docs: documentPairs.length === 0,
+        run_after_save: runAfterSave,
       }
       result = await updateJobConfiguration(editingJobId.value, payload)
     } else {
@@ -428,7 +431,7 @@ async function handleSubmit(): Promise<void> {
       result = await submitJob(payload)
     }
     submittedJobId.value = result.job_id
-    navigateTo('overview', result.job_id)
+    if (runAfterSave || !editingJobId.value) navigateTo('overview', result.job_id)
   } catch (err) {
     submitError.value = err instanceof Error ? err.message : '提交失败'
   } finally {
@@ -439,7 +442,7 @@ async function handleSubmit(): Promise<void> {
 
 <template>
   <div class="config">
-    <form class="card" @submit.prevent="handleSubmit">
+    <form class="card" @submit.prevent="handleSubmit()">
       <div v-if="editingJobId" class="edit-banner" role="status">
         <div>
           <strong>正在编辑完整任务配置</strong>
@@ -720,11 +723,15 @@ async function handleSubmit(): Promise<void> {
 
       <!-- 提交 -->
       <div class="submit-row">
+        <button v-if="editingJobId" class="ghost-btn" type="button" :disabled="!formValid || submitting" @click="handleSubmit(false)">
+          {{ submitting ? '正在保存…' : '仅保存配置' }}
+        </button>
         <button class="primary-btn" type="submit" :disabled="!formValid || submitting">
           {{ submitting ? '保存并启动中…' : editingJobId ? '保存配置并全量重新运行' : '启动全流程（F-ORCH-01）' }}
         </button>
         <span v-if="submittedJobId" class="submit-ok" role="status">
-          已{{ editingJobId ? '保存并重新运行' : '提交' }}：<span class="mono">{{ submittedJobId }}</span> —— 已跳转到「流水线总览」
+          已{{ savedOnly ? '保存配置' : editingJobId ? '保存并重新运行' : '提交' }}：<span class="mono">{{ submittedJobId }}</span>
+          <template v-if="!savedOnly">—— 已跳转到「流水线总览」</template>
         </span>
         <span v-else class="submit-note">与 CLI 走同一 PipelineRunner（Web 与命令行入口等价）</span>
       </div>
