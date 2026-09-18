@@ -3,7 +3,7 @@
 // 运行中每 3s 轮询，离开页面即停）+ 自动化率卡片（metrics.json 后端汇总，前端不计算）。
 // C-16：节点卡可点击跳转对应页面（携带 jobId）；接口还原清单移除（独立页「源码扫描与接口还原」已有）。
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { exportJobResults, getJobStatus, getLlmCallLogs, getMetrics, listJobs, rerunJob } from '../api/client'
+import { exportJobResults, getJobStatus, getLlmCallLogs, getMetrics, listJobs, rerunJob, stopJob } from '../api/client'
 import type { JobListItem, JobStatus, LlmCallLog, MetricsPayload, NodeState } from '../api/types'
 import { NODE_LABELS, STATUS_LABELS } from '../api/labels'
 import { navigateTo, navigation } from '../api/navigation'
@@ -25,6 +25,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 /* ---- 重跑（C-14） ---- */
 
 const rerunning = ref(false)
+const stopping = ref(false)
 const rerunError = ref('')
 const rerunFromNode = ref('req_parse')
 const rerunApiKey = ref('')
@@ -69,6 +70,20 @@ async function handleRerun(): Promise<void> {
     rerunError.value = err instanceof Error ? err.message : '重跑失败'
   } finally {
     rerunning.value = false
+  }
+}
+
+async function handleStop(): Promise<void> {
+  if (!selectedId.value || stopping.value || !status.value?.running) return
+  stopping.value = true
+  rerunError.value = ''
+  try {
+    await stopJob(selectedId.value)
+    await Promise.all([refreshDetail(), refreshList(true)])
+  } catch (err) {
+    rerunError.value = err instanceof Error ? err.message : '停止任务失败'
+  } finally {
+    stopping.value = false
   }
 }
 
@@ -315,6 +330,15 @@ function formatLogMessage(entry: LlmCallLog): string {
             @click="handleRerun"
           >
             {{ rerunning ? '重跑中…' : '重跑' }}
+          </button>
+          <button
+            v-if="status.running"
+            class="rerun-btn danger"
+            type="button"
+            :disabled="stopping"
+            @click="handleStop"
+          >
+            {{ stopping ? '停止中…' : '停止任务' }}
           </button>
           <button class="rerun-btn secondary" type="button" :disabled="!selectedId" @click="exportJobResults(selectedId)">导出结果</button>
         </div>
@@ -664,6 +688,18 @@ function formatLogMessage(entry: LlmCallLog): string {
   border-color: var(--border-strong);
   background: var(--surface);
   color: var(--text-2);
+}
+
+.rerun-btn.danger {
+  border-color: #d95c5c;
+  background: #fff1f1;
+  color: #b33f3f;
+}
+
+.rerun-btn.danger:hover:not(:disabled) {
+  border-color: #c34545;
+  background: #c34545;
+  color: #fff;
 }
 
 .rerun-btn:hover:not(:disabled) {

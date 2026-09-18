@@ -6,7 +6,6 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   getJobConfiguration,
-  pickLocalRepositoryDirectory,
   submitJob,
   updateJobConfiguration,
   verifyAuthentication,
@@ -105,7 +104,12 @@ function saveLlmConfig(): void {
 
 const docError = ref('')
 const documentRows = reactive<VersionDocRow[]>([{ target: null, baseline: null }])
-const selectingRepo = ref<number | null>(null)
+// 浏览器本地目录选择（webkitdirectory）：与文档上传同一交互模式，本地/云端部署行为一致。
+// 浏览器安全限制不提供所选目录的绝对路径，仅在名称为空时自动填目录名；
+// 路径仍由用户补全为运行服务机器上的绝对路径（R-CODE-01 口径）。
+const repoDirInput = ref<HTMLInputElement | null>(null)
+let pendingRepoIndex = 0
+const dirPickHint = ref('')
 const repos = reactive<RepoRow[]>([
   {
     name: 'user-service',
@@ -248,19 +252,25 @@ function pickDocumentVersion(event: Event, index: number, role: 'target' | 'base
   input.value = '' // 允许重选同一文件
 }
 
-async function chooseRepositoryDirectory(index: number): Promise<void> {
-  if (selectingRepo.value !== null) return
-  selectingRepo.value = index
-  submitError.value = ''
-  try {
-    const selected = await pickLocalRepositoryDirectory()
-    repos[index].path = selected.path
-    if (!repos[index].name.trim()) repos[index].name = selected.name
-  } catch (err) {
-    submitError.value = err instanceof Error ? err.message : '选择本机目录失败'
-  } finally {
-    selectingRepo.value = null
-  }
+function chooseRepositoryDirectory(index: number): void {
+  // 旧实现调后端 /api/v1/system/pick-directory（服务端 tkinter 弹框）：
+  // 云端容器无图形环境恒 503，本地又在子线程建 Tk 弹不出框——点击「没反应」的根因。
+  // 改为浏览器本地 webkitdirectory 选择器，与服务端部署形态解耦。
+  pendingRepoIndex = index
+  const input = repoDirInput.value
+  if (!input) return
+  input.value = '' // 允许重选同一目录
+  input.click()
+}
+
+function pickRepositoryDirectory(event: Event): void {
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  const relative = file.webkitRelativePath || file.name
+  const dirName = relative.includes('/') ? relative.split('/')[0]! : file.name
+  const row = repos[pendingRepoIndex]
+  if (!row.name.trim()) row.name = dirName
+  dirPickHint.value = `已选择目录「${dirName}」：浏览器不提供绝对路径，请在路径框补全为运行服务机器上的绝对路径（如 /opt/repos/${dirName}）`
 }
 
 async function loadConfiguration(jobId: string): Promise<void> {
@@ -454,9 +464,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
       <section class="field-group">
         <header class="group-title">
           需求文档版本
-          <span class="group-note"
-            >每行一组被测/基线文档；仅上传被测版本时按原需求文档处理</span
-          >
+          <span class="group-note">每行一组被测/基线文档；仅上传被测版本时按原需求文档处理</span>
         </header>
         <div v-for="(row, index) in documentRows" :key="index" class="doc-version-row">
           <label class="doc-upload">
@@ -503,15 +511,21 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
       <section class="field-group">
         <header class="group-title">
           被测仓库
-          <span class="group-note"
-            >至少 1
-            个（C-10；验收演示仍双仓库口径）；本地绝对路径口径（R-CODE-01，检出正确分支后指向工作区目录）；兑底仓库结果单独分列（D5）</span
-          >
+          <span class="group-note">至少 1 个（C-10；验收演示仍双仓库口径）；本地绝对路径口径（R-CODE-01，检出正确分支后指向工作区目录）；兑底仓库结果单独分列（D5）</span>
         </header>
 
+        <input
+          ref="repoDirInput"
+          class="repo-dir-input"
+          type="file"
+          webkitdirectory
+          aria-hidden="true"
+          tabindex="-1"
+          @change="pickRepositoryDirectory"
+        />
+
         <div class="repo-head">
-          <span>仓库名</span><span>本机目录</span><span>语言</span><span>分支</span
-          ><span>基线分支</span><span>兑底</span><span />
+          <span>仓库名</span><span>本机目录</span><span>语言</span><span>分支</span><span>基线分支</span><span>兑底</span><span />
         </div>
 
         <div v-for="(row, index) in repos" :key="index" class="repo-row">
@@ -524,7 +538,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           />
           <div class="repo-path-picker">
             <input v-model="row.path" type="text" class="mono" placeholder="C:\\work\\user-service 或 /workspace/user-service" :aria-label="`仓库 ${index + 1} 路径`" />
-            <button class="icon-btn" type="button" :disabled="selectingRepo !== null" @click="chooseRepositoryDirectory(index)">{{ selectingRepo === index ? '选择中…' : '选择目录' }}</button>
+            <button class="select-dir-btn" type="button" @click="chooseRepositoryDirectory(index)">选择目录</button>
           </div>
           <select
             v-model="row.language"
@@ -564,6 +578,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         </div>
 
         <button class="ghost-btn" type="button" @click="addRepo">+ 添加仓库</button>
+        <p v-if="dirPickHint" class="dir-pick-note" role="status">{{ dirPickHint }}</p>
         <p v-if="!reposValid" class="field-error">
           每个仓库需有名称与绝对路径（以 / 开头），且仓库数 ≥ 1。
         </p>
@@ -917,6 +932,40 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 
 .repo-path-picker input {
   min-width: 0;
+}
+
+/* 浏览器本地目录选择（视觉隐藏，程序触发 click；不用 display:none 以兼容旧 Safari） */
+.repo-dir-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* 选择目录按钮：实底描边样式（区别于文字态的 icon-btn） */
+.select-dir-btn {
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.select-dir-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.dir-pick-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--accent-strong);
 }
 
 .doc-upload:hover,

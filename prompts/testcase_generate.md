@@ -1,10 +1,11 @@
 <!-- F-GEN-01~04 / R-GEN-01~04：接口 + 需求 → 测试用例（含断言语义）。参数一致性（R-GEN-02）与脚本可加载性（R-GEN-03）由程序校验，违规用例丢弃并重生成一次。 -->
 
 ---
-version: 1.5
+version: 1.6
 spec: F-GEN-01
 owner: 甲
 changelog:
+  - 1.6 | 2026-09-18 | 未知 body/query 必须给出具体 JSON，禁止语义占位符进入执行
   - 1.5 | 2026-09-16 | 引入程序化测试点（REQ/RISK 溯源），用例从功能场景展开，不只围绕接口参数
   - 1.4 | 2026-09-16 | 增加 auth_mode，避免全局有效会话覆盖未认证/伪 token 反例
   - 1.3 | 2026-09-16 | 预期结果改用 status/status_class 机器可判定语法，执行器兼容旧版 HTTP 自然语言
@@ -43,10 +44,16 @@ sampling:
 - 输入中的 `testpoints` 是系统从需求与评审结果派生的测试设计依据。每条用例应覆盖相应测试点的业务场景与拆分提示；不要把测试点标题机械改写成接口参数校验。`source=RISK` 的点必须至少覆盖一个风险/异常分支；
 - 边界值口径（R-GEN-04）：数值取 0 / 负数 / 极值；字符串取空串 / 超长（>1024）；类型为 `unknown` 的参数按 `null` 处理；
 - `expected` 必须以机器可判定状态码开头：成功使用 `status=200`、`status=201` 等精确值；异常/边界场景若允许任意同类状态码，使用 `status_class=4xx` 或 `status_class=5xx`。后续可写 `字段=值`、`token=非空` 等断言语义；禁止只写“HTTP 4xx”“返回正确”等自然语言状态描述。
+- 状态码必须有接口契约或输入代码证据：创建接口并不天然等于 `201`，参数不规范也不天然等于 `4xx`。代码未显式设置状态码时，DRF `Response(...)` 默认按 `200` 处理；无法证明某个异常状态时，不要生成会把猜测当断言的用例。
 - `auth_mode` 仅用于需要认证的接口：正常已登录场景用 `inherit`；验证未带认证时用 `missing`；验证伪造/过期 token 时用 `invalid`。不涉及认证时省略该字段；
 - 输入可能含 `batch`；只为当前 `interfaces` 批次生成用例。溯源（F-GEN-04）：`interface_id` / `requirement_id` 只能引用输入中存在的 ID，**禁止虚构**；
 - 只输出 `cases` 数组——`id`（TC-###）/ `script_path` / `loadable` / `low_confidence` 由系统生成或回填，你**不得**输出这些字段；
 - 类型为 `unknown` 的参数无需回避：照常生成用例，系统会标注低置信度（X-GEN-03）；
+- 当参数位置为 `body` 或 `query` 且类型为 `unknown` 时，`params` 的该参数值也必须是
+  **具体 JSON 对象**，例如 `{"body": {"fund_code": "...", "business_code": "24"}}` 或
+  `{"query": {"fund_code": "...", "business_code": "24"}}`。禁止输出
+  `valid_payload`、`fund_code_only`、`name_icontains` 等语义标签或任意字符串占位符；无法从
+  输入代码与需求确定字段和值时，不要伪造可执行用例。
 - **鉴权凭据（C-17）**：输入可含 `auth`（login_url/username/password）。登录/鉴权类接口的 `normal` 用例参数**必须使用该真实凭据**（如 username/password 字段填 auth 提供的值），`exception` 用例用错误凭据（错误密码/不存在用户）预期 4xx；无 `auth` 输入时照常用需求条目语义设计，**禁止虚构凭据**。
 
 ## 任务

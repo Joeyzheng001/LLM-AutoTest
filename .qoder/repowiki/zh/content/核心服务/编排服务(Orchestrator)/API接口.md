@@ -9,11 +9,19 @@
 - [services/orchestrator/src/orchestrator/artifacts.py](file://services/orchestrator/src/orchestrator/artifacts.py)
 - [services/orchestrator/src/orchestrator/errors.py](file://services/orchestrator/src/orchestrator/errors.py)
 - [services/orchestrator/src/orchestrator/__main__.py](file://services/orchestrator/src/orchestrator/__main__.py)
+- [services/orchestrator/src/orchestrator/nodes/auto_execute.py](file://services/orchestrator/src/orchestrator/nodes/auto_execute.py)
 - [MumuSpec/09-API接口规格.md](file://MumuSpec/09-API接口规格.md)
 - [schemas/execution.json](file://schemas/execution.json)
 - [schemas/interfaces.json](file://schemas/interfaces.json)
 - [schemas/README.md](file://schemas/README.md)
 </cite>
+
+## 更新摘要
+**变更内容**
+- 新增认证验证API端点 `/api/v1/auth/verify`，用于在配置阶段验证用户凭据
+- 更新任务配置保存接口的 `run_after_save` 参数，支持仅保存配置而不触发执行的新功能
+- 增强认证机制，支持Token和Cookie两种认证方式
+- 改进配置管理，提供更灵活的执行控制选项
 
 ## 目录
 1. [简介](#简介)
@@ -41,6 +49,7 @@ A --> D["编排引擎<br/>engine.py"]
 D --> E["产物存储与校验<br/>artifacts.py"]
 A --> F["统一错误<br/>errors.py"]
 G["服务启动<br/>__main__.py"] --> A
+H["认证验证<br/>auto_execute.py"] --> A
 ```
 
 图示来源
@@ -51,17 +60,19 @@ G["服务启动<br/>__main__.py"] --> A
 - [services/orchestrator/src/orchestrator/artifacts.py:55-157](file://services/orchestrator/src/orchestrator/artifacts.py#L55-L157)
 - [services/orchestrator/src/orchestrator/errors.py:17-39](file://services/orchestrator/src/orchestrator/errors.py#L17-L39)
 - [services/orchestrator/src/orchestrator/__main__.py:15-21](file://services/orchestrator/src/orchestrator/__main__.py#L15-L21)
+- [services/orchestrator/src/orchestrator/nodes/auto_execute.py:357-418](file://services/orchestrator/src/orchestrator/nodes/auto_execute.py#L357-L418)
 
 章节来源
 - [services/orchestrator/src/orchestrator/api.py:11-27](file://services/orchestrator/src/orchestrator/api.py#L11-L27)
 - [services/orchestrator/src/orchestrator/__main__.py:15-21](file://services/orchestrator/src/orchestrator/__main__.py#L15-L21)
 
 ## 核心组件
-- FastAPI 应用与路由：提供健康检查与节点清单查询。
+- FastAPI 应用与路由：提供健康检查、认证验证与节点清单查询。
 - 配置：从环境变量读取运行参数，包含 LLM 调用参数、端口、产物根目录等。
 - 流水线模型：固定 9 节点顺序与四态标注（completed、manual_intervention、running、pending）。
 - 编排引擎：state.json 持久化、断点续跑、跳序防护、降级清单。
 - 产物存储：按 Schema 校验产物，维护写权排他与完成判据。
+- 认证系统：支持Token和Cookie认证，提供配置阶段凭据验证。
 - 错误体系：统一错误码与序列化结构。
 
 章节来源
@@ -77,11 +88,16 @@ G["服务启动<br/>__main__.py"] --> A
 sequenceDiagram
 participant Client as "客户端"
 participant API as "FastAPI 路由<br/>api.py"
+participant Auth as "认证验证<br/>auto_execute.py"
 participant Model as "流水线模型<br/>pipeline.py"
 participant Engine as "编排引擎<br/>engine.py"
 participant Store as "产物存储<br/>artifacts.py"
 Client->>API : GET /health
 API-->>Client : {"status" : "ok"}
+Client->>API : POST /api/v1/auth/verify
+API->>Auth : login_for_headers()
+Auth-->>API : 认证头信息
+API-->>Client : {authenticated, session_id}
 Client->>API : GET /api/v1/pipeline/nodes
 API->>Model : PipelineState.initial()
 Model-->>API : 九节点初始状态
@@ -91,6 +107,8 @@ Note over Client,Store : 后续扩展创建/查询流水线、触发执行、产
 
 图示来源
 - [services/orchestrator/src/orchestrator/api.py:16-25](file://services/orchestrator/src/orchestrator/api.py#L16-L25)
+- [services/orchestrator/src/orchestrator/api.py:273-293](file://services/orchestrator/src/orchestrator/api.py#L273-L293)
+- [services/orchestrator/src/orchestrator/nodes/auto_execute.py:357-418](file://services/orchestrator/src/orchestrator/nodes/auto_execute.py#L357-L418)
 - [services/orchestrator/src/orchestrator/pipeline.py:45-70](file://services/orchestrator/src/orchestrator/pipeline.py#L45-L70)
 - [services/orchestrator/src/orchestrator/engine.py:140-159](file://services/orchestrator/src/orchestrator/engine.py#L140-L159)
 - [services/orchestrator/src/orchestrator/artifacts.py:75-131](file://services/orchestrator/src/orchestrator/artifacts.py#L75-L131)
@@ -106,7 +124,21 @@ Note over Client,Store : 后续扩展创建/查询流水线、触发执行、产
 - 错误：若服务异常可能返回 500（框架默认处理）
 
 章节来源
-- [services/orchestrator/src/orchestrator/api.py:16-19](file://services/orchestrator/src/orchestrator/api.py#L16-L19)
+- [services/orchestrator/src/orchestrator/api.py:254-257](file://services/orchestrator/src/orchestrator/api.py#L254-L257)
+
+### 认证验证
+- 方法/路径：POST /api/v1/auth/verify
+- 描述：配置阶段真实登录；凭据头仅留在当前服务进程，绝不返回浏览器。
+- 请求体：包含 login_url、username、password、insecure_tls、job_id（可选）
+- 响应：{authenticated: true, session_id: string, credential_type: "token" | "cookie"}
+- 状态码：200/400
+- 错误：认证失败时返回400错误
+
+**新增功能**：此端点支持在配置阶段验证用户凭据，生成会话ID供后续任务使用，支持Token和Cookie两种认证方式。
+
+章节来源
+- [services/orchestrator/src/orchestrator/api.py:273-293](file://services/orchestrator/src/orchestrator/api.py#L273-L293)
+- [services/orchestrator/src/orchestrator/nodes/auto_execute.py:357-418](file://services/orchestrator/src/orchestrator/nodes/auto_execute.py#L357-L418)
 
 ### 流水线节点清单
 - 方法/路径：GET /api/v1/pipeline/nodes
@@ -117,9 +149,22 @@ Note over Client,Store : 后续扩展创建/查询流水线、触发执行、产
 - 错误：无特殊业务错误
 
 章节来源
-- [services/orchestrator/src/orchestrator/api.py:21-25](file://services/orchestrator/src/orchestrator/api.py#L21-L25)
+- [services/orchestrator/src/orchestrator/api.py:295-299](file://services/orchestrator/src/orchestrator/api.py#L295-L299)
 - [services/orchestrator/src/orchestrator/pipeline.py:23-34](file://services/orchestrator/src/orchestrator/pipeline.py#L23-L34)
 - [services/orchestrator/src/orchestrator/pipeline.py:51-60](file://services/orchestrator/src/orchestrator/pipeline.py#L51-L60)
+
+### 任务配置保存
+- 方法/路径：PUT /api/v1/jobs/{job_id}/configuration
+- 描述：保存整份任务配置，支持仅保存不执行的模式。
+- 请求体：包含 docs、repos、rest_url、resume、run_after_save、auth、llm、e2e 等配置项
+- 响应：{job_id, status, from_node}
+- 状态码：202/400/409
+- **新增功能**：`run_after_save` 参数现在支持设置为 false，仅保存配置而不触发执行，返回状态为 "configuration-saved"
+
+**重要更新**：当 `run_after_save=false` 时，接口只保存配置变更，不会归档旧产物或重新执行任务，适用于需要多次调整配置的场景。
+
+章节来源
+- [services/orchestrator/src/orchestrator/api.py:505-619](file://services/orchestrator/src/orchestrator/api.py#L505-L619)
 
 ### 流水线生命周期（规划接口）
 以下接口来自接口规格文档，作为后续实现的契约参考。当前骨架未实现，但应遵循该规范进行扩展。
@@ -237,6 +282,9 @@ ArtifactStore <.. JobState : "被使用"
   - X-ORCH-01：产物校验失败
   - X-ORCH-02：断点续跑跳序请求
   - X-ORCH-03：java-parser 服务不可达/通信失败
+  - X-EXEC-01：登录接口不可达/连接失败
+  - X-EXEC-02：执行超时
+  - X-EXEC-03：协议 Runner 未就绪（降级为Mock演示）
 - 规范中通用错误码（HTTP 语义）：
   - INTERNAL_ERROR（500）、PIPELINE_NOT_FOUND（404）、INVALID_REQUEST（400）、NODE_NOT_FOUND（404）、ARTIFACT_NOT_FOUND（404）、SCAN_FAILED（500）、PARSE_FAILED（500）、EXECUTION_FAILED（500）
 
@@ -258,6 +306,7 @@ ArtifactStore <.. JobState : "被使用"
 - 路由层依赖 pipeline 模型获取节点清单。
 - 引擎依赖 artifacts 进行产物读写与完成判据。
 - 配置模块提供运行时参数，影响 LLM 调用与产物路径。
+- 认证模块提供凭据验证，支持Token和Cookie两种方式。
 - 错误模块贯穿各层，保证错误结构一致。
 
 ```mermaid
@@ -267,6 +316,7 @@ API --> ENG["engine.py"]
 ENG --> ART["artifacts.py"]
 API --> CFG["config.py"]
 API --> ERR["errors.py"]
+API --> AUTH["auto_execute.py"]
 ```
 
 图示来源
@@ -275,6 +325,7 @@ API --> ERR["errors.py"]
 - [services/orchestrator/src/orchestrator/artifacts.py:55-157](file://services/orchestrator/src/orchestrator/artifacts.py#L55-L157)
 - [services/orchestrator/src/orchestrator/config.py:9-56](file://services/orchestrator/src/orchestrator/config.py#L9-L56)
 - [services/orchestrator/src/orchestrator/errors.py:17-39](file://services/orchestrator/src/orchestrator/errors.py#L17-L39)
+- [services/orchestrator/src/orchestrator/nodes/auto_execute.py:357-418](file://services/orchestrator/src/orchestrator/nodes/auto_execute.py#L357-L418)
 
 章节来源
 - [services/orchestrator/src/orchestrator/api.py:11-27](file://services/orchestrator/src/orchestrator/api.py#L11-L27)
@@ -285,6 +336,7 @@ API --> ERR["errors.py"]
 - 完成判据基于 Schema 校验，确保下游消费的数据质量，减少脏读。
 - 引擎对账逻辑在 open_job 时触发，避免重复计算；next_node 跳过 manual_intervention，提升流程推进效率。
 - LLM 调用超时可通过 LLM_TIMEOUT_S 配置，避免长时间阻塞。
+- 认证会话存储在内存中，避免频繁的登录请求。
 
 [本节为通用指导，不直接分析具体文件]
 
@@ -293,8 +345,10 @@ API --> ERR["errors.py"]
   - 跳序请求：检查前序节点是否 completed 或 manual_intervention；查看 X-ORCH-02 错误详情中的 blocked_by。
   - 产物校验失败：核对产物文件是否符合对应 Schema；查看 X-ORCH-01 的 details 中的错误列表。
   - LLM 相关错误：根据 X-LLM-01/02/03 判断是网络/超时、Schema 不合规还是 Prompt 配置问题。
+  - 认证失败：检查 login_url 是否正确，用户名密码是否有效，查看 X-EXEC-01 错误详情。
 - 调试建议：
   - 使用 /health 确认服务可用。
+  - 使用 /api/v1/auth/verify 测试认证配置。
   - 使用 /api/v1/pipeline/nodes 观察节点状态变化。
   - 检查 artifacts 目录下的 state.json 与产物文件，确认对账结果。
   - 调整 LLM 参数（温度、Top-P、Seed、超时）以稳定输出。
@@ -305,38 +359,48 @@ API --> ERR["errors.py"]
 - [services/orchestrator/src/orchestrator/errors.py:1-39](file://services/orchestrator/src/orchestrator/errors.py#L1-L39)
 
 ## 结论
-当前 orchestrator 已提供健康检查与节点清单查询两个基础端点，配合引擎与产物存储实现了流水线状态与完成的严格对账。后续扩展应严格遵循接口规格文档定义的端点与错误码，并在实现中复用现有引擎与 Schema 校验能力，以保证一致性、可观测性与可维护性。
+当前 orchestrator 已提供健康检查、认证验证与节点清单查询等基础端点，配合引擎与产物存储实现了流水线状态与完成的严格对账。新增的认证验证端点和配置保存优化功能进一步增强了服务的灵活性和安全性。后续扩展应严格遵循接口规格文档定义的端点与错误码，并在实现中复用现有引擎与 Schema 校验能力，以保证一致性、可观测性与可维护性。
 
 [本节为总结，不直接分析具体文件]
 
 ## 附录
 
 ### API 版本控制策略
-- 当前 FastAPI 应用版本为 0.1.0（标题与版本在创建时设置）。
+- 当前 FastAPI 应用版本为 0.2.0（标题与版本在创建时设置）。
 - 接口路径采用 /api/v1/ 前缀，便于未来升级至 v2 时保持兼容。
 - 产物与 Schema 通过 schema_version 字段管理，禁止原地修改语义，需升版本演进。
 
 章节来源
-- [services/orchestrator/src/orchestrator/api.py:11-14](file://services/orchestrator/src/orchestrator/api.py#L11-L14)
+- [services/orchestrator/src/orchestrator/api.py:214](file://services/orchestrator/src/orchestrator/api.py#L214)
 - [schemas/README.md:1-30](file://schemas/README.md#L1-L30)
 
 ### 认证授权机制
-- 当前代码未实现认证与鉴权中间件。
-- 建议在网关层或 FastAPI 中间件中接入 Token 校验（如 JWT），并对敏感操作（创建/触发流水线、产物下载）进行权限控制。
+- **新增功能**：提供 `/api/v1/auth/verify` 端点进行配置阶段的认证验证。
+- 支持两种认证方式：
+  - Token认证：登录后返回 Authorization: Token <token>
+  - Cookie认证：登录后通过 Set-Cookie 建立会话
+- 认证凭据仅驻留服务端内存，不返回浏览器，确保安全。
+- 支持 insecure_tls 配置，用于HTTPS自签名证书场景。
+- 建议在网关层或 FastAPI 中间件中接入更严格的权限控制。
 
-[本节为通用建议，不直接分析具体文件]
+章节来源
+- [services/orchestrator/src/orchestrator/api.py:273-293](file://services/orchestrator/src/orchestrator/api.py#L273-L293)
+- [services/orchestrator/src/orchestrator/nodes/auto_execute.py:357-418](file://services/orchestrator/src/orchestrator/nodes/auto_execute.py#L357-L418)
 
 ### 速率限制配置
 - 当前代码未实现速率限制。
 - 可在网关层或 FastAPI 中间件中使用令牌桶/漏桶算法限制请求频率，保护后端资源。
+- 已实现请求体大小限制（MAX_REQUEST_BYTES = 64MB），防止超大请求。
 
 [本节为通用建议，不直接分析具体文件]
 
 ### 测试用例与调试工具
 - 健康检查：GET /health
+- 认证验证：POST /api/v1/auth/verify
 - 节点清单：GET /api/v1/pipeline/nodes
+- 配置保存：PUT /api/v1/jobs/{job_id}/configuration（支持 run_after_save=false）
 - 后续扩展接口（创建/查询流水线、产物下载）可依据接口规格文档编写单元测试与集成测试，结合 fixtures 与 mock 验证 Schema 校验与错误分支。
 
 章节来源
-- [services/orchestrator/src/orchestrator/api.py:16-25](file://services/orchestrator/src/orchestrator/api.py#L16-L25)
+- [services/orchestrator/src/orchestrator/api.py:254-299](file://services/orchestrator/src/orchestrator/api.py#L254-L299)
 - [MumuSpec/09-API接口规格.md:41-176](file://MumuSpec/09-API接口规格.md#L41-L176)

@@ -145,6 +145,10 @@ class RestRunner:
             elif position == "path":
                 # 联调发现：path 参数须替换路径模板，否则字面 {id} 进 URL 真实服务必 404
                 path = path.replace("{" + name + "}", str(value))
+            elif position == "query" and unwrap_container:
+                # 与 unknown body 同理：query 容器里的真实键值必须展开，不能把
+                # query={...} 作为单个参数发送，否则服务端看不到 fund_code 等字段。
+                query.update(decoded_value)
             else:
                 query[name] = value
 

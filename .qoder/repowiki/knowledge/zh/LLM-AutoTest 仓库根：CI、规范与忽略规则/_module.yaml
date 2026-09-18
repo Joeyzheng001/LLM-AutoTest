@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: ""
-title: LLMAutoTest 仓库根配置与 CI/CD
+title: LLM-AutoTest 仓库根：CI、规范与忽略规则
 scope:
     - .gitignore
     - .github/

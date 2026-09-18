@@ -123,7 +123,9 @@ async def run_testcase_generate(
                     {
                         "violations": violations,
                         "note": (
-                            "以下用例参数名不在接口定义内，请仅用接口定义的参数名重新生成这些用例"
+                            "以下用例的参数名或参数结构不符合接口定义。请仅使用接口定义的参数名；"
+                            "unknown 的 body/query 容器必须填写具体 JSON 对象，"
+                            "不能使用语义标签或字符串占位符。"
                         ),
                     },
                     ensure_ascii=False,
@@ -697,10 +699,20 @@ def _filter_param_violations(
         (通过校验的用例, 违规记录清单[{interface_id, params, message}]).
     """
     params_by_if: dict[str, set[str]] = {}
+    structured_unknown_by_if: dict[str, set[str]] = {}
     for interface in interfaces:
         if_id = str(interface.get("id", ""))
-        params_by_if[if_id] = {
-            str(p.get("name")) for p in interface.get("params") or [] if p.get("name")
+        definitions = interface.get("params") or []
+        params_by_if[if_id] = {str(p.get("name")) for p in definitions if p.get("name")}
+        # 静态扫描未展开 DTO/Serializer 时，body/query 容器仍会是 unknown。此时
+        # 文字标签（如 valid_payload）不是可执行请求，必须要求模型给出具体对象。
+        structured_unknown_by_if[if_id] = {
+            str(p.get("name"))
+            for p in definitions
+            if p.get("name")
+            and str(p.get("type")) == "unknown"
+            # 未声明位置的参数（例如 gRPC message 字段）不能按 REST query 容器处理。
+            and str(p.get("in", "")) in {"body", "query"}
         }
     valid: list[dict[str, Any]] = []
     violations: list[dict[str, Any]] = []
@@ -718,6 +730,26 @@ def _filter_param_violations(
                     "interface_id": if_id,
                     "params": case.get("params"),
                     "message": f"清单外参数：{sorted(extra)}（允许：{sorted(allowed) or '无'})",
+                }
+            )
+            continue
+        raw_params = case.get("params")
+        placeholders = [
+            name
+            for name in structured_unknown_by_if.get(if_id, set())
+            if isinstance(raw_params, dict)
+            and name in raw_params
+            and not isinstance(raw_params[name], dict)
+        ]
+        if placeholders:
+            violations.append(
+                {
+                    "interface_id": if_id,
+                    "params": raw_params,
+                    "message": (
+                        "未知结构的 body/query 参数必须给出真实 JSON 对象，"
+                        f"禁止语义占位符：{sorted(placeholders)}"
+                    ),
                 }
             )
         else:

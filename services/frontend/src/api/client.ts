@@ -22,6 +22,7 @@ import type {
   RepoInventory,
   RerunPayload,
   RerunResponse,
+  StopJobResponse,
   TestCaseEntry,
   E2eTestCaseEntry,
   UnmatchedChangedFile,
@@ -65,11 +66,6 @@ export function submitJob(payload: JobSubmitPayload): Promise<JobSubmitResponse>
   return request('/api/v1/jobs', { method: 'POST', body: JSON.stringify(payload) })
 }
 
-/** 打开运行后端的本机目录选择器；Windows 本地部署可返回真实绝对路径。 */
-export function pickLocalRepositoryDirectory(): Promise<{ path: string; name: string }> {
-  return request('/api/v1/system/pick-directory', { method: 'POST', body: '{}' })
-}
-
 /** 配置阶段真实登录；响应不含 Token，仅返回内存会话标识。 */
 export function verifyAuthentication(
   auth: AuthConfig,
@@ -105,6 +101,11 @@ export function rerunJob(jobId: string, payload: RerunPayload = {}): Promise<Rer
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+/** 停止后台任务：保留已有产物，当前节点回到待运行以便稍后续跑。 */
+export function stopJob(jobId: string): Promise<StopJobResponse> {
+  return request(`/api/v1/jobs/${jobId}/stop`, { method: 'POST', body: '{}' })
 }
 
 export function retestSingle(jobId: string, defectId: string): Promise<RetestResponse> {

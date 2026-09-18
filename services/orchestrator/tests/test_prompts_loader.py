@@ -50,8 +50,25 @@ def test_load_prompt_injects_node_skill_and_memory() -> None:
     assert spec.knowledge_refs == (
         # 与 prompts/skills/requirement-output-stability.md frontmatter 同步
         "skills/requirement-output-stability@2.0",
-        "memory/model-output-drift@1.0",
+        "skills/structured-output-compatibility@1.0",
+        "memory/model-output-drift@2.0",
     )
+
+
+def test_load_prompt_injects_structured_output_skill_for_all_json_nodes() -> None:
+    """所有模型 JSON 产物节点加载同一兼容边界，而不是复制零散经验。"""
+    prompts = Path(__file__).resolve().parents[3] / "prompts"
+    for node in (
+        "requirement_diff",
+        "requirement_review",
+        "req_parse",
+        "interface_reconstruct",
+        "code_review",
+        "testcase_generate",
+        "e2e_testcase_generate",
+    ):
+        spec = load_prompt(prompts, node)
+        assert "skills/structured-output-compatibility@1.0" in spec.knowledge_refs
 
 
 def test_load_prompt_missing_file(tmp_path: Path) -> None:

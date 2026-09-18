@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: deploy/golden
+title: 需求解析 Golden 基准与验收脚本
+scope:
+    - deploy/golden/
+source_files: []
+depends_on: []
+related_to:
+    - path: deploy/evidence

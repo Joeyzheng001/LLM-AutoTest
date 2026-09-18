@@ -12,6 +12,7 @@ X_LLM_03 = "X-LLM-03"  # Prompt 文件缺失/元信息不合规（配置错误�
 X_ORCH_01 = "X-ORCH-01"  # 产物校验失败
 X_ORCH_02 = "X-ORCH-02"  # 断点续跑跳序请求
 X_ORCH_03 = "X-ORCH-03"  # java-parser 服务不可达/通信失败（docs/12 v1.1）
+X_ORCH_04 = "X-ORCH-04"  # 用户主动停止任务（可从当前节点续跑）
 
 
 @dataclass

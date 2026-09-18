@@ -487,6 +487,32 @@ async def test_req_parse_schema_violation_x_llm_02(
     assert excinfo.value.code == "X-LLM-02"
 
 
+async def test_req_parse_normalizes_requirement_identifier_misplaced_as_line(
+    env: tuple[Engine, ArtifactStore], doc: Path
+) -> None:
+    """章节/功能编号误置 line 时迁入 section，不能因非业务类型漂移中断任务。"""
+    engine, store = env
+    state = engine.init_job(_JOB)
+    items = json.dumps(
+        {
+            "items": [
+                {
+                    "id": "REQ-001",
+                    "title": "TA 清算确认",
+                    "description": "确认待处理交易",
+                    "source_location": {"line": "FS-EP2-6"},
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    await run_req_parse(engine, state, store, _StubLlm(items), _PROMPTS, [doc])
+
+    location = store.read_json(_JOB, "requirement_items.json")["items"][0]["source_location"]
+    assert location == {"section": "FS-EP2-6"}
+
+
 async def test_req_parse_multi_docs_merged_sections(
     env: tuple[Engine, ArtifactStore], doc: Path, tmp_path: Path
 ) -> None:

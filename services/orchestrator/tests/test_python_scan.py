@@ -139,6 +139,9 @@ def test_python_scan_django_tree_candidates(tmp_path: Path) -> None:
     assert "GET /api/auth/login" in by_sig
     assert "POST /api/auth/login" in by_sig
     assert by_sig["GET /api/auth/login"]["confidence"] == 0.90
+    # CBV 溯源应落在实际处理方法，而不是 urls.py；方法源码随候选带给接口还原。
+    assert by_sig["POST /api/auth/login"]["code_location"]["file"] == "orders/views.py"
+    assert "def post" in by_sig["POST /api/auth/login"]["snippet"]
 
     # include 前缀拼接 + FBV 兜底 GET（0.70）+ <int:x> → {x}
     assert by_sig["GET /api/orders/cancel/{order_id}"]["confidence"] == 0.70

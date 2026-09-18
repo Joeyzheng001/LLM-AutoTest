@@ -200,7 +200,7 @@ const uncoveredCount = computed(
       </div>
 
       <!-- 视图二 / 视图三：后端程序化派生（R-REVW-02/04），与视图一同源 -->
-      <div class="derived-row">
+      <div class="derived-stack">
         <div class="card derived-card">
           <header class="derived-title">视图二 · 风险清单（部分实现 / 证据不足）</header>
           <p v-if="!risks.length" class="derived-empty">无风险条目</p>
@@ -549,17 +549,11 @@ const uncoveredCount = computed(
   word-break: break-all;
 }
 
-/* 派生卡片（视图二/三） */
-.derived-row {
+/* 派生卡片（视图二/三）：风险说明通常很长，固定纵向单栏，避免一侧拥挤一侧留白。 */
+.derived-stack {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
-}
-
-@media (max-width: 900px) {
-  .derived-row {
-    grid-template-columns: 1fr;
-  }
 }
 
 .derived-title {

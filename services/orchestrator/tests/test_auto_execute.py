@@ -880,3 +880,25 @@ async def test_rest_runner_unwraps_unknown_container_and_can_omit_auth() -> None
     )
     assert response.status == 200
     assert captured == {"json": {"name": "Alice"}, "authorization": None}
+
+
+async def test_rest_runner_unwraps_unknown_query_container() -> None:
+    """unknown query 容器必须展开为真实查询键，不能传 query={...}。"""
+    captured: dict[str, str] = {}
+
+    def service(request: httpx.Request) -> httpx.Response:
+        captured.update(dict(request.url.params))
+        return httpx.Response(200, json={})
+
+    runner = RestRunner("http://mock:9000", httpx.MockTransport(service))
+    response = await runner.invoke(
+        InvokeRequest(
+            interface={
+                "signature": {"method": "GET", "path": "/transactions/query"},
+                "params": [{"name": "query", "in": "query", "type": "unknown"}],
+            },
+            params={"query": {"fund_code": "F001", "business_code": "24"}},
+        )
+    )
+    assert response.status == 200
+    assert captured == {"fund_code": "F001", "business_code": "24"}

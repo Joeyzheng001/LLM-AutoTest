@@ -69,16 +69,39 @@ def load_prompt(prompts_dir: Path, name: str) -> PromptSpec:
 # 每个模型节点只加载自己需要的知识。禁止把全部历史经验拼入每一轮调用，
 # 否则 Token 膨胀并稀释当前任务约束，反而降低结构化输出稳定性。
 _NODE_KNOWLEDGE: dict[str, tuple[str, ...]] = {
-    "requirement_diff": ("skills/requirement-diff-analysis.md",),
+    "requirement_diff": (
+        "skills/requirement-diff-analysis.md",
+        "skills/structured-output-compatibility.md",
+    ),
     "requirement_review": (
         "skills/requirement-output-stability.md",
+        "skills/structured-output-compatibility.md",
         "memory/model-output-drift.md",
     ),
-    "req_parse": ("skills/requirement-item-extraction.md", "memory/model-output-drift.md"),
-    "interface_reconstruct": ("skills/interface-reconstruction.md",),
-    "code_review": ("skills/code-review-evidence.md", "memory/server-side-evidence.md"),
-    "testcase_generate": ("skills/functional-test-design.md", "memory/test-design-lessons.md"),
-    "e2e_testcase_generate": ("skills/e2e-automation.md", "memory/e2e-environment.md"),
+    "req_parse": (
+        "skills/requirement-item-extraction.md",
+        "skills/structured-output-compatibility.md",
+        "memory/model-output-drift.md",
+    ),
+    "interface_reconstruct": (
+        "skills/interface-reconstruction.md",
+        "skills/structured-output-compatibility.md",
+    ),
+    "code_review": (
+        "skills/code-review-evidence.md",
+        "skills/structured-output-compatibility.md",
+        "memory/server-side-evidence.md",
+    ),
+    "testcase_generate": (
+        "skills/functional-test-design.md",
+        "skills/structured-output-compatibility.md",
+        "memory/test-design-lessons.md",
+    ),
+    "e2e_testcase_generate": (
+        "skills/e2e-automation.md",
+        "skills/structured-output-compatibility.md",
+        "memory/e2e-environment.md",
+    ),
 }
 
 

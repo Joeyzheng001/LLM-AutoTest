@@ -24,7 +24,7 @@ sampling:
       "title": "功能点标题（原文提炼，不改写语义）",
       "description": "功能点结构化描述：做什么、输入、输出、约束",
       "priority": "P0 | P1 | P2（原文未提及则省略该字段）",
-      "source_location": {"section": "章节号或表格坐标", "line": 行号}（可定位时提供，否则省略）
+      "source_location": {"section": "章节号、功能编号或表格坐标", "line": 12}（可定位时提供，否则省略）
     }
   ]
 }
@@ -36,6 +36,8 @@ sampling:
 - 每个 item 是一个独立可验证的功能点：一条需求若含多个可独立验证的行为，拆成多条；
 - 非功能描述（背景、目的、术语表）不产生条目，不得虚构条目；
 - 原文表述优先：title 与 description 尽量使用原文措辞，不改写语义、不补想象。
+- `source_location.line` 只能填写大于 0 的整数行号；`FS-EP2-6` 等功能/章节编号必须填写在
+  `source_location.section`，不知道精确行号时省略 `line`，不得以编号代替。
 
 ## 任务
 

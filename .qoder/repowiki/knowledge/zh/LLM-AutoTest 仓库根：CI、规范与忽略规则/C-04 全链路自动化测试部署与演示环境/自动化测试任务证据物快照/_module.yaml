@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: deploy/evidence
+title: 自动化测试任务证据物快照
+scope:
+    - deploy/evidence/
+source_files: []
+depends_on: []
+related_to:
+    - path: deploy/golden
+    - path: deploy/runtime_config
+    - path: schemas

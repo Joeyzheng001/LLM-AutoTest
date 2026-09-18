@@ -225,8 +225,11 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
     app.state.job_tasks: dict[str, asyncio.Task[None]] = {}  # type: ignore[misc]
     app.state.job_outcomes: dict[str, PipelineOutcome | dict[str, Any]] = {}  # type: ignore[misc]
     app.state.job_llm_configs = {}  # 仅运行期，禁止落盘 API key
-    app.state.job_auth_headers: dict[str, dict[str, str]] = {}
-    app.state.pending_auth_sessions: dict[str, dict[str, Any]] = {}
+    app.state.job_auth_headers: dict[str, dict[str, str]] = {}  # type: ignore[misc]
+    app.state.pending_auth_sessions: dict[str, dict[str, Any]] = {}  # type: ignore[misc]
+    recovered = _recover_interrupted_jobs(app)
+    if recovered:
+        logger.warning("服务启动恢复中断任务：%s", recovered)
     if runner is None:
         java_client = JavaParserClient(base_url=settings.java_parser_url)
         runner = PipelineRunner(settings, app.state.engine, orch_store, te_store, java_client)
@@ -539,7 +542,10 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 raise HTTPException(
                     status_code=400, detail="auth.login_url 须为 http(s)，且用户名不能为空"
                 )
-            old_auth = previous.get("auth") if isinstance(previous.get("auth"), dict) else {}
+            if isinstance(previous.get("auth"), dict):
+                old_auth: dict[str, Any] = previous["auth"]
+            else:
+                old_auth = {}
             password = request.auth.password or old_auth.get("password")
             if not password:
                 raise HTTPException(
@@ -751,6 +757,29 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         _spawn_run(app, job_id, force_node=force_node)
         return {"job_id": job_id, "status": "rerun-queued", "from_node": force_node}
 
+    @app.post("/api/v1/jobs/{job_id}/stop")
+    async def stop_job(job_id: str) -> dict[str, Any]:
+        """停止正在运行的任务，保留已完成产物并使当前节点可续跑。"""
+        _require_job(app, job_id)
+        task: asyncio.Task[None] | None = app.state.job_tasks.get(job_id)
+        if task is None or task.done():
+            raise HTTPException(status_code=409, detail=f"job {job_id} 当前未在运行")
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            # `_run` 会重新抛出取消信号；这表示协程确实已停止，而非运行失败。
+            pass
+        stopped_nodes = app.state.engine.stop_running_nodes(job_id)
+        app.state.job_outcomes[job_id] = {
+            "job_id": job_id,
+            "status": "stopped",
+            "stopped_nodes": stopped_nodes,
+        }
+        logger.info("job %s 被用户停止（nodes=%s）", job_id, stopped_nodes)
+        return {"job_id": job_id, "status": "stopped", "stopped_nodes": stopped_nodes}
+
     # ---- 人工审核（F-REVW-06）----
 
     @app.post("/api/v1/jobs/{job_id}/review-log")
@@ -794,6 +823,32 @@ def _task_alive(app: FastAPI, job_id: str) -> bool:
     """job 后台任务是否仍在运行。"""
     task: asyncio.Task[None] | None = app.state.job_tasks.get(job_id)
     return task is not None and not task.done()
+
+
+def _recover_interrupted_jobs(app: FastAPI) -> dict[str, list[str]]:
+    """服务启动时清理上次进程遗留的 running 状态。
+
+    后台 asyncio 任务不能跨进程恢复：进程退出后不可能仍在执行。因此只要本进程没有
+    对应任务，state.json 中的 running 必为遗留状态，必须回退为可重跑的 pending。
+    """
+    recovered: dict[str, list[str]] = {}
+    root = Path(str(app.state.settings.artifacts_root))
+    if not root.is_dir():
+        return recovered
+    for entry in root.iterdir():
+        if not entry.is_dir() or not (entry / "state.json").is_file():
+            continue
+        try:
+            stopped = app.state.engine.stop_running_nodes(
+                entry.name,
+                "服务重启导致任务中断；已完成产物保留，可从该节点继续重跑",
+            )
+        except PipelineError:
+            logger.warning("跳过无法恢复的任务状态：%s", entry.name, exc_info=True)
+            continue
+        if stopped:
+            recovered[entry.name] = stopped
+    return recovered
 
 
 def _pick_native_directory() -> str:
@@ -1068,6 +1123,9 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
             outcome = await runner.run(**run_args)
             app.state.job_outcomes[job_id] = outcome
             logger.info("job %s 完成（force_node=%s）", job_id, force_node)
+        except asyncio.CancelledError:
+            logger.info("job %s 收到停止请求（force_node=%s）", job_id, force_node)
+            raise
         except Exception:
             logger.exception("job %s 后台运行异常（force_node=%s）", job_id, force_node)
             app.state.job_outcomes[job_id] = {"job_id": job_id, "error": "后台运行异常，见服务日志"}

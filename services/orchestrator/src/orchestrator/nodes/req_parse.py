@@ -265,7 +265,12 @@ def _batch_input(label: str, index: int, total: int, content: str) -> str:
 
 
 def _renumber_items(batches: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
-    """跨批汇总并由程序统一编号，避免每批都从 REQ-001 开始。"""
+    """跨批汇总、归一无歧义溯源字段并统一编号。
+
+    LLM 常将文档章节号（如 ``FS-EP2-6``）误放到整数 ``line``。章节编号仍有
+    溯源价值，迁入 ``section``；只有纯数字字符串才转换为行号。这里不补业务
+    内容，不能安全解释的可选 ``line`` 会删除，最终仍由 Schema 兜底。
+    """
     merged = [dict(item) for batch in batches for item in batch]
     if not merged:
         raise PipelineError(
@@ -274,8 +279,30 @@ def _renumber_items(batches: list[list[dict[str, Any]]]) -> list[dict[str, Any]]
             node_id=NODE_NAME,
         )
     for index, item in enumerate(merged, start=1):
+        _normalize_item_source_location(item)
         item["id"] = f"REQ-{index:03d}"
     return merged
+
+
+def _normalize_item_source_location(item: dict[str, Any]) -> None:
+    """归一 requirement_items 的可选来源坐标，避免类型漂移阻断整批结果。"""
+    location = item.get("source_location")
+    if not isinstance(location, dict):
+        return
+    normalized = dict(location)
+    line = normalized.get("line")
+    if isinstance(line, str):
+        value = line.strip()
+        if value.isdigit() and int(value) >= 1:
+            normalized["line"] = int(value)
+        else:
+            normalized.pop("line", None)
+            # 章节/功能编号不是行号；仅在 section 缺失时无损迁移。
+            if value and not normalized.get("section"):
+                normalized["section"] = value
+    elif isinstance(line, bool) or (isinstance(line, int) and line < 1):
+        normalized.pop("line", None)
+    item["source_location"] = normalized
 
 
 def _write_llm_artifact(

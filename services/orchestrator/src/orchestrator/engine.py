@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator.artifacts import ArtifactStore
-from orchestrator.errors import X_ORCH_01, X_ORCH_02, PipelineError
+from orchestrator.errors import X_ORCH_01, X_ORCH_02, X_ORCH_04, PipelineError
 from orchestrator.pipeline import NODE_ORDER, NodeStatus
 
 _STATE_VERSION = "1.0"
@@ -249,6 +249,29 @@ class Engine:
         node.error = error.to_dict()
         node.updated_at = _now()
         self._save(state)
+
+    def stop_running_nodes(self, job_id: str, message: str | None = None) -> list[str]:
+        """将中断时仍在运行的节点安全回退为待运行。
+
+        已落盘且已通过校验的产物不会删除；下次重跑仍通过现有的对账与级联归档机制
+        进入。必须在后台协程取消并收敛后调用，避免与节点自身的状态写入竞争。
+        """
+        state = self._load(job_id)
+        stopped_message = message or "任务被用户停止；已完成产物保留，可从该节点继续重跑"
+        stopped: list[str] = []
+        for node in state.nodes:
+            if node.status is not NodeStatus.RUNNING:
+                continue
+            node.status = NodeStatus.PENDING
+            node.error = {
+                "code": X_ORCH_04,
+                "message": stopped_message,
+            }
+            node.updated_at = _now()
+            stopped.append(node.name)
+        if stopped:
+            self._save(state)
+        return stopped
 
     def mark_degraded(self, state: JobState, node_name: str, reason: str) -> None:
         """降级：置 manual_intervention + 降级清单（D1：分母不缩减，报告须分列）。"""

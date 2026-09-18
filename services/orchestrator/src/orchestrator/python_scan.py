@@ -389,7 +389,7 @@ def _emit_view_routes(
     view_name = view_expr.id if isinstance(view_expr, ast.Name) else ""
     if not view_name:
         return
-    class_node, _class_file = _find_view_class(root, trees, view_name, imports or {}, urls_path)
+    class_node, class_file = _find_view_class(root, trees, view_name, imports or {}, urls_path)
     method_map = _class_node_methods(class_node)
     methods = [m for m in HTTP_VERBS if m in method_map]
     if not methods:
@@ -397,8 +397,24 @@ def _emit_view_routes(
         confidence = min(confidence, _CONF_DEFAULT_GET)
     full_path = _normalize_django_path(prefix, route)
     for method in methods:
+        method_node = method_map.get(method)
+        # 将请求处理方法与其直接使用的 Serializer 定义一并给接口还原。仅看到
+        # `serializer = XSerializer(data=request.data)` 时，模型无法知道真实字段，
+        # 容易退化为 valid_payload 一类语义标签。
+        snippet = _node_snippet(class_file, method_node)
+        serializer_context = _serializer_context(root, trees, class_file, method_node)
+        if serializer_context:
+            snippet = f"{snippet or ''}\n\n{serializer_context}".strip()
         routes.append(
-            _candidate(repo, urls_path, root, f"{method.upper()} {full_path}", line, confidence)
+            _candidate(
+                repo,
+                class_file or urls_path,
+                root,
+                f"{method.upper()} {full_path}",
+                method_node.lineno if method_node is not None else line,
+                confidence,
+                snippet=snippet,
+            )
         )
 
 
@@ -566,13 +582,14 @@ def _candidate(
     signature: str,
     line: int,
     confidence: float,
+    snippet: str | None = None,
 ) -> dict[str, Any]:
     """构造候选条目（code_location 仓内相对路径，溯源不经 LLM）。"""
     try:
         rel = file_path.relative_to(root).as_posix()
     except ValueError:
         rel = file_path.as_posix()
-    return {
+    candidate: dict[str, Any] = {
         "candidate_id": "",  # 由 _extract_routes 统一编号
         "protocol": "rest",
         "signature": signature,
@@ -585,6 +602,72 @@ def _candidate(
         "is_fallback": False,
         "confidence": confidence,
     }
+    if snippet:
+        candidate["snippet"] = snippet
+    return candidate
+
+
+def _node_snippet(file_path: Path | None, node: ast.AST | None) -> str | None:
+    """返回受限源码片段，供 LLM 还原真实字段，读取失败则不臆造。"""
+    if file_path is None or node is None:
+        return None
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    lineno = getattr(node, "lineno", 0)
+    if lineno <= 0:
+        return None
+    start = lineno - 1
+    # 防止单个超长方法撑爆接口还原上下文；前 120 行涵盖参数读取与 serializer 声明。
+    end = min(getattr(node, "end_lineno", lineno), start + 120, len(lines))
+    snippet = "\n".join(lines[start:end]).strip()
+    return snippet or None
+
+
+def _serializer_context(
+    root: Path,
+    trees: dict[Path, ast.Module],
+    view_file: Path | None,
+    method_node: ast.FunctionDef | ast.AsyncFunctionDef | None,
+) -> str | None:
+    """解析视图方法直接实例化的仓内 Serializer，并附上受限定义片段。
+
+    这是静态可证的上下文增强：只跟踪 `from package import XSerializer` 的直接引用，
+    无法解析时安静跳过，不编造字段或跨仓库猜测。
+    """
+    if view_file is None or method_node is None or view_file not in trees:
+        return None
+    imports = _import_map(trees[view_file])
+    serializer_names: list[str] = []
+    for node in ast.walk(method_node):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _attr_or_id(node.func)
+        if name.endswith("Serializer") and name in imports and name not in serializer_names:
+            serializer_names.append(name)
+
+    snippets: list[str] = []
+    for name in serializer_names[:3]:  # 一个端点最多附带三个，控制上下文体积
+        serializer_file = _resolve_import(root, trees, imports[name], name)
+        if serializer_file is None:
+            continue
+        serializer_node = next(
+            (
+                item
+                for item in trees[serializer_file].body
+                if isinstance(item, ast.ClassDef) and item.name == name
+            ),
+            None,
+        )
+        snippet = _node_snippet(serializer_file, serializer_node)
+        if snippet:
+            try:
+                relative = serializer_file.relative_to(root).as_posix()
+            except ValueError:
+                relative = serializer_file.as_posix()
+            snippets.append(f"# Serializer source: {relative}\n{snippet}")
+    return "\n\n".join(snippets) or None
 
 
 def _error_entry(repo: RepositoryInput, message: str) -> dict[str, Any]:

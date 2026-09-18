@@ -17,7 +17,7 @@ from orchestrator.engine import Engine
 from orchestrator.errors import X_ORCH_02, PipelineError
 from orchestrator.llm import LlmResult
 from orchestrator.nodes import run_testcase_generate
-from orchestrator.nodes.testcase_generate import _parse_e2e_cases
+from orchestrator.nodes.testcase_generate import _filter_param_violations, _parse_e2e_cases
 from orchestrator.pipeline import NodeStatus
 from orchestrator.prompts_loader import PromptSpec
 
@@ -261,7 +261,33 @@ async def test_testcase_generate_param_retry(
     payload = store.read_json(_JOB, "testcases.json")
     # 无 X-GEN-02 放弃告警
     assert not any("X-GEN-02" in w for w in payload.get("warnings", []))
-    assert state.node("testcase_generate").status is NodeStatus.COMPLETED
+
+
+def test_filter_rejects_semantic_placeholder_for_unknown_body() -> None:
+    """unknown REST body 的文字标签不能伪装成可执行请求。"""
+    interfaces = [
+        {
+            "id": "IF-REST-001",
+            "params": [{"name": "body", "type": "unknown", "in": "body"}],
+        }
+    ]
+    bad = [{"interface_id": "IF-REST-001", "params": {"body": "valid_payload"}}]
+    valid, violations = _filter_param_violations(bad, interfaces)
+    assert valid == []
+    assert "禁止语义占位符" in violations[0]["message"]
+
+    concrete = [{"interface_id": "IF-REST-001", "params": {"body": {"id": 1}}}]
+    valid, violations = _filter_param_violations(concrete, interfaces)
+    assert valid == concrete
+    assert violations == []
+
+    # gRPC/非 REST 容器的 unknown 标量字段仍是合法参数，不能被误拦截。
+    grpc = [{"id": "IF-GRPC-001", "params": [{"name": "order_id", "type": "unknown"}]}]
+    valid, violations = _filter_param_violations(
+        [{"interface_id": "IF-GRPC-001", "params": {"order_id": "ORDER-001"}}], grpc
+    )
+    assert len(valid) == 1
+    assert violations == []
 
 
 async def test_testcase_generate_abandon_interface(

@@ -77,6 +77,12 @@ export interface RerunPayload {
   e2e?: E2eConfig
 }
 
+export interface StopJobResponse {
+  job_id: string
+  status: 'stopped'
+  stopped_nodes: string[]
+}
+
 export interface LlmCallLog {
   call_id?: string
   timestamp: string

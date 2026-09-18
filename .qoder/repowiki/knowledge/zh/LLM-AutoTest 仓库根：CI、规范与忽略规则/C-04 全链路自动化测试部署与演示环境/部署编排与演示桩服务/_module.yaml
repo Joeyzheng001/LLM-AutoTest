@@ -1,0 +1,13 @@
+schema_version: 1
+module_path: deploy/runtime_config
+title: 部署编排与演示桩服务
+scope:
+    - deploy/llm-stub/
+    - deploy/task-config/
+    - deploy/docker-compose.yml
+    - deploy/nginx.conf
+source_files: []
+depends_on: []
+related_to:
+    - path: deploy/demo_repos
+    - path: deploy/evidence

@@ -196,6 +196,26 @@ class FakeRunner:
         return base
 
 
+class BlockingRunner:
+    """可取消 Runner：用于验证 API 停止会等待协程收敛再写回节点状态。"""
+
+    def __init__(self, engine: Any) -> None:
+        self.engine = engine
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+    async def run(self, *, job_id: str, **_kwargs: Any) -> PipelineOutcome:
+        state = self.engine.init_job(job_id)
+        self.engine.mark_running(state, "req_parse")
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        raise AssertionError("BlockingRunner 不应自然结束")
+
+
 @pytest.fixture()
 async def env(tmp_path: Path) -> tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path]:
     """构建注入 FakeRunner 的 app + 异步客户端。"""
@@ -930,6 +950,65 @@ async def test_rerun_rejections(
     finally:
         task.cancel()
     assert len(fake.calls) == 1  # 拒绝路径均未触发重跑
+
+
+async def test_stop_running_job_preserves_completed_artifacts_and_releases_current_node(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """停止须取消协程、把 running 节点回退 pending，且不伪造完成或降级。"""
+    app, _fake, client, repo_dir = env
+    runner = BlockingRunner(app.state.engine)
+    app.state.runner = runner
+
+    response = await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-stop01"))
+    assert response.status_code == 202
+    await asyncio.wait_for(runner.started.wait(), timeout=1)
+    assert (await client.get("/api/v1/jobs/job-api-stop01")).json()["running"] is True
+
+    stopped = await client.post("/api/v1/jobs/job-api-stop01/stop", json={})
+    assert stopped.status_code == 200
+    assert stopped.json() == {
+        "job_id": "job-api-stop01",
+        "status": "stopped",
+        "stopped_nodes": ["req_parse"],
+    }
+    assert runner.cancelled is True
+
+    status = (await client.get("/api/v1/jobs/job-api-stop01")).json()
+    req_parse = next(node for node in status["nodes"] if node["name"] == "req_parse")
+    assert status["running"] is False
+    assert req_parse["status"] == "pending"
+    assert req_parse["error"]["code"] == "X-ORCH-04"
+    assert (await client.post("/api/v1/jobs/job-api-stop01/stop", json={})).status_code == 409
+
+
+def test_app_startup_recovers_stale_running_node(tmp_path: Path) -> None:
+    """进程已退出时，内存任务不可能存活；遗留 running 必须回退，不能让页面永久卡住。"""
+    schemas = Path(__file__).resolve().parents[3] / "schemas"
+    settings = Settings(
+        port=8000,
+        java_parser_url="http://mock:8080",
+        artifacts_root=str(tmp_path / "artifacts"),
+        llm_base_url="http://mock:8090/v1",
+        llm_model_name="glm-5.3",
+        llm_api_key="",
+        llm_temperature=0.2,
+        llm_top_p=0.8,
+        llm_seed=None,
+        llm_timeout_s=5.0,
+        schemas_dir=str(schemas),
+    )
+    first_app = create_app(settings)
+    state = first_app.state.engine.init_job("job-api-stale01")
+    first_app.state.engine.mark_running(state, "req_parse")
+
+    restarted_app = create_app(settings)
+    recovered = restarted_app.state.engine.open_job("job-api-stale01")
+    node = recovered.node("req_parse")
+    assert node.status is NodeStatus.PENDING
+    assert node.error is not None
+    assert node.error["code"] == "X-ORCH-04"
+    assert "服务重启" in node.error["message"]
 
 
 async def test_unknown_job_404(

@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: deploy
+title: C-04 全链路自动化测试部署与演示环境
+scope:
+    - deploy/
+source_files: []
+depends_on: []
+related_to: []

@@ -3,21 +3,81 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-09-15T06:50:20Z"
+exported_at: "2026-09-18T02:00:34Z"
 modules:
     "":
-        dir_name: LLMAutoTest 仓库根配置与 CI_CD
-        title: LLMAutoTest 仓库根配置与 CI/CD
+        dir_name: LLM-AutoTest 仓库根：CI、规范与忽略规则
+        title: LLM-AutoTest 仓库根：CI、规范与忽略规则
         scope:
             - .gitignore
             - .github/
             - .rules/
         source_files: []
         children:
+            - deploy
             - docs_and_specs
             - schemas
         depends_on: []
         related_to: []
+    deploy:
+        dir_name: C-04 全链路自动化测试部署与演示环境
+        title: C-04 全链路自动化测试部署与演示环境
+        scope:
+            - deploy/
+        source_files: []
+        children:
+            - deploy/demo_repos
+            - deploy/evidence
+            - deploy/golden
+            - deploy/runtime_config
+        depends_on: []
+        related_to: []
+    deploy/demo_repos:
+        dir_name: 演示仓库组（验收链路被测服务）
+        title: 演示仓库组（验收链路被测服务）
+        scope:
+            - deploy/demo-repos/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: deploy/runtime_config
+    deploy/evidence:
+        dir_name: 自动化测试任务证据物快照
+        title: 自动化测试任务证据物快照
+        scope:
+            - deploy/evidence/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: deploy/golden
+            - path: deploy/runtime_config
+            - path: schemas
+    deploy/golden:
+        dir_name: 需求解析 Golden 基准与验收脚本
+        title: 需求解析 Golden 基准与验收脚本
+        scope:
+            - deploy/golden/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: deploy/evidence
+    deploy/runtime_config:
+        dir_name: 部署编排与演示桩服务
+        title: 部署编排与演示桩服务
+        scope:
+            - deploy/llm-stub/
+            - deploy/task-config/
+            - deploy/docker-compose.yml
+            - deploy/nginx.conf
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: deploy/demo_repos
+            - path: deploy/evidence
     docs_and_specs:
         dir_name: MumuSpec 需求规格文档体系与 Prompt 模板库
         title: MumuSpec 需求规格文档体系与 Prompt 模板库
@@ -39,4 +99,5 @@ modules:
         children: []
         depends_on: []
         related_to:
+            - path: deploy/evidence
             - path: docs_and_specs
