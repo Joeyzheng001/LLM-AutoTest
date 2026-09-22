@@ -111,9 +111,10 @@ class AccessPolicy:
     未配置时返回本地兼容身份；配置后只能用 Bearer/X-Autotest-Token 令牌建立身份。
     """
 
-    def __init__(self, tokens_json: str | None) -> None:
+    def __init__(self, tokens_json: str | None, *, single_user_mode: bool = False) -> None:
         self._tokens: dict[str, AccessPrincipal] = {}
         self._configured = bool(tokens_json)
+        self._single_user_mode = single_user_mode
         if not tokens_json:
             return
         try:
@@ -152,10 +153,12 @@ class AccessPolicy:
     @property
     def enabled(self) -> bool:
         """是否启用部门访问令牌校验。"""
-        return self._configured
+        return self._configured and not self._single_user_mode
 
     def authenticate(self, headers: Mapping[str, str]) -> AccessPrincipal | None:
         """解析请求令牌；未启用策略时返回本地兼容身份。"""
+        if self._single_user_mode:
+            return AccessPrincipal("admin", frozenset({"*"}))
         if not self.enabled:
             return AccessPrincipal("local", frozenset({"*"}))
         authorization = headers.get("authorization", "")

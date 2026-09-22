@@ -359,7 +359,9 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
     app.state.secret_store = SecretStore(
         Path(settings.artifacts_root), settings.secrets_encryption_key
     )
-    app.state.access_policy = AccessPolicy(settings.access_tokens_json)
+    app.state.access_policy = AccessPolicy(
+        settings.access_tokens_json, single_user_mode=settings.single_user_mode
+    )
     app.state.engine = Engine(orch_store)
     app.state.database = database
     worker_id = os.environ.get("WORKER_ID") or (
@@ -543,7 +545,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
     @app.middleware("http")
     async def _access_control(request: Request, call_next: Any) -> Any:
         """可选部门令牌校验；健康检查和本地兼容模式不受影响。"""
-        if request.url.path.startswith("/api/v1/"):
+        if request.url.path.startswith("/api/v1/") and request.url.path != "/api/v1/system/access-mode":
             principal = app.state.access_policy.authenticate(request.headers)
             if principal is None:
                 return JSONResponse(status_code=401, content={"detail": "访问令牌无效或缺失"})
@@ -551,6 +553,14 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         return await call_next(request)
 
     # ---- 基础端点 ----
+
+    @app.get("/api/v1/system/access-mode")
+    async def access_mode() -> dict[str, str]:
+        """公开返回入口模式，让前端不在单用户部署中展示技术令牌输入。"""
+        return {
+            "mode": "single_user" if not app.state.access_policy.enabled else "token",
+            "user": "admin" if settings.single_user_mode else "",
+        }
 
     @app.get("/health")
     async def health() -> dict[str, str]:

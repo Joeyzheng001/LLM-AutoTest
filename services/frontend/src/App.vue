@@ -2,7 +2,7 @@
 // 应用外壳：左侧九页导航（07 §3.1–3.6 六屏 + C-10 三产物展示屏）+ 顶栏；视图切换（无路由依赖）。
 // 全部页面接 orchestrator REST API（数值来自后端，前端不计算）。
 // C-16：navigation 共享状态——总览页节点卡跳转携带 jobId 切页（目标页经 initialJobId prop 接收）。
-import { computed, ref, watch, type Component } from 'vue'
+import { computed, onMounted, ref, watch, type Component } from 'vue'
 import CodeReviewView from './views/CodeReviewView.vue'
 import CodeScanView from './views/CodeScanView.vue'
 import DefectLoopView from './views/DefectLoopView.vue'
@@ -12,7 +12,12 @@ import RequirementsView from './views/RequirementsView.vue'
 import TaskConfigView from './views/TaskConfigView.vue'
 import TestCasesView from './views/TestCasesView.vue'
 import TestReportView from './views/TestReportView.vue'
-import { clearAccessContext, getAccessContext, setAccessContext } from './api/client'
+import {
+  clearAccessContext,
+  getAccessContext,
+  getAccessMode,
+  setAccessContext,
+} from './api/client'
 import { navigation } from './api/navigation'
 
 interface NavView {
@@ -127,6 +132,20 @@ const accessToken = ref(initialAccess.token)
 const accessProjectId = ref(initialAccess.projectId)
 const accessMessage = ref('')
 const accessConfigured = ref(Boolean(initialAccess.token && initialAccess.projectId))
+const accessMode = ref<'loading' | 'single_user' | 'token'>('loading')
+const accessUser = ref('admin')
+
+onMounted(async () => {
+  try {
+    const mode = await getAccessMode()
+    accessMode.value = mode.mode
+    accessUser.value = mode.user || 'admin'
+    if (mode.mode === 'single_user') clearAccess()
+  } catch {
+    // 旧服务端不提供模式端点时，保留既有令牌入口，避免误把多用户部署降级为匿名。
+    accessMode.value = 'token'
+  }
+})
 
 function saveAccess(): void {
   try {
@@ -204,6 +223,7 @@ watch(views, (next) => {
         <span class="topbar-title">{{ active?.label }}</span>
         <span class="topbar-badge mono">实时数据 · orchestrator :8000</span>
         <div
+          v-if="accessMode === 'token'"
           class="access-bar"
           title="共享部署需要 Bearer Token 与项目标识；仅保存在当前浏览器会话"
         >
@@ -234,6 +254,9 @@ watch(views, (next) => {
           </button>
           <span v-if="accessMessage" class="access-message">{{ accessMessage }}</span>
         </div>
+        <span v-else-if="accessMode === 'single_user'" class="single-user-badge">
+          部门单用户 · {{ accessUser }}
+        </span>
       </header>
       <main class="content">
         <component
@@ -458,6 +481,12 @@ watch(views, (next) => {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.single-user-badge {
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: var(--text-xs);
 }
 
 .content {

@@ -41,6 +41,9 @@ class Settings:
     secrets_encryption_key: str | None = None
     # 部门访问令牌映射 JSON；未配置时保持本地单用户兼容模式。
     access_tokens_json: str | None = None
+    # 单用户部署时由服务端固定使用管理员身份，浏览器无需保存或填写技术令牌。
+    # 保留令牌映射，未来切换企业登录/多用户模式只需关闭此开关。
+    single_user_mode: bool = False
     # 产物生命周期：0 表示不自动清理；启用后先进入 .trash 回收区。
     artifact_retention_days: int = 0
     artifact_trash_grace_days: int = 7
@@ -97,7 +100,7 @@ class Settings:
             f"job_max_concurrency={self.job_max_concurrency} "
             f"job_lease_seconds={self.job_lease_seconds}"
             f" secrets_store={'enabled' if self.secrets_encryption_key else 'disabled'}"
-            f" access_control={'enabled' if self.access_tokens_json else 'disabled'}"
+            f" access_control={'single_user' if self.single_user_mode else 'enabled' if self.access_tokens_json else 'disabled'}"
             f" artifact_retention_days={self.artifact_retention_days}"
             f" audit_retention_days={self.audit_retention_days}"
             f" artifact_storage={self.artifact_storage_backend}"
@@ -131,6 +134,8 @@ class Settings:
                 job_lease_seconds=int(source.get("JOB_LEASE_SECONDS", "120")),
                 secrets_encryption_key=source.get("SECRETS_ENCRYPTION_KEY") or None,
                 access_tokens_json=source.get("AUTOTEST_ACCESS_TOKENS_JSON") or None,
+                single_user_mode=source.get("AUTOTEST_SINGLE_USER_MODE", "false").lower()
+                in {"1", "true", "yes", "on"},
                 artifact_retention_days=int(source.get("ARTIFACT_RETENTION_DAYS", "0")),
                 artifact_trash_grace_days=int(source.get("ARTIFACT_TRASH_GRACE_DAYS", "7")),
                 artifact_cleanup_interval_s=int(

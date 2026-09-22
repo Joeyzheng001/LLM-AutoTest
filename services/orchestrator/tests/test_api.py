@@ -252,6 +252,14 @@ async def env(tmp_path: Path) -> tuple[FastAPI, FakeRunner, httpx.AsyncClient, P
     await client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_access_mode_endpoint_defaults_to_single_user(env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path]) -> None:
+    _app, _runner, client, _repo_dir = env
+    response = await client.get("/api/v1/system/access-mode")
+    assert response.status_code == 200
+    assert response.json() == {"mode": "single_user", "user": ""}
+
+
 def _submit_body(repo_dir: Path, job_id: str | None = None, **overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "job_id": job_id,

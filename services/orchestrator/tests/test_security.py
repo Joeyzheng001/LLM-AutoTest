@@ -111,6 +111,18 @@ def test_access_policy_project_quota_overrides_token_default() -> None:
     assert principal.quota_for("bond").max_concurrent_jobs == 4
 
 
+def test_access_policy_single_user_mode_does_not_require_browser_token() -> None:
+    policy = AccessPolicy(
+        json.dumps({"token": {"user_id": "qa", "projects": ["fund"]}}),
+        single_user_mode=True,
+    )
+    principal = policy.authenticate({})
+    assert policy.enabled is False
+    assert principal is not None
+    assert principal.user_id == "admin"
+    assert policy.allows_project(principal, "any-project")
+
+
 def test_access_policy_rejects_invalid_quota() -> None:
     with pytest.raises(SecretStoreError, match="max_concurrent_jobs"):
         AccessPolicy(

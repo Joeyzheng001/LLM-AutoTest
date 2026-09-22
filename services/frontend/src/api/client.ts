@@ -45,6 +45,11 @@ export interface AccessContext {
   projectId: string
 }
 
+export interface AccessMode {
+  mode: 'single_user' | 'token'
+  user: string
+}
+
 export function getAccessContext(): AccessContext {
   try {
     return {
@@ -107,6 +112,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function listJobs(): Promise<{ jobs: JobListItem[] }> {
   return request('/api/v1/jobs')
+}
+
+/** 入口模式不要求 Token，用于决定是否展示多用户访问配置。 */
+export function getAccessMode(): Promise<AccessMode> {
+  return request('/api/v1/system/access-mode')
 }
 
 export function getJobStatus(jobId: string): Promise<JobStatus> {

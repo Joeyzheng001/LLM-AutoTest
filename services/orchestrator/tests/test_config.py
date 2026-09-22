@@ -27,6 +27,18 @@ def test_settings_from_env_complete() -> None:
     assert settings.database_url == "postgresql+psycopg://autotest:secret@db:5432/autotest"
 
 
+def test_settings_supports_explicit_single_user_mode() -> None:
+    settings = Settings.from_env(
+        {
+            "JAVA_PARSER_URL": "http://java-parser:8080",
+            "LLM_BASE_URL": "https://api.example.com",
+            "AUTOTEST_SINGLE_USER_MODE": "true",
+        }
+    )
+    assert settings.single_user_mode is True
+    assert "access_control=single_user" in settings.public_summary
+
+
 def test_settings_from_env_missing_required() -> None:
     """缺失必填项时显式报错，禁止静默默认。"""
     with pytest.raises(RuntimeError, match="JAVA_PARSER_URL"):

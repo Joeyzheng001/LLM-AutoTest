@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearAccessContext,
+  getAccessMode,
   getAccessContext,
   getLlmCallLogs,
   getReportMd,
@@ -88,5 +89,18 @@ describe('共享访问上下文', () => {
       expect(headers.get('Authorization')).toBe('Bearer token-a')
       expect(headers.get('X-Project-Id')).toBe('fund')
     }
+  })
+
+  it('单用户入口模式可在未配置令牌时读取', async () => {
+    vi.stubGlobal('sessionStorage', storage)
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ mode: 'single_user', user: 'admin' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getAccessMode()).resolves.toEqual({ mode: 'single_user', user: 'admin' })
+    const headers = new Headers((fetchMock.mock.calls[0]?.[1] as RequestInit).headers)
+    expect(headers.get('Authorization')).toBeNull()
   })
 })
