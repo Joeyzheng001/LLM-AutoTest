@@ -1260,9 +1260,6 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 }
 
 .config-steps {
-  position: sticky;
-  top: var(--space-3);
-  z-index: 5;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: var(--space-2);
@@ -1593,15 +1590,13 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 .repo-head,
 .repo-row {
   display: grid;
-  grid-template-columns: 132px 96px minmax(250px, 1fr) 82px 90px 150px 110px 150px 42px 56px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-2);
   align-items: center;
 }
 
 .repo-head {
-  font-size: var(--text-xs);
-  color: var(--text-3);
-  padding: 0 var(--space-1) var(--space-1);
+  display: none;
 }
 
 .repo-row {
@@ -1665,6 +1660,14 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   accent-color: var(--warning);
 }
 
+.repo-row .repo-path-picker {
+  grid-column: 1 / -1;
+}
+
+.repo-token-placeholder {
+  display: none;
+}
+
 /* C-13：语言选择（与文本框同视觉口径） */
 .repo-language {
   width: 100%;
@@ -1687,11 +1690,6 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .repo-head,
-  .repo-row {
-    grid-template-columns: 1fr 1fr;
-  }
-
   .repo-service-field {
     grid-template-columns: 1fr;
   }
@@ -1708,6 +1706,10 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 
   .submit-row button {
     width: 100%;
+  }
+
+  .repo-row {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1764,9 +1766,6 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 
 /* 提交区 */
 .submit-row {
-  position: sticky;
-  bottom: var(--space-3);
-  z-index: 4;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
