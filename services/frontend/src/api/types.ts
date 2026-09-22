@@ -255,6 +255,30 @@ export interface RequirementItem {
   priority?: string
   stub_note?: string
   source_files?: string[] // C-10：全部来源文档路径
+  source_refs?: string[]
+  source_location?: { section?: string; line?: number }
+  claims?: RequirementClaim[]
+}
+
+export interface RequirementClaim {
+  claim_id: string
+  kind: string
+  statement: string
+  acceptance_criteria?: string[]
+  source_refs?: string[]
+}
+
+export interface RequirementSource {
+  source_id: string
+  document: string
+  section?: string
+  paragraph_index: number
+  fragment_index: number
+  excerpt: string
+  excerpt_truncated?: boolean
+  content_hash?: string
+  pair_index?: number
+  version?: 'baseline' | 'target'
 }
 
 export interface RequirementReviewIssue {
@@ -264,6 +288,9 @@ export interface RequirementReviewIssue {
   question: string
   reason: string
   impact: string
+  dimension?: string
+  claim_ids?: string[]
+  source_refs?: string[]
 }
 
 export interface RequirementReviewMindmap {
@@ -316,10 +343,44 @@ export interface InterfaceCandidate {
 export interface ReviewMapping {
   requirement_id: string
   interface_id?: string | null
+  interface_ids?: string[]
   status: 'implemented' | 'partial' | 'missing' | 'undetermined'
   confidence: number
   evidence_quality?: 'behavior_path' | 'interface_only' | 'insufficient' | 'none'
-  evidence?: { code_location?: CodeLocation; note?: string }
+  evidence?: { refs?: string[]; code_location?: CodeLocation; note?: string }
+  claim_assessments?: ReviewClaimAssessment[]
+}
+
+export interface ReviewClaimAssessment {
+  claim_id: string
+  status: 'implemented' | 'partial' | 'missing' | 'undetermined'
+  confidence: number
+  interface_ids: string[]
+  evidence_refs: string[]
+  met_conditions: string[]
+  unmet_conditions: string[]
+  verification_needed: string[]
+}
+
+export interface ReviewEvidence {
+  evidence_id: string
+  category: string
+  repo: string
+  file: string
+  start_line: number
+  end_line: number
+  excerpt: string
+  interface_ids?: string[]
+}
+
+export interface ReviewScanCoverage {
+  complete: boolean
+  review_evidence_limited: boolean
+  repositories: Array<{
+    repo: string
+    status: string
+    truncated_scope: string[]
+  }>
 }
 
 export interface DerivedRisk {
@@ -340,10 +401,12 @@ export interface IncrementalFinding {
 
 export interface DeterministicReviewCheck {
   requirement_id: string
+  claim_id?: string
   rule_id: string
   category: string
   status: 'evidence_found' | 'needs_verification'
   description: string
+  evidence_ids?: string[]
 }
 
 export interface MissingFeature {

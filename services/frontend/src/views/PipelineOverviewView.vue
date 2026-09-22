@@ -324,7 +324,9 @@ function formatTime(iso: string | null): string {
 
 function formatLogMessage(entry: LlmCallLog): string {
   if (entry.event === 'started') {
-    return `第 ${entry.batch?.index}/${entry.batch?.total} 批已发起（${entry.batch?.requirements} 条需求）`
+    const count = entry.batch?.claims ?? entry.batch?.requirements
+    const label = entry.batch?.claims != null ? '条声明' : '条需求'
+    return `第 ${entry.batch?.index}/${entry.batch?.total} 批已发起（${count} ${label}）`
   }
   if (entry.event === 'e2e_started')
     return entry.message ?? `开始执行 ${entry.total ?? 0} 条前端 E2E 用例`

@@ -1,4 +1,4 @@
-"""code_review 节点：三视图产出（F-REVW-01~05）——一次 LLM 调用产映射表，
+"""code_review 节点：三视图产出（F-REVW-01~05）——按原子声明分批审查，
 风险清单与遗漏功能清单程序化派生（R-REVW-02：与映射表 100% 一致）；
 双分支配置时程序化派生视图四·变更范围（C-09，不经 LLM）。
 
@@ -76,6 +76,12 @@ _EVIDENCE_RULES: dict[str, re.Pattern[str]] = {
     "idempotency": re.compile(
         r"idempoten|get_or_create|uniqueconstraint|unique_together|duplicate", re.I
     ),
+    "state_transition": re.compile(
+        r"transition|state_machine|setstate|setstatus|status\s*(?:==|=)|state\s*(?:==|=)", re.I
+    ),
+    "data_consistency": re.compile(
+        r"select_for_update|optimistic.?lock|foreignkey|uniqueconstraint|transaction\.atomic", re.I
+    ),
     "cache": re.compile(r"@cacheable|cache\.get|cache\.set|redis|expireat", re.I),
     "async": re.compile(r"@async|celery|kafka|rabbitmq|@scheduled|asyncio", re.I),
 }
@@ -119,47 +125,108 @@ async def run_code_review(
         requirements = _load_requirements(store, state.job_id)
         interfaces = _load_interfaces(store, state.job_id)
         inventory = _load_code_inventory(store, state.job_id)
+        # 在代码证据提取前按需求选择接口入口，优先确保本任务相关业务代码进入证据池。
+        interface_index = _compact_interfaces(interfaces)
+        all_claims = _flatten_requirement_claims(requirements)
+        review_batches = chunk_json_items(all_claims, max_chars=5_000)
+        relevant_interfaces: list[dict[str, Any]] = []
+        relevant_interface_ids: set[str] = set()
+        candidates_by_batch = [
+            _select_interfaces_for_claims(batch, interface_index) for batch in review_batches
+        ]
+        # 轮转批次挑选，避免前 36 个接口挤占证据预算、后续需求完全没有业务代码上下文。
+        for rank in range(max((len(items) for items in candidates_by_batch), default=0)):
+            for candidates in candidates_by_batch:
+                if rank >= len(candidates):
+                    continue
+                item = candidates[rank]
+                interface_id = str(item.get("id", ""))
+                if interface_id and interface_id not in relevant_interface_ids:
+                    relevant_interfaces.append(item)
+                    relevant_interface_ids.add(interface_id)
+                if len(relevant_interfaces) >= 36:
+                    break
+            if len(relevant_interfaces) >= 36:
+                break
         behavior_evidence = _behavior_evidence(inventory)
-        code_evidence = _collect_code_evidence(inventory)
+        code_evidence = _collect_code_evidence(inventory, relevant_interfaces)
+        for evidence_index, evidence in enumerate(code_evidence, start=1):
+            evidence["evidence_id"] = f"EVD-{evidence_index:04d}"
         call_chains = _derive_call_chains(inventory, interfaces)
         incremental_focus = _collect_incremental_focus(inventory, interfaces)
         deterministic_checks = _derive_deterministic_checks(requirements, code_evidence)
+        scan_coverage = _scan_coverage(inventory, code_evidence)
 
         prompt = load_prompt(prompts_dir, NODE_NAME)
-        # 以需求为独立审查单元分批；接口只发送映射所需的紧凑字段，避免源码上下文重复。
-        interface_index = _compact_interfaces(interfaces)
-        mappings: list[dict[str, Any]] = []
-        # Review 同时携带接口和服务端行为证据，单批预算应明显小于普通 JSON 节点。
-        requirement_batches = chunk_json_items(requirements, max_chars=5_000)
-        for index, batch in enumerate(requirement_batches, start=1):
+        # 以原子 claim 为审查单元分批；旧任务没有 claims 时从描述构造兼容的单 claim。
+        claim_assessments: list[dict[str, Any]] = []
+        claim_batches = review_batches
+        for index, batch in enumerate(claim_batches, start=1):
+            batch_claim_ids = {str(claim["claim_id"]) for claim in batch}
+            batch_interfaces = _select_interfaces_for_claims(batch, interface_index)
+            batch_interface_ids = {str(item["id"]) for item in batch_interfaces if item.get("id")}
+            selected_evidence = _select_evidence_for_claims(
+                batch,
+                code_evidence,
+                preferred_interface_ids=batch_interface_ids,
+            )
+            selected_locations = {
+                (str(item.get("repo", "")), str(item.get("file", "")))
+                for item in selected_evidence
+            }
+            batch_behavior_evidence = [
+                item for item in behavior_evidence
+                if (str(item.get("repo", "")), str(item.get("file", ""))) in selected_locations
+            ][:24]
+            batch_call_chains = [
+                chain for chain in call_chains
+                if str(chain.get("interface_id", "")) in batch_interface_ids
+            ]
+            batch_incremental_focus = [
+                item for item in incremental_focus
+                if str(item.get("interface_id", "")) in batch_interface_ids
+            ]
+            batch_checks = [
+                check for check in deterministic_checks
+                if str(check.get("claim_id", "")) in batch_claim_ids
+            ]
             _append_review_progress(
-                store, state.job_id, index, len(requirement_batches), len(batch)
+                store, state.job_id, index, len(claim_batches), len(batch)
             )
             user_content = json.dumps(
                 {
-                    "batch": {"index": index, "total": len(requirement_batches)},
-                    "requirements": batch,
-                    "interfaces": interface_index,
-                    "behavior_evidence": behavior_evidence,
-                    "code_evidence": code_evidence,
-                    "call_chains": call_chains,
-                    "incremental_focus": incremental_focus,
-                    "deterministic_checks": _checks_for_batch(deterministic_checks, batch),
+                    "batch": {"index": index, "total": len(claim_batches)},
+                    "claims": batch,
+                    "interfaces": batch_interfaces,
+                    "behavior_evidence": batch_behavior_evidence,
+                    "code_evidence": selected_evidence,
+                    "call_chains": batch_call_chains,
+                    "incremental_focus": batch_incremental_focus,
+                    "deterministic_checks": batch_checks,
+                    "scan_coverage": scan_coverage,
                 },
                 ensure_ascii=False,
             )
 
-            mappings.extend(
+            claim_assessments.extend(
                 await complete_with_json_repair(
                     llm,
                     NODE_NAME,
                     prompt,
                     user_content,
-                    partial(_merge_llm_mappings, requirements=batch, interfaces=interfaces),
+                    partial(
+                        _merge_llm_mappings,
+                        claims=batch,
+                        interfaces=batch_interfaces,
+                        code_evidence=selected_evidence,
+                    ),
                 )
             )
 
-        mappings = _apply_deterministic_gates(mappings, deterministic_checks)
+        claim_assessments = _apply_claim_deterministic_gates(
+            claim_assessments, deterministic_checks, bool(scan_coverage["complete"])
+        )
+        mappings = _aggregate_claim_assessments(requirements, claim_assessments)
         _annotate_evidence_quality(mappings, deterministic_checks, call_chains)
 
         change_scope, removed_files, unmatched = _derive_change_scope(
@@ -169,9 +236,11 @@ async def run_code_review(
             change_scope, removed_files, unmatched, mappings
         )
         payload: dict[str, Any] = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "job_id": state.job_id,
             "mappings": mappings,
+            "evidence_catalog": code_evidence,
+            "scan_coverage": scan_coverage,
             "risks": _derive_risks(mappings, deterministic_checks),
             "missing_features": _derive_missing(mappings, requirements),
             "deterministic_checks": deterministic_checks,
@@ -257,9 +326,40 @@ def _compact_interfaces(interfaces: list[dict[str, Any]]) -> list[dict[str, Any]
             "signature": item.get("signature"),
             "params": item.get("params", []),
             "returns": item.get("returns"),
+            "code_location": item.get("code_location"),
         }
         for item in interfaces
     ]
+
+
+def _select_interfaces_for_claims(
+    claims: list[dict[str, Any]], interfaces: list[dict[str, Any]], limit: int = 24
+) -> list[dict[str, Any]]:
+    """按声明词项收窄接口上下文，避免每批重复塞入整仓接口目录。"""
+    claim_tokens = _content_tokens(" ".join(
+        " ".join(str(claim.get(key, "")) for key in ("requirement_title", "statement"))
+        + " " + " ".join(str(value) for value in claim.get("acceptance_criteria", []))
+        for claim in claims
+    ))
+    ranked: list[tuple[int, int, dict[str, Any]]] = []
+    for index, interface in enumerate(interfaces):
+        signature = interface.get("signature")
+        signature_text = json.dumps(signature, ensure_ascii=False) if isinstance(signature, dict) else str(signature or "")
+        location = interface.get("code_location") or {}
+        interface_text = " ".join((
+            str(interface.get("protocol", "")),
+            signature_text,
+            str(location.get("repo", "")),
+            str(location.get("file", "")),
+            json.dumps(interface.get("params", []), ensure_ascii=False),
+        ))
+        overlap = len(claim_tokens & _content_tokens(interface_text))
+        if overlap:
+            ranked.append((overlap, -index, interface))
+    ranked.sort(key=lambda value: (value[0], value[1]), reverse=True)
+    if ranked:
+        return [entry[2] for entry in ranked[:limit]]
+    return interfaces[: min(8, limit)]
 
 
 def _behavior_evidence(inventory: dict[str, Any]) -> list[dict[str, str]]:
@@ -292,7 +392,9 @@ def _behavior_evidence(inventory: dict[str, Any]) -> list[dict[str, str]]:
     return evidence[:120]
 
 
-def _collect_code_evidence(inventory: dict[str, Any]) -> list[dict[str, Any]]:
+def _collect_code_evidence(
+    inventory: dict[str, Any], interfaces: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """抽取可引用的服务端行为证据片段（确定性、限量、脱敏）。
 
     code_inventory 只保存文件清单，因此此处仅从本次扫描所记录的仓库路径读取
@@ -300,6 +402,62 @@ def _collect_code_evidence(inventory: dict[str, Any]) -> list[dict[str, Any]]:
     评审随后会如实输出“待核查”，而不是猜测实现存在。
     """
     evidence: list[dict[str, Any]] = []
+    roots = {
+        str(repo.get("name", "")): Path(str(repo.get("path", "")))
+        for repo in inventory.get("repositories") or []
+        if isinstance(repo, dict)
+    }
+    seen_locations: set[tuple[str, str, int]] = set()
+    # 普通业务声明也需要代码证据；先为接口实现位置建立有限的直接证据入口，
+    # 再补充跨接口的安全、配置、事务等服务端行为片段。
+    for interface in (interfaces or [])[:36]:
+        location = interface.get("code_location") or {}
+        repo_name = str(location.get("repo", ""))
+        relative_path = str(location.get("file", ""))
+        try:
+            start_line = int(location.get("start_line", 0))
+        except (TypeError, ValueError):
+            continue
+        key = (repo_name, relative_path, start_line)
+        if not repo_name or not relative_path or start_line < 1 or key in seen_locations:
+            continue
+        root_value = roots.get(repo_name)
+        if root_value is None or not root_value.is_dir():
+            continue
+        root = root_value.resolve()
+        path = (root / relative_path).resolve()
+        if root not in path.parents or path.suffix.lower() not in _REVIEWABLE_SUFFIXES:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if start_line > len(lines):
+            continue
+        try:
+            declared_end = int(location.get("end_line", start_line))
+        except (TypeError, ValueError):
+            declared_end = start_line
+        snippet_start = max(1, start_line - 2)
+        snippet_end = min(len(lines), max(start_line + 8, min(declared_end, start_line + 24)) + 2)
+        excerpt = "\n".join(lines[snippet_start - 1 : snippet_end])
+        excerpt = _SECRET_VALUE.sub(r"\1\2<redacted>", excerpt)[:_MAX_EVIDENCE_CHARS]
+        if not excerpt.strip():
+            continue
+        interface_id = str(interface.get("id", ""))
+        evidence.append(
+            {
+                "category": "interface_implementation",
+                "repo": repo_name,
+                "file": relative_path,
+                "start_line": snippet_start,
+                "end_line": snippet_end,
+                "excerpt": excerpt,
+                "interface_ids": [interface_id] if interface_id else [],
+            }
+        )
+        seen_locations.add(key)
+
     for repo in inventory.get("repositories") or []:
         if not isinstance(repo, dict) or len(evidence) >= _MAX_EVIDENCE_ITEMS:
             continue
@@ -445,6 +603,8 @@ def _required_evidence_categories(requirement: dict[str, Any]) -> set[str]:
         "validation": ("校验", "必填", "长度", "格式", "validate"),
         "transaction": ("事务", "一致性", "回滚", "transaction"),
         "idempotency": ("幂等", "重复提交", "去重", "idempot"),
+        "state_transition": ("状态流转", "状态转换", "终态", "确认", "撤销", "状态变更", "state transition"),
+        "data_consistency": ("数据一致性", "余额一致", "份额一致", "唯一约束", "并发更新", "数据完整性"),
         "cache": ("缓存", "cache", "redis"),
         "async": ("异步", "消息", "队列", "定时", "kafka", "rabbit"),
     }
@@ -455,22 +615,240 @@ def _required_evidence_categories(requirement: dict[str, Any]) -> set[str]:
     }
 
 
+def _flatten_requirement_claims(requirements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """将新旧需求产物统一为有稳定审查 ID 的 claim 输入。"""
+    flattened: list[dict[str, Any]] = []
+    next_id = 1
+    used_ids: set[str] = set()
+    for requirement in requirements:
+        req_id = str(requirement.get("id", ""))
+        claims = requirement.get("claims")
+        if not isinstance(claims, list) or not claims:
+            claims = [{"kind": "normal", "statement": requirement.get("description") or requirement.get("title", "")}]
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            claim_id = claim.get("claim_id")
+            if not isinstance(claim_id, str) or not re.fullmatch(r"CLM-\d{3,}", claim_id) or claim_id in used_ids:
+                while f"CLM-{next_id:04d}" in used_ids:
+                    next_id += 1
+                claim_id = f"CLM-{next_id:04d}"
+            used_ids.add(claim_id)
+            next_id = max(next_id + 1, int(claim_id.removeprefix("CLM-")) + 1)
+            statement = str(claim.get("statement", "")).strip()
+            if not statement:
+                statement = str(requirement.get("description", requirement.get("title", ""))).strip()
+            criteria = claim.get("acceptance_criteria") or []
+            if not isinstance(criteria, list):
+                criteria = [str(criteria)]
+            flattened.append(
+                {
+                    "claim_id": claim_id,
+                    "requirement_id": req_id,
+                    "requirement_title": str(requirement.get("title", "")),
+                    "kind": str(claim.get("kind", "normal")),
+                    "statement": statement,
+                    "acceptance_criteria": [str(value) for value in criteria],
+                    "source_refs": list(claim.get("source_refs") or requirement.get("source_refs") or []),
+                }
+            )
+    return flattened
+
+
+def _content_tokens(value: str) -> set[str]:
+    aliases = {
+        "产品": ("product", "fund"),
+        "基金": ("fund", "product"),
+        "订单": ("order", "application"),
+        "交易": ("trade", "transaction", "business"),
+        "账户": ("account", "user"),
+        "用户": ("user", "account"),
+        "登录": ("login", "auth", "token"),
+        "会话": ("session", "token"),
+        "有效期": ("expires", "expiry", "ttl"),
+        "过期": ("expires", "expiry", "ttl"),
+        "鉴权": ("auth", "authorize", "permission"),
+        "权限": ("permission", "authorize", "role"),
+        "授权": ("authorize", "permission", "role"),
+        "事务": ("transaction", "atomic"),
+        "回滚": ("rollback", "transaction"),
+        "幂等": ("idempotency", "duplicate"),
+        "状态流转": ("state", "status", "transition"),
+        "一致性": ("consistency", "transaction", "lock"),
+        "异步": ("async", "message", "queue"),
+        "缓存": ("cache", "redis", "ttl"),
+        "定时": ("scheduled", "cron", "task"),
+        "开户": ("open", "account", "investor"),
+        "清算": ("clearing", "settlement"),
+        "对账": ("recon", "reconcile"),
+        "查询": ("get", "list", "query", "search"),
+        "新增": ("create", "add"),
+        "更新": ("update", "edit"),
+        "修改": ("update", "edit"),
+        "删除": ("delete", "remove"),
+        "撤单": ("cancel", "revoke"),
+        "状态": ("status", "state"),
+        "校验": ("valid", "validate", "validator"),
+        "分页": ("page", "pagination"),
+        "金额": ("amount", "money"),
+        "份额": ("share", "volume"),
+        "密码": ("password", "credential"),
+    }
+    tokens: set[str] = set()
+    for match in re.finditer(r"[A-Za-z][A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", value):
+        token = match.group(0).lower()
+        tokens.add(token)
+        if re.fullmatch(r"[\u4e00-\u9fff]+", token):
+            tokens.update(token[index : index + 2] for index in range(len(token) - 1))
+            tokens.update(token[index : index + 3] for index in range(len(token) - 2))
+    for token in tuple(tokens):
+        tokens.update(part.lower() for part in token.split("_") if len(part) >= 3)
+    lowered = value.lower()
+    for term, translated in aliases.items():
+        if term in lowered:
+            tokens.update(translated)
+    return tokens
+
+
+def _select_evidence_for_claims(
+    claims: list[dict[str, Any]],
+    code_evidence: list[dict[str, Any]],
+    limit: int = 24,
+    preferred_interface_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """按 claim 关键词和高风险类别挑选小批证据，控制上下文并减少无关片段。"""
+    claim_text = " ".join(
+        " ".join(str(claim.get(key, "")) for key in ("requirement_title", "statement", "kind"))
+        + " " + " ".join(str(value) for value in claim.get("acceptance_criteria", []))
+        for claim in claims
+    )
+    claim_tokens = _content_tokens(claim_text)
+    categories = set().union(*(_required_evidence_categories({
+        "title": claim.get("requirement_title", ""),
+        "description": claim.get("statement", ""),
+        "acceptance_criteria": claim.get("acceptance_criteria", []),
+    }) for claim in claims)) if claims else set()
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for evidence in code_evidence:
+        evidence_text = " ".join(
+            str(evidence.get(key, "")) for key in ("file", "excerpt", "category", "interface_ids")
+        )
+        overlap = len(claim_tokens & _content_tokens(evidence_text))
+        if overlap == 0:
+            continue
+        linked_interfaces = set(str(value) for value in evidence.get("interface_ids", []))
+        if preferred_interface_ids and linked_interfaces.intersection(preferred_interface_ids):
+            overlap += 12
+        if evidence.get("category") in categories:
+            overlap += 24
+        ranked.append((overlap, evidence))
+    ranked.sort(key=lambda entry: entry[0], reverse=True)
+    chosen = [entry[1] for entry in ranked[:limit]]
+    return chosen
+
+
+def _scan_coverage(
+    inventory: dict[str, Any], code_evidence: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    repositories = [item for item in inventory.get("repositories", []) if isinstance(item, dict)]
+    repository_file_limit = any(
+        isinstance(repo.get("files"), list) and len(repo["files"]) > _MAX_EVIDENCE_FILES
+        for repo in repositories
+    )
+    evidence_limit_reached = repository_file_limit or len(code_evidence or []) >= _MAX_EVIDENCE_ITEMS
+    incomplete = [
+        {
+            "repo": str(repo.get("name", "")),
+            "status": str(repo.get("status", "unknown")),
+            "truncated_scope": list(repo.get("truncated_scope") or []),
+            "encoding_skipped": list(repo.get("encoding_skipped") or []),
+        }
+        for repo in repositories
+        if repo.get("status") != "ok" or repo.get("truncated_scope") or repo.get("encoding_skipped")
+    ]
+    return {
+        "complete": bool(repositories) and not incomplete and not evidence_limit_reached,
+        "repositories": incomplete,
+        "review_evidence_limited": evidence_limit_reached,
+    }
+
+
+def _aggregate_claim_assessments(
+    requirements: list[dict[str, Any]], assessments: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """将 claim 状态汇总为旧页面仍可读取的 REQ 级映射，同时保留逐条依据。"""
+    assessment_by_id = {str(item["claim_id"]): item for item in assessments}
+    claims_by_requirement: dict[str, list[dict[str, Any]]] = {}
+    for claim in _flatten_requirement_claims(requirements):
+        claims_by_requirement.setdefault(str(claim["requirement_id"]), []).append(claim)
+    mappings: list[dict[str, Any]] = []
+    for requirement in requirements:
+        parent_id = str(requirement.get("id", ""))
+        parent_claims = claims_by_requirement.get(parent_id, [])
+        claim_results = [
+            assessment_by_id[item["claim_id"]]
+            for item in parent_claims
+            if item["claim_id"] in assessment_by_id
+        ]
+        statuses = [item["status"] for item in claim_results]
+        if statuses and all(status == "implemented" for status in statuses):
+            status = "implemented"
+        elif statuses and all(value == "missing" for value in statuses):
+            status = "missing"
+        elif any(value in {"partial", "missing"} for value in statuses):
+            status = "partial"
+        else:
+            status = "undetermined"
+        interface_ids = list(dict.fromkeys(
+            value for result in claim_results for value in result["interface_ids"]
+        ))
+        evidence_refs = list(dict.fromkeys(
+            value for result in claim_results for value in result["evidence_refs"]
+        ))
+        note_parts = []
+        note_parts.extend(value for result in claim_results for value in result["unmet_conditions"])
+        note_parts.extend(value for result in claim_results for value in result["verification_needed"])
+        mapping: dict[str, Any] = {
+            "requirement_id": parent_id,
+            "status": status,
+            "confidence": round(sum(float(item["confidence"]) for item in claim_results) / len(claim_results), 2) if claim_results else 0.0,
+            "interface_ids": interface_ids,
+            "claim_assessments": claim_results,
+            "evidence": {"refs": evidence_refs, "note": "；".join(dict.fromkeys(note_parts))},
+        }
+        if interface_ids:
+            mapping["interface_id"] = interface_ids[0]
+        mappings.append(mapping)
+    return mappings
+
+
 def _derive_deterministic_checks(
     requirements: list[dict[str, Any]], code_evidence: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """需求级证据门槛检查：无直接证据只能“待核查”，不可判定已实现。"""
-    present = {str(item.get("category", "")) for item in code_evidence}
+    """声明级证据门槛：候选证据按声明相关性筛选，禁止全仓类别命中冒充相关证据。"""
     checks: list[dict[str, Any]] = []
-    for requirement in requirements:
-        req_id = str(requirement.get("id", ""))
-        for category in sorted(_required_evidence_categories(requirement)):
-            found = category in present
+    for claim in _flatten_requirement_claims(requirements):
+        categories = _required_evidence_categories({
+            "title": claim["requirement_title"],
+            "description": claim["statement"],
+            "acceptance_criteria": claim["acceptance_criteria"],
+        })
+        relevant = _select_evidence_for_claims([claim], code_evidence, limit=12)
+        for category in sorted(categories):
+            evidence_ids = [
+                str(item["evidence_id"])
+                for item in relevant
+                if item.get("category") == category and item.get("evidence_id")
+            ]
+            found = bool(evidence_ids)
             checks.append(
                 {
-                    "requirement_id": req_id,
+                    "requirement_id": claim["requirement_id"],
+                    "claim_id": claim["claim_id"],
                     "rule_id": f"EVID-{category.upper()}",
                     "category": category,
                     "status": "evidence_found" if found else "needs_verification",
+                    "evidence_ids": evidence_ids,
                     "description": (
                         f"已提取到 {category} 相关代码/配置片段，仍需结合需求语义核对"
                         if found
@@ -479,6 +857,43 @@ def _derive_deterministic_checks(
                 }
             )
     return checks
+
+
+def _apply_claim_deterministic_gates(
+    assessments: list[dict[str, Any]], checks: list[dict[str, Any]], scan_complete: bool
+) -> list[dict[str, Any]]:
+    """降级证据不充分的确定结论，并记录具体待核查原因。"""
+    checks_by_claim: dict[str, list[dict[str, Any]]] = {}
+    for check in checks:
+        claim_id = check.get("claim_id")
+        if claim_id:
+            checks_by_claim.setdefault(str(claim_id), []).append(check)
+    for assessment in assessments:
+        if assessment.get("status") == "missing" and not scan_complete:
+            assessment["status"] = "undetermined"
+            assessment["confidence"] = min(float(assessment.get("confidence", 0)), 0.45)
+            needed = assessment.setdefault("verification_needed", [])
+            note = "仓库扫描覆盖不完整，不能仅凭当前未发现实现判定功能缺失。"
+            if note not in needed:
+                needed.append(note)
+        if assessment.get("status") not in {"implemented", "partial", "missing"}:
+            continue
+        cited = set(assessment.get("evidence_refs") or [])
+        uncovered = [
+            check for check in checks_by_claim.get(str(assessment.get("claim_id")), [])
+            if check.get("status") != "evidence_found"
+            or not cited.intersection(check.get("evidence_ids") or [])
+        ]
+        if not uncovered:
+            continue
+        assessment["status"] = "undetermined"
+        assessment["confidence"] = min(float(assessment.get("confidence", 0)), 0.45)
+        needed = assessment.setdefault("verification_needed", [])
+        categories = "、".join(str(check["category"]) for check in uncovered)
+        note = f"确定性证据门槛：当前声明的结论缺少相关 {categories} 代码/配置证据，须人工核查。"
+        if note not in needed:
+            needed.append(note)
+    return assessments
 
 
 def _checks_for_batch(
@@ -492,18 +907,24 @@ def _apply_deterministic_gates(
     mappings: list[dict[str, Any]], checks: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """确定性门槛优先于 LLM：缺直接证据的高风险行为不可标为已实现。"""
-    blocked = {
-        str(check["requirement_id"])
-        for check in checks
-        if check["status"] == "needs_verification"
-    }
+    checks_by_requirement: dict[str, list[dict[str, Any]]] = {}
+    for check in checks:
+        checks_by_requirement.setdefault(str(check["requirement_id"]), []).append(check)
     for mapping in mappings:
-        if mapping["requirement_id"] not in blocked or mapping["status"] != "implemented":
+        required_checks = checks_by_requirement.get(str(mapping["requirement_id"]), [])
+        cited = set((mapping.get("evidence") or {}).get("refs", []))
+        uncovered = [
+            check for check in required_checks
+            if check["status"] == "needs_verification"
+            or not (cited & set(check.get("evidence_ids", [])))
+        ]
+        if not uncovered or mapping["status"] != "implemented":
             continue
         mapping["status"] = "undetermined"
         evidence = mapping.setdefault("evidence", {})
         previous = str(evidence.get("note", "")).strip()
-        gate_note = "确定性证据门槛：未提取到该高风险服务端行为的直接代码/配置证据，须人工核查"
+        categories = "、".join(str(check["category"]) for check in uncovered)
+        gate_note = f"确定性证据门槛：未为高风险行为引用直接相关的代码/配置证据（{categories}），须人工核查"
         evidence["note"] = f"{previous}；{gate_note}" if previous else gate_note
         mapping["confidence"] = min(float(mapping.get("confidence", 0.0)), 0.45)
     return mappings
@@ -524,8 +945,11 @@ def _annotate_evidence_quality(
     for mapping in mappings:
         req_id = str(mapping["requirement_id"])
         interface_id = str(mapping.get("interface_id", ""))
-        if req_id in missing:
+        evidence_refs = set((mapping.get("evidence") or {}).get("refs", []))
+        if mapping.get("status") == "undetermined" or req_id in missing:
             mapping["evidence_quality"] = "insufficient"
+        elif evidence_refs:
+            mapping["evidence_quality"] = "behavior_path"
         elif interface_id and interface_id in chained_interfaces:
             mapping["evidence_quality"] = "behavior_path"
         elif interface_id:
@@ -543,7 +967,7 @@ def _append_review_progress(
         "timestamp": datetime.now(UTC).isoformat(),
         "node": NODE_NAME,
         "event": "started",
-        "batch": {"index": index, "total": total, "requirements": count},
+        "batch": {"index": index, "total": total, "claims": count},
         "ok": True,
         "duration_ms": 0,
         "tokens": None,
@@ -592,8 +1016,8 @@ def _derive_change_scope(
     # 映射表反向：interface_id → 覆盖它的 REQ 清单
     reqs_by_interface: dict[str, list[str]] = {}
     for entry in mappings:
-        if_id = entry.get("interface_id")
-        if if_id:
+        interface_ids = entry.get("interface_ids") or ([entry["interface_id"]] if entry.get("interface_id") else [])
+        for if_id in interface_ids:
             reqs_by_interface.setdefault(str(if_id), []).append(str(entry["requirement_id"]))
 
     change_scope: list[dict[str, Any]] = []
@@ -634,11 +1058,15 @@ def _derive_incremental_findings(
 ) -> list[dict[str, Any]]:
     """增量评审结论完全由 diff 与映射派生，优先暴露无需求覆盖的改动。"""
     findings: list[dict[str, Any]] = []
-    status_by_interface = {
-        str(item.get("interface_id")): str(item.get("status"))
-        for item in mappings
-        if item.get("interface_id")
-    }
+    status_by_interface: dict[str, str] = {}
+    severity = {"missing": 3, "partial": 2, "undetermined": 1, "implemented": 0}
+    for item in mappings:
+        interface_ids = item.get("interface_ids") or ([item["interface_id"]] if item.get("interface_id") else [])
+        for interface_id in interface_ids:
+            key = str(interface_id)
+            current = status_by_interface.get(key)
+            if current is None or severity.get(str(item.get("status")), 0) > severity.get(current, 0):
+                status_by_interface[key] = str(item.get("status"))
     for entry in change_scope:
         interface_id = str(entry["interface_id"])
         status = status_by_interface.get(interface_id)
@@ -687,13 +1115,14 @@ def _derive_incremental_findings(
 
 def _merge_llm_mappings(
     text: str,
-    requirements: list[dict[str, Any]],
+    claims: list[dict[str, Any]],
     interfaces: list[dict[str, Any]],
+    code_evidence: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """LLM 映射输出合并：溯源字段回填 + 覆盖率与虚构校验。
+    """解析 claim 级审查并验证输入 ID 覆盖及证据引用。
 
     Raises:
-        PipelineError: X-LLM-02——不可解析 / 覆盖率缺口 / 虚构或重复 REQ / 虚构 IF。
+        PipelineError: X-LLM-02——非法 JSON、漏审 claim、虚构引用或结构错误。
     """
     try:
         data = _parse_review_json(text)
@@ -703,43 +1132,40 @@ def _merge_llm_mappings(
             message=f"LLM 输出不是合法 JSON：{exc}",
             node_id=NODE_NAME,
         ) from exc
-    raw_mappings = _extract_mapping_items(data)
-    if raw_mappings is None:
+    raw_assessments = data.get("assessments") if isinstance(data, dict) else None
+    if not isinstance(raw_assessments, list):
         raise PipelineError(
             code=X_LLM_02,
-            message=(
-                'LLM 输出缺少 mappings 数组（根对象须为 {"mappings": [...]}；'
-                "已兼容裸数组及 data/result 包装）"
-            ),
+            message='LLM 输出缺少 assessments 数组（根对象须为 {"assessments": [...]}）',
             node_id=NODE_NAME,
         )
 
-    req_ids = {str(item.get("id", "")) for item in requirements}
-    if_by_id = {str(item["id"]): item for item in interfaces if item.get("id")}
-
+    expected = {str(item["claim_id"]) for item in claims}
+    interface_ids = {str(item["id"]) for item in interfaces if item.get("id")}
+    evidence_ids = {str(item["evidence_id"]) for item in code_evidence if item.get("evidence_id")}
     covered: set[str] = set()
-    mappings: list[dict[str, Any]] = []
-    for raw in raw_mappings:
+    assessments: list[dict[str, Any]] = []
+    for raw in raw_assessments:
         if not isinstance(raw, dict):
             raise PipelineError(
                 code=X_LLM_02,
-                message="LLM 输出的 mappings 含非对象条目",
+                message="LLM 输出的 assessments 含非对象条目",
                 node_id=NODE_NAME,
             )
-        req_id = str(raw.get("requirement_id", ""))
-        if req_id not in req_ids:
+        claim_id = str(raw.get("claim_id", ""))
+        if claim_id not in expected:
             raise PipelineError(
                 code=X_LLM_02,
-                message=f"LLM 引用了不存在的需求条目：{req_id}（禁止虚构）",
+                message=f"LLM 引用了不存在或不属于本批次的 claim：{claim_id}（禁止虚构）",
                 node_id=NODE_NAME,
             )
-        if req_id in covered:
+        if claim_id in covered:
             raise PipelineError(
                 code=X_LLM_02,
-                message=f"LLM 对同一需求输出多个映射条目：{req_id}",
+                message=f"LLM 对同一 claim 输出多个评审条目：{claim_id}",
                 node_id=NODE_NAME,
             )
-        covered.add(req_id)
+        covered.add(claim_id)
 
         status = str(raw.get("status", ""))
         if status not in _VALID_STATUSES:
@@ -749,50 +1175,89 @@ def _merge_llm_mappings(
                 node_id=NODE_NAME,
             )
 
-        if_id = raw.get("interface_id")
-        interface = None
-        if if_id is not None:
-            if_id = str(if_id)
-            interface = if_by_id.get(if_id)
-            if interface is None:
+        raw_interface_ids = raw.get("interface_ids", [])
+        raw_evidence_refs = raw.get("evidence_refs", [])
+        if not isinstance(raw_interface_ids, list) or not isinstance(raw_evidence_refs, list):
+            raise PipelineError(code=X_LLM_02, message="评审引用必须为数组", node_id=NODE_NAME)
+        used_interfaces = list(dict.fromkeys(str(value) for value in raw_interface_ids))
+        used_evidence = list(dict.fromkeys(str(value) for value in raw_evidence_refs))
+        if any(value not in interface_ids for value in used_interfaces):
+            invalid = sorted(set(used_interfaces) - interface_ids)
+            raise PipelineError(
+                code=X_LLM_02,
+                message=f"LLM 引用了不存在的接口：{invalid}（禁止虚构）",
+                node_id=NODE_NAME,
+            )
+        if any(value not in evidence_ids for value in used_evidence):
+            invalid = sorted(set(used_evidence) - evidence_ids)
+            raise PipelineError(
+                code=X_LLM_02,
+                message=f"LLM 引用了不存在的代码证据：{invalid}（禁止虚构）",
+                node_id=NODE_NAME,
+            )
+        confidence = raw.get("confidence")
+        if not isinstance(confidence, (float, int)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
+            raise PipelineError(code=X_LLM_02, message="LLM 输出的 confidence 不在 0 到 1 范围", node_id=NODE_NAME)
+        verification = raw.get("verification_needed", [])
+        if not isinstance(verification, list) or any(not isinstance(entry, str) for entry in verification):
+            raise PipelineError(code=X_LLM_02, message="LLM 输出的 verification_needed 必须为字符串数组", node_id=NODE_NAME)
+        if status in {"implemented", "partial", "missing"} and not used_evidence:
+            # 接口 ID、路径线索或搜索未命中都不是行为证据。
+            status = "undetermined"
+            confidence = min(float(confidence), 0.45)
+            verification = list(verification)
+            verification.append("需要提供可验证的实现代码/配置证据；当前判断没有引用证据片段。")
+        arrays: dict[str, list[str]] = {}
+        for key in ("met_conditions", "unmet_conditions"):
+            value = raw.get(key, [])
+            if not isinstance(value, list) or any(not isinstance(entry, str) for entry in value):
                 raise PipelineError(
                     code=X_LLM_02,
-                    message=f"LLM 引用了不存在的接口：{if_id}（禁止虚构）",
+                    message=f"LLM 输出的 {key} 必须为字符串数组",
                     node_id=NODE_NAME,
                 )
+            arrays[key] = value
+        missing_explanation = (
+            status == "implemented" and not arrays["met_conditions"]
+        ) or (
+            status == "partial" and (not arrays["met_conditions"] or not arrays["unmet_conditions"])
+        ) or (
+            status == "missing" and not arrays["unmet_conditions"]
+        )
+        if missing_explanation:
+            status = "undetermined"
+            confidence = min(float(confidence), 0.45)
+            verification = list(verification)
+            verification.append("结论缺少与状态相匹配的已满足/未满足条件说明，需结合源码证据复核。")
+        if status == "undetermined" and not verification:
+            verification = ["当前证据不足以判定该声明，请核对相关实现、配置或运行行为。"]
+        assessments.append(
+            {
+                "claim_id": claim_id,
+                "status": status,
+                "confidence": float(confidence),
+                "interface_ids": used_interfaces,
+                "evidence_refs": used_evidence,
+                "met_conditions": arrays["met_conditions"],
+                "unmet_conditions": arrays["unmet_conditions"],
+                "verification_needed": verification,
+            }
+        )
 
-        entry: dict[str, Any] = {
-            "requirement_id": req_id,
-            "status": status,
-            "confidence": raw.get("confidence", 0.0),
-        }
-        if interface is not None:
-            entry["interface_id"] = if_id
-            # 证据位置从接口回填（LLM 提供的 code_location 一律忽略）
-            evidence: dict[str, Any] = {"code_location": interface.get("code_location")}
-            note = raw.get("evidence")
-            if isinstance(note, dict) and note.get("note"):
-                evidence["note"] = str(note["note"])
-            entry["evidence"] = evidence
-        elif isinstance(raw.get("evidence"), dict) and raw["evidence"].get("note"):
-            entry["evidence"] = {"note": str(raw["evidence"]["note"])}
-        mappings.append(entry)
-
-    missing_coverage = sorted(req_ids - covered)
+    missing_coverage = sorted(expected - covered)
     if missing_coverage:
         raise PipelineError(
             code=X_LLM_02,
-            message=f"映射覆盖率不足 100%（R-REVW-01），缺：{missing_coverage}",
+            message=f"Code Review claim 覆盖率不足 100%，缺：{missing_coverage}",
             node_id=NODE_NAME,
         )
-    if not mappings:
+    if not assessments:
         raise PipelineError(
             code=X_LLM_02,
-            message="LLM 输出的 mappings 为空（输入需求为零时不应到达本节点）",
+            message="LLM 输出的 assessments 为空（输入 claims 为零时不应到达本节点）",
             node_id=NODE_NAME,
         )
-    # 需求条目 ID 存在性已隐含在 req_ids 判定中
-    return mappings
+    return assessments
 
 
 def _parse_review_json(text: str) -> Any:
@@ -874,19 +1339,19 @@ def _derive_risks(
         note = (entry.get("evidence") or {}).get("note")
         if note:
             risk["description"] += f"；LLM 判定依据：{note}"
-        missing_categories = [
+        missing_categories = sorted({
             str(check["category"])
             for check in checks_by_req.get(str(entry["requirement_id"]), [])
             if check["status"] == "needs_verification"
-        ]
+        })
         if missing_categories:
             risk["description"] += f"；待核对证据：{'、'.join(missing_categories)}"
-            critical = {"authorization", "password", "transaction"} & set(missing_categories)
+            critical = {"authorization", "password", "transaction", "data_consistency"} & set(missing_categories)
             if critical:
                 risk["severity"] = "P1" if is_undetermined else "P0"
                 if not is_undetermined:
                     risk["action"] = "阻断发布，补齐关键行为实现与安全/一致性回归测试"
-            elif "session" in missing_categories:
+            elif {"session", "state_transition", "idempotency"} & set(missing_categories):
                 risk["severity"] = "P1"
         risks.append(risk)
     return risks

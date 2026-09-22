@@ -1,11 +1,12 @@
 ---
-version: 2.1
+version: 2.2
 spec: M-LLM-01
 owner: QA
 changelog:
   - 1.0 | 2026-09-17 | 经验证的模型结构漂移经验
   - 2.0 | 2026-09-18 | 补充结构化产物历史案例与准入边界
   - 2.1 | 2026-09-21 | 补充单条用例对象、跨节点产物串入和批次漏产案例
+  - 2.2 | 2026-09-22 | 需求声明级来源与 Code Review 证据 ID 契约
 sampling:
   temperature: 0.2
 ---
@@ -28,6 +29,9 @@ sampling:
 | testcase | 只有一条用例时直接返回单个对象，顶层字段为 `interface_id/category/title/params/expected`，没有 `cases` | 仅当字段形态完整、`params` 为对象且 `expected` 为非空字符串时，提升为单元素数组；随后仍执行接口归属、场景枚举、参数一致性和批次覆盖校验 | 把任意带 `interface_id` 的对象、`recon_date` 或 `body` 误当用例；用默认值补齐缺失字段 |
 | testcase | 只返回当前批次首个接口或只返回 `normal`，导致 `boundary/exception` 或后续接口漏产 | 按“接口 × 场景”计算批次覆盖，修复轮明确列出缺口；修复后仍不齐则阻止残缺产物并保留检查点 | 用已有接口的用例复制到缺失接口、把全局历史用例拼入本批 |
 | testcase | 顶层串入 `recon_date`、`pk`、`close_type` 等接口还原/业务字段，或返回 `{}` | 保留顶层形状诊断，交给节点专用修复轮一次；仍失败即人工介入，避免跨节点字段被兼容层吞掉 | 扫描任意嵌套字段找 cases、删除未知字段后强行通过 |
+| req_parse | 模型为条目自行生成 ID、行号、评分或完整 review 视图 | 只读取语义字段与本批实际 source refs；REQ/CLM/SRC、来源坐标与派生展示字段由程序生成 | 相信模型编号、把章节号当行号、由模型分数覆盖程序评分 |
+| requirement_review | 输出大型固定 review 对象、中文维度别名漂移、脑图/质量评级错层 | 只接受 `findings`，并逐项校验本批 claim/source refs；评分和展示结构由程序派生 | 从多个字段拼接猜出真实缺陷，或在失败时补造 summary/grade |
+| code_review | 漏审 claim，引用不存在的 EVD，或输出旧 REQ→单接口 mappings | 改用声明级 `assessments`；程序验证 claim 全覆盖、接口/EVD 存在，再聚合为兼容 REQ 视图 | 接受裸 mappings、补接口/证据 ID、用全仓同类别命中替代当前声明证据 |
 
 ## 新案例记录模板
 

@@ -11,7 +11,7 @@
     "testable_features", "mindmap"
   ],
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0" },
+    "schema_version": { "type": "string", "enum": ["1.0", "2.0"] },
     "job_id": { "type": "string", "pattern": "^job-" },
     "source_files": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
     "score": { "type": "integer", "minimum": 0, "maximum": 100 },
@@ -96,7 +96,10 @@
         "location": { "type": "string", "minLength": 1 },
         "question": { "type": "string", "minLength": 1 },
         "reason": { "type": "string", "minLength": 1 },
-        "impact": { "type": "string", "minLength": 1 }
+        "impact": { "type": "string", "minLength": 1 },
+        "dimension": { "type": "string", "enum": ["需求完整性", "一致性与逻辑性", "可测试性", "清晰度与规范性", "风险与依赖描述"] },
+        "claim_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^CLM-\\d{3,}$" } },
+        "source_refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^SRC-[A-Z0-9-]+$" } }
       }
     },
     "mindmap": {

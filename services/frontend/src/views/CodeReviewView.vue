@@ -18,6 +18,9 @@ import type {
   RemovedFile,
   UnmatchedChangedFile,
   ReviewLogResponse,
+  ReviewEvidence,
+  ReviewClaimAssessment,
+  ReviewScanCoverage,
 } from '../api/types'
 import { MAPPING_STATUS_LABELS } from '../api/labels'
 
@@ -28,6 +31,8 @@ const props = defineProps<{ initialJobId?: string }>()
 
 const items = ref<RequirementItem[]>([])
 const mappings = ref<ReviewMapping[]>([])
+const evidenceCatalog = ref<ReviewEvidence[]>([])
+const scanCoverage = ref<ReviewScanCoverage | null>(null)
 const risks = ref<DerivedRisk[]>([])
 const deterministicChecks = ref<DeterministicReviewCheck[]>([])
 const incrementalFindings = ref<IncrementalFinding[]>([])
@@ -44,8 +49,21 @@ const requirementTitle = computed(() => {
   return (id: string) => map.get(id)?.title ?? ''
 })
 
+const claimById = computed(() => {
+  const claims = items.value.flatMap((item) => item.claims ?? [])
+  return new Map(claims.map((claim) => [claim.claim_id, claim]))
+})
+
+const evidenceById = computed(() => new Map(evidenceCatalog.value.map((item) => [item.evidence_id, item])))
+
 const evidenceText = computed(() => {
   return (mapping: ReviewMapping) => {
+    const refs = mapping.evidence?.refs ?? []
+    const locations = refs
+      .map((ref) => evidenceById.value.get(ref))
+      .filter((item): item is ReviewEvidence => Boolean(item))
+      .map((item) => `${item.repo}/${item.file}:${item.start_line}-${item.end_line}`)
+    if (locations.length) return [...new Set(locations)].join('；')
     const location = mapping.evidence?.code_location
     if (!location) return mapping.evidence?.note ?? ''
     const lines =
@@ -65,6 +83,8 @@ async function load(): Promise<void> {
     ])
     items.value = req.items
     mappings.value = review.mappings
+    evidenceCatalog.value = review.evidence_catalog ?? []
+    scanCoverage.value = review.scan_coverage ?? null
     risks.value = review.risks
     deterministicChecks.value = review.deterministic_checks ?? []
     incrementalFindings.value = review.incremental_findings ?? []
@@ -78,6 +98,8 @@ async function load(): Promise<void> {
     error.value = err instanceof Error ? err.message : 'Review 产物加载失败'
     items.value = []
     mappings.value = []
+    evidenceCatalog.value = []
+    scanCoverage.value = null
     risks.value = []
     deterministicChecks.value = []
     incrementalFindings.value = []
@@ -136,6 +158,24 @@ function formatConfidence(value: number): string {
   return value.toFixed(2)
 }
 
+function evidenceLocation(ref: string): string {
+  const item = evidenceById.value.get(ref)
+  return item ? `${item.repo}/${item.file}:${item.start_line}-${item.end_line}` : ref
+}
+
+function evidenceExcerpt(ref: string): string {
+  return evidenceById.value.get(ref)?.excerpt ?? ''
+}
+
+function assessmentSummary(assessment: ReviewClaimAssessment): string {
+  const values = [...assessment.unmet_conditions, ...assessment.verification_needed]
+  return values.join('；')
+}
+
+function claimStatement(claimId: string): string {
+  return claimById.value.get(claimId)?.statement ?? ''
+}
+
 const uncoveredCount = computed(
   () => changeScope.value.filter((entry) => !entry.covered_by.length).length,
 )
@@ -150,6 +190,13 @@ const uncoveredCount = computed(
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
 
     <template v-else-if="mappings.length">
+      <div v-if="scanCoverage && !scanCoverage.complete" class="coverage-warning" role="status">
+        仓库扫描或代码证据提取范围不完整；“缺失”结论已自动降为“待核查”，请先补齐扫描范围再判断功能是否遗漏。
+        <span v-if="scanCoverage.review_evidence_limited">本次代码证据提取触及系统上限。</span>
+        <span v-if="scanCoverage.repositories.length">
+          未完整扫描：{{ scanCoverage.repositories.map((repo) => repo.repo || '未命名仓库').join('、') }}
+        </span>
+      </div>
       <!-- 覆盖率口径：结构性说明（R-REVW-01），非前端计算数值 -->
       <div class="view-head">
         <span class="tag tag-accent">视图一 · 需求-代码映射表</span>
@@ -172,7 +219,8 @@ const uncoveredCount = computed(
             </tr>
           </thead>
           <tbody>
-            <tr v-for="mapping in mappings" :key="mapping.requirement_id">
+            <template v-for="mapping in mappings" :key="mapping.requirement_id">
+            <tr>
               <td>
                 <div class="req-cell">
                   <span class="mono req-id">{{ mapping.requirement_id }}</span>
@@ -180,7 +228,7 @@ const uncoveredCount = computed(
                 </div>
               </td>
               <td>
-                <span class="mono">{{ mapping.interface_id ?? '—' }}</span>
+                <span class="mono">{{ mapping.interface_ids?.join('、') || mapping.interface_id || '—' }}</span>
               </td>
               <td>
                 <span class="mono loc">{{ evidenceText(mapping) || '—' }}</span>
@@ -197,6 +245,39 @@ const uncoveredCount = computed(
                 <span class="mono">{{ formatConfidence(mapping.confidence) }}</span>
               </td>
             </tr>
+            <tr v-if="mapping.claim_assessments?.length" :key="`${mapping.requirement_id}-claims`" class="claim-detail-row">
+              <td colspan="6">
+                <details>
+                  <summary>逐条声明评审与代码证据（{{ mapping.claim_assessments.length }}）</summary>
+                  <article v-for="assessment in mapping.claim_assessments" :key="assessment.claim_id" class="claim-assessment">
+                    <header>
+                      <span class="mono req-id">{{ assessment.claim_id }}</span>
+                      <span class="tag" :data-status="assessment.status">
+                        {{ MAPPING_STATUS_LABELS[assessment.status] ?? assessment.status }}
+                      </span>
+                      <span v-if="assessment.interface_ids.length" class="mono loc">
+                        接口：{{ assessment.interface_ids.join('、') }}
+                      </span>
+                    </header>
+                    <p v-if="claimStatement(assessment.claim_id)" class="claim-statement">
+                      {{ claimStatement(assessment.claim_id) }}
+                    </p>
+                    <p v-if="assessment.met_conditions.length" class="assessment-positive">
+                      已支持：{{ assessment.met_conditions.join('；') }}
+                    </p>
+                    <p v-if="assessmentSummary(assessment)" class="assessment-caveat">
+                      缺口 / 待核查：{{ assessmentSummary(assessment) }}
+                    </p>
+                    <div v-for="ref in assessment.evidence_refs" :key="ref" class="evidence-reference">
+                      <div class="mono">{{ ref }} · {{ evidenceLocation(ref) }}</div>
+                      <pre v-if="evidenceExcerpt(ref)">{{ evidenceExcerpt(ref) }}</pre>
+                    </div>
+                    <p v-if="!assessment.evidence_refs.length" class="assessment-caveat">没有可引用的代码证据。</p>
+                  </article>
+                </details>
+              </td>
+            </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -463,6 +544,17 @@ const uncoveredCount = computed(
   color: var(--text-3);
 }
 
+.coverage-warning {
+  margin-bottom: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warning) 8%, var(--surface));
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
 .tag {
   display: inline-block;
   padding: 2px var(--space-2);
@@ -544,6 +636,58 @@ const uncoveredCount = computed(
   padding: var(--space-2) var(--space-2);
   border-bottom: 1px solid var(--border);
   vertical-align: top;
+}
+
+.claim-detail-row > td {
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  background: var(--surface-2);
+}
+.claim-detail-row summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-size: var(--text-xs);
+}
+.claim-assessment {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--border-strong);
+  overflow-wrap: anywhere;
+}
+.claim-assessment header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.claim-assessment p {
+  margin: var(--space-1) 0;
+  font-size: var(--text-xs);
+}
+.claim-statement {
+  color: var(--text-1);
+  font-weight: 500;
+}
+.assessment-positive {
+  color: var(--accent-strong);
+}
+.assessment-caveat {
+  color: var(--warning);
+}
+.evidence-reference {
+  margin-top: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.evidence-reference pre {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  max-height: 9rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-2);
 }
 
 .req-cell {

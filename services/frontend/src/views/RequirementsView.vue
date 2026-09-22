@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // 需求解析页：先展示 requirement_review 的质量结论与澄清风险，
 // 再展示 requirement_items 的可执行条目。所有内容均来自后端产物，前端不计算。
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
 import { getRequirementItems, getRequirementReview } from '../api/client'
-import type { RequirementItem, RequirementReview } from '../api/types'
+import type { RequirementItem, RequirementReview, RequirementSource } from '../api/types'
 
 const _jobId = ref('')
 
@@ -13,6 +13,8 @@ const props = defineProps<{ initialJobId?: string }>()
 
 const items = ref<RequirementItem[]>([])
 const sourceFiles = ref<string[]>([])
+const sourceCatalog = ref<RequirementSource[]>([])
+const sourceById = computed(() => new Map(sourceCatalog.value.map((source) => [source.source_id, source])))
 const review = ref<RequirementReview | null>(null)
 const reviewNote = ref('')
 const loading = ref(false)
@@ -41,6 +43,7 @@ async function load(): Promise<void> {
     const payload = itemsResult.value
     items.value = payload.items
     sourceFiles.value = payload.source_files ?? []
+    sourceCatalog.value = payload.source_catalog ?? []
     if (reviewResult.status === 'fulfilled') review.value = reviewResult.value
     else {
       review.value = null
@@ -50,10 +53,33 @@ async function load(): Promise<void> {
     error.value = err instanceof Error ? err.message : '需求解析产物加载失败'
     items.value = []
     sourceFiles.value = []
+    sourceCatalog.value = []
     review.value = null
   } finally {
     loading.value = false
   }
+}
+
+function sourceLocation(source: RequirementSource): string {
+  const version = source.version === 'baseline' ? '基线' : source.version === 'target' ? '被测' : ''
+  const parts = [version, source.document].filter(Boolean)
+  if (source.pair_index) parts.unshift(`文档对 ${source.pair_index}`)
+  if (source.section) parts.push(source.section)
+  parts.push(`文本片段 ${source.paragraph_index}.${source.fragment_index}`)
+  return parts.join(' · ')
+}
+
+function sourceText(ref: string): string {
+  const source = sourceById.value.get(ref)
+  return source ? `${ref} · ${sourceLocation(source)}` : ref
+}
+
+function sourceExcerpt(ref: string): string {
+  return sourceById.value.get(ref)?.excerpt ?? ''
+}
+
+function sourceExcerptTruncated(ref: string): boolean {
+  return sourceById.value.get(ref)?.excerpt_truncated ?? false
 }
 
 // C-16：总览页节点卡跳转（immediate 同步赋值早于 watch(_jobId) 注册，须显式触发 load；
@@ -145,6 +171,20 @@ watch(_jobId, () => void load())
             <div>
               <b>{{ issue.question }}</b>
               <p>{{ issue.location }} · {{ issue.reason }} · 影响：{{ issue.impact }}</p>
+              <p v-if="issue.claim_ids?.length || issue.source_refs?.length" class="issue-trace">
+                <span v-if="issue.claim_ids?.length">关联声明：{{ issue.claim_ids.join('、') }}</span>
+                <span v-if="issue.source_refs?.length">
+                  原文来源：{{ issue.source_refs.map((ref) => sourceText(ref)).join('；') }}
+                </span>
+              </p>
+              <template v-for="ref in issue.source_refs ?? []" :key="ref">
+                <blockquote v-if="sourceExcerpt(ref)" class="issue-source-excerpt">
+                  {{ sourceExcerpt(ref) }}
+                </blockquote>
+                <small v-if="sourceExcerptTruncated(ref)" class="excerpt-note">
+                  原文较长，当前仅展示前 600 字。
+                </small>
+              </template>
             </div>
           </div>
         </details>
@@ -209,6 +249,24 @@ watch(_jobId, () => void load())
               </td>
               <td>
                 <span class="desc">{{ item.description }}</span>
+                <details v-if="item.claims?.length" class="claim-details">
+                  <summary>原子声明与来源（{{ item.claims.length }}）</summary>
+                  <article v-for="claim in item.claims" :key="claim.claim_id" class="claim-item">
+                    <header>
+                      <span class="mono req-id">{{ claim.claim_id }}</span>
+                      <span class="tag">{{ claim.kind }}</span>
+                    </header>
+                    <p>{{ claim.statement }}</p>
+                    <ul v-if="claim.acceptance_criteria?.length">
+                      <li v-for="criterion in claim.acceptance_criteria" :key="criterion">{{ criterion }}</li>
+                    </ul>
+                    <div v-for="ref in claim.source_refs ?? item.source_refs ?? []" :key="ref" class="source-ref">
+                      <span class="mono">{{ sourceText(ref) }}</span>
+                      <blockquote v-if="sourceExcerpt(ref)">{{ sourceExcerpt(ref) }}</blockquote>
+                      <small v-if="sourceExcerptTruncated(ref)">原文较长，当前仅展示前 600 字；原文仍以来源文档为准。</small>
+                    </div>
+                  </article>
+                </details>
               </td>
               <td>
                 <span v-if="item.priority" class="tag" :data-priority="item.priority">{{
@@ -253,6 +311,53 @@ watch(_jobId, () => void load())
 .coverage-note {
   font-size: var(--text-xs);
   color: var(--text-3);
+}
+
+.claim-details {
+  margin-top: var(--space-2);
+  max-width: 720px;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+.claim-details summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+}
+.claim-item {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.claim-item header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.claim-item p,
+.claim-item ul {
+  margin: var(--space-1) 0;
+}
+.source-ref {
+  margin-top: var(--space-1);
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.source-ref blockquote {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  max-height: 8rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.source-ref small,
+.excerpt-note {
+  color: var(--text-3);
+  font-size: var(--text-xs);
 }
 
 .card {
@@ -399,6 +504,24 @@ h2 {
   margin: var(--space-1) 0 0;
   color: var(--text-2);
   font-size: var(--text-sm);
+}
+.issue-trace {
+  display: grid;
+  gap: var(--space-1);
+  overflow-wrap: anywhere;
+  font-size: var(--text-xs) !important;
+}
+.issue-source-excerpt {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  max-height: 8rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--text-xs);
 }
 .mindmap-root {
   margin-top: var(--space-3);

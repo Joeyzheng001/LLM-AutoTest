@@ -207,6 +207,7 @@ export async function getReportMd(jobId: string): Promise<string> {
 export function getRequirementItems(jobId: string): Promise<{
   items: RequirementItem[]
   source_files?: string[]
+  source_catalog?: import('./types').RequirementSource[]
 }> {
   return request(`/api/v1/jobs/${jobId}/artifacts/requirement_items.json`)
 }
@@ -265,8 +266,10 @@ export function getInterfaces(jobId: string): Promise<{ interfaces: InterfaceDef
 
 export function getReviewMapping(jobId: string): Promise<{
   mappings: ReviewMapping[]
+  scan_coverage?: import('./types').ReviewScanCoverage
   risks: DerivedRisk[]
   missing_features: MissingFeature[]
+  evidence_catalog?: import('./types').ReviewEvidence[]
   deterministic_checks?: import('./types').DeterministicReviewCheck[]
   change_scope?: ChangeScopeEntry[] // C-09：旧产物无此键 → undefined → 页面隐藏视图四
   removed_files?: RemovedFile[]
