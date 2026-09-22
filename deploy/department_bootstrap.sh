@@ -82,12 +82,12 @@ cd "$repo_root"
 compose config --quiet
 compose build orchestrator java-parser frontend
 compose run --rm --no-deps orchestrator \
-  uv run python -m orchestrator validate-deployment
+  .venv/bin/python -m orchestrator validate-deployment
 
 compose up -d postgres
 wait_for_postgres
 compose run --rm --no-deps orchestrator \
-  uv run python -m orchestrator migrate-db
+  .venv/bin/python -m orchestrator migrate-db
 
 # 先启动解析器，随后按显式副本数启动编排服务和统一入口。
 compose up -d java-parser

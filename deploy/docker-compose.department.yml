@@ -2,7 +2,7 @@
 # 首次启动前：
 #   docker compose -f deploy/docker-compose.department.yml --env-file deploy/.env up -d postgres
 #   docker compose -f deploy/docker-compose.department.yml --env-file deploy/.env run --rm orchestrator \
-#     uv run python -m orchestrator migrate-db
+#     .venv/bin/python -m orchestrator migrate-db
 # 再启动全部服务；需要对象存储时追加 --profile object-store，并将 ARTIFACT_STORAGE_BACKEND=s3。
 services:
   postgres:
@@ -53,6 +53,9 @@ services:
       context: ..
       dockerfile: services/orchestrator/Dockerfile
     image: llm-autotest/orchestrator:0.1.0
+    # 镜像构建期已同步依赖；运行期直接使用 venv，避免内网环境下 `uv run`
+    # 为构建项目元数据再次访问 PyPI。
+    command: [".venv/bin/python", "-m", "orchestrator", "serve"]
     environment:
       JAVA_PARSER_URL: http://java-parser:8080
       # 使用完整 SQLAlchemy URL，密码中的 URL 保留字符必须先百分号编码。
