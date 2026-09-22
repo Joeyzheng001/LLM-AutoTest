@@ -23,6 +23,7 @@ from typing import Any
 from orchestrator.artifacts import ArtifactStore
 from orchestrator.engine import Engine, JobState
 from orchestrator.errors import X_ORCH_01, PipelineError
+from orchestrator.nodes.auto_execute import _expected_statuses
 
 NODE_NAME = "defect_list"
 
@@ -88,6 +89,7 @@ async def run_defect_list(
                     "case_id": case_id,
                     "interface_id": if_id,
                     "failure_reason": str(result.get("failure_reason", "")),
+                    "triage": _triage_assertion(result, case, interface),
                     # 缺陷页的定位事实全部从前置产物回填，非 LLM 摘要。
                     "interface": {
                         "protocol": "e2e" if is_e2e else str(interface.get("protocol", "")),
@@ -161,3 +163,73 @@ def _safe_actual_body(value: Any) -> Any:
         return [_safe_actual_body(item) for item in value[:50]]
     text = str(value)
     return text if len(text) <= 4_000 else f"{text[:4_000]}…（响应已截断）"
+
+
+def _triage_assertion(
+    result: dict[str, Any], case: dict[str, Any], interface: dict[str, Any]
+) -> dict[str, str]:
+    """R-DEF-04：用状态码、预期和已知参数形态进行保守分流。
+
+    该规则不判断业务实现正确性：400/422 的“正常成功”更可能是造数不全；500 是
+    高优先级服务端候选；2xx 未满足 4xx 预期常见于前置状态或断言假设，必须核证。
+    """
+    status = result.get("actual_status")
+    expected = str(case.get("expected", ""))
+    params = case.get("params") if isinstance(case.get("params"), dict) else {}
+    definitions = interface.get("params", [])
+    if not isinstance(definitions, list):
+        definitions = []
+    has_unknown_container = any(
+        isinstance(item, dict)
+        and item.get("type") == "unknown"
+        and item.get("in") in {"body", "query"}
+        for item in definitions
+    )
+    expected_statuses, expected_classes = _expected_statuses(expected)
+    expects_success = (
+        any(200 <= value < 300 for value in expected_statuses) or 2 in expected_classes
+    )
+    expects_client_error = (
+        any(400 <= value < 500 for value in expected_statuses) or 4 in expected_classes
+    )
+
+    if isinstance(status, int) and status >= 500:
+        return {
+            "kind": "product_suspect",
+            "confidence": "high",
+            "reason": "服务端返回 5xx；在非环境失败前提下优先按真实服务端缺陷候选排查。",
+        }
+    if (
+        isinstance(status, int)
+        and 400 <= status < 500
+        and expects_success
+        and has_unknown_container
+    ):
+        return {
+            "kind": "input_construction",
+            "confidence": "high",
+            "reason": (
+                "成功场景收到 4xx，且接口参数仍为 unknown 容器；优先补齐真实必填字段、"
+                "关联数据和业务前置。"
+            ),
+        }
+    if isinstance(status, int) and 200 <= status < 300 and expects_client_error:
+        return {
+            "kind": "assertion_or_setup",
+            "confidence": "medium",
+            "reason": (
+                "接口接受了本次异常输入；需核对用例前置、参数是否真正触发异常，"
+                "以及需求是否要求后端拒绝。"
+            ),
+        }
+    if params:
+        return {
+            "kind": "needs_evidence",
+            "confidence": "low",
+            "reason": "状态码与断言不一致，但现有接口契约不足以区分实现问题与业务数据/预期问题。",
+        }
+    return {
+        "kind": "needs_evidence",
+        "confidence": "low",
+        "reason": "缺少可判定的请求参数或服务端契约证据，需要人工核对。",
+    }

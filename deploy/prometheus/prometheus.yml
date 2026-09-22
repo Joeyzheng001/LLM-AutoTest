@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: llm-autotest-orchestrator
+    metrics_path: /metrics
+    # Compose scale=2 后通过 Docker DNS 发现所有 orchestrator 容器，而非只抓一个静态解析结果。
+    dns_sd_configs:
+      - names: ["orchestrator"]
+        type: A
+        port: 8000

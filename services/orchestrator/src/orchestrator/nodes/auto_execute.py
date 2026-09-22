@@ -36,8 +36,10 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from orchestrator.artifacts import ArtifactStore
+from orchestrator.case_validation import blocking_parameter_messages, materialize_declared_defaults
 from orchestrator.engine import Engine, JobState
 from orchestrator.errors import X_ORCH_01, PipelineError
+from orchestrator.security import redact_secrets
 
 NODE_NAME = "auto_execute"
 
@@ -313,6 +315,133 @@ def _judge_assertion(expected: str, status: int, body: Any) -> tuple[bool, list[
     return is_pass, semantic_failures
 
 
+def _expects_success(expected: str) -> bool:
+    """判断用例是否把 2xx 作为成功预期；无机器状态 token 时兼容旧口径。"""
+    statuses, classes = _expected_statuses(expected)
+    if not statuses and not classes:
+        return True
+    return any(200 <= value < 300 for value in statuses) or 2 in classes
+
+
+async def _run_fixture_phase(
+    fixtures: list[dict[str, Any]],
+    phase: str,
+    base_url: str,
+    transport: httpx.AsyncBaseTransport | None,
+    verify: bool,
+    auth_headers: dict[str, str],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """按顺序执行 setup/teardown 夹具，并返回阻断原因。
+
+    夹具只接受显式的相对路径、query/body 和机器状态断言；不把响应正文写入
+    execution.json，避免造数接口返回的 token/敏感数据扩散到报告。
+    """
+    records: list[dict[str, Any]] = []
+    blocking_reason: str | None = None
+    for index, fixture in enumerate(fixtures, start=1):
+        if str(fixture.get("phase", "setup")) != phase:
+            continue
+        name = str(fixture.get("name") or fixture.get("id") or f"fixture-{index:03d}")
+        path = str(fixture.get("path", ""))
+        method = str(fixture.get("method", "POST")).upper()
+        required = bool(fixture.get("required", True))
+        expected = str(fixture.get("expected", "status_class=2xx"))
+        started = time.monotonic()
+        record: dict[str, Any] = {
+            "name": name,
+            "phase": phase,
+            "required": required,
+        }
+        if not path.startswith("/") or path.startswith("//") or ".." in path.split("/"):
+            record.update(
+                {
+                    "passed": False,
+                    "failure_kind": "environment",
+                    "failure_reason": "X-EXEC-05：夹具 path 必须是安全的相对路径",
+                    "duration_ms": 0,
+                }
+            )
+        else:
+            query = fixture.get("query") if isinstance(fixture.get("query"), dict) else {}
+            body = fixture.get("body") if isinstance(fixture.get("body"), dict) else {}
+            try:
+                async with httpx.AsyncClient(
+                    base_url=base_url,
+                    timeout=_DEFAULT_TIMEOUT_S,
+                    transport=transport,
+                    verify=verify,
+                ) as client:
+                    response = await client.request(
+                        method,
+                        path,
+                        params=query or None,
+                        json=body or None,
+                        headers=auth_headers or None,
+                    )
+                payload: Any
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = response.text
+                passed, semantic_failures = _judge_assertion(
+                    expected, response.status_code, payload
+                )
+                failure_reason = ""
+                if not passed:
+                    failure_reason = (
+                        f"HTTP {response.status_code}（夹具预期：{expected}）"
+                        + (f"；{'；'.join(semantic_failures)}" if semantic_failures else "")
+                    )
+                record.update(
+                    {
+                        "passed": passed,
+                        "actual_status": response.status_code,
+                        "failure_kind": None if passed else "environment",
+                        "failure_reason": failure_reason,
+                        "duration_ms": _elapsed_ms(started),
+                    }
+                )
+            except httpx.TimeoutException as exc:
+                record.update(
+                    {
+                        "passed": False,
+                        "failure_kind": "environment",
+                        "failure_reason": f"X-EXEC-05：夹具执行超时（{type(exc).__name__}）",
+                        "duration_ms": _elapsed_ms(started),
+                    }
+                )
+            except httpx.TransportError as exc:
+                record.update(
+                    {
+                        "passed": False,
+                        "failure_kind": "environment",
+                        "failure_reason": f"X-EXEC-05：夹具不可达（{type(exc).__name__}）",
+                        "duration_ms": _elapsed_ms(started),
+                    }
+                )
+        records.append(record)
+        if not record.get("passed") and required and blocking_reason is None:
+            blocking_reason = f"X-EXEC-05：必需夹具 {name} 执行失败，前置条件未满足"
+    return records, blocking_reason
+
+
+def _skipped_case_result(case: dict[str, Any], reason: str) -> dict[str, Any]:
+    """夹具失败时生成不发请求的前置缺失结果。"""
+    return {
+        "case_id": case.get("id"),
+        "interface_id": case.get("interface_id"),
+        "expected": str(case.get("expected", "")),
+        "timestamp": _now_iso(),
+        "passed": False,
+        "failure_kind": None,
+        "failure_reason": reason,
+        "timeout": False,
+        "duration_ms": 0,
+        "skipped": True,
+        "skipped_reason": "前置缺失",
+    }
+
+
 def _expects_404(expected: str) -> bool:
     """负向资源用例允许 404 时，不把业务性不存在误报为路由未部署。"""
     statuses, classes = _expected_statuses(expected)
@@ -430,6 +559,21 @@ def auth_exempt_paths(auth: dict[str, Any] | None) -> set[str]:
     return {path} if path else set()
 
 
+def interface_service_base_url(
+    interface: dict[str, Any],
+    default_base_url: str,
+    service_base_urls: dict[str, str] | None = None,
+) -> str:
+    """按源码扫描得到的仓库归属选择接口服务地址（C-07）。
+
+    接口产物中的 ``code_location.repo`` 是唯一稳定的路由键；未配置仓库级
+    地址时回退到任务级 ``rest_url``，兼容单服务任务与旧产物。
+    """
+    repo = str((interface.get("code_location") or {}).get("repo") or "").strip()
+    candidate = (service_base_urls or {}).get(repo)
+    return str(candidate or default_base_url).strip().rstrip("/")
+
+
 def prefers_django_trailing_slash(auth: dict[str, Any] | None) -> bool:
     """登录 API 本身以 / 结尾时，按同一 Django 服务的路由口径执行 REST 用例。"""
     return any(path.endswith("/") for path in auth_exempt_paths(auth))
@@ -467,6 +611,8 @@ async def run_auto_execute(
     e2e: dict[str, Any] | None = None,
     insecure_tls: bool = True,
     preauthenticated_headers: dict[str, str] | None = None,
+    fixtures: list[dict[str, Any]] | None = None,
+    service_base_urls: dict[str, str] | None = None,
 ) -> Path:
     """执行 auto_execute 全流程：读用例 → 探测 → 分协议执行 → 落盘。
 
@@ -478,6 +624,8 @@ async def run_auto_execute(
             非空时先登录拿凭据头注入全部 REST 请求（登录失败 X-EXEC-01 节点重试）。
         insecure_tls: REST HTTPS 是否跳过证书校验；与登录、E2E 配置独立，确保
             探活与每一条 REST 请求使用完全一致的策略。
+        fixtures: 可选 setup/teardown 夹具；必需 setup 失败时所有用例标记前置缺失并跳过。
+        service_base_urls: 仓库名到接口服务地址的可选映射（C-07）；未命中回退 rest_base_url。
 
     Returns:
         execution.json 产物路径。
@@ -502,40 +650,73 @@ async def run_auto_execute(
         if auth and not auth_headers:
             auth_headers = await login_for_headers(auth, transport)
 
-        # R-EXEC-02：环境探测优先于执行
-        rest_ready = await probe_rest(rest_base_url, transport, verify)
-        rest_runner = RestRunner(
-            rest_base_url,
-            transport,
-            auth_headers,
-            verify,
-            auth_exempt_paths(auth),
-            prefers_django_trailing_slash(auth),
+        # R-EXEC-02：环境探测优先于执行。C-07 允许不同仓库的接口指向不同
+        # 服务；未配置仓库地址时仍只探测/使用任务级 rest_url。
+        default_service_url = rest_base_url.rstrip("/")
+        route_urls = {default_service_url}
+        route_urls.update(
+            str(url).strip().rstrip("/")
+            for url in (service_base_urls or {}).values()
+            if str(url).strip()
         )
+        rest_ready_by_url = {
+            url: await probe_rest(url, transport, verify) for url in route_urls
+        }
+        rest_runners = {
+            url: RestRunner(
+                url,
+                transport,
+                auth_headers,
+                verify,
+                auth_exempt_paths(auth),
+                prefers_django_trailing_slash(auth),
+            )
+            for url in route_urls
+        }
         demo_runner = MockDemoRunner()
 
         results: list[dict[str, Any]] = []
         degraded_protocols: dict[str, dict[str, Any]] = {}
-        for case in testcases:
-            if_id = str(case.get("interface_id", ""))
-            interface = interface_by_id.get(if_id, {})
-            protocol = str(interface.get("protocol", "rest"))
-            results.append(
-                await _execute_case(
-                    case,
-                    interface,
-                    protocol,
-                    rest_ready,
-                    rest_runner,
-                    demo_runner,
-                    degraded_protocols,
-                )
+        fixture_records: list[dict[str, Any]] = []
+        setup_block_reason: str | None = None
+        fixture_configs = fixtures or []
+        if fixture_configs:
+            fixture_records, setup_block_reason = await _run_fixture_phase(
+                fixture_configs,
+                "setup",
+                rest_base_url,
+                transport,
+                verify,
+                auth_headers,
             )
-            # 登出等接口可能撤销当前 token。测试用例必须相互隔离，不能让它污染
-            # 同一批中随后“已认证用户”场景；重新登录只作用于下一条 REST 用例。
-            if auth and protocol == "rest" and mutates_auth_session(interface):
-                auth_headers = await login_for_headers(auth, transport)
-                rest_runner.replace_auth_headers(auth_headers)
+        if setup_block_reason:
+            results.extend(_skipped_case_result(case, setup_block_reason) for case in testcases)
+        else:
+            for case in testcases:
+                if_id = str(case.get("interface_id", ""))
+                interface = interface_by_id.get(if_id, {})
+                protocol = str(interface.get("protocol", "rest"))
+                route_url = interface_service_base_url(
+                    interface, default_service_url, service_base_urls
+                )
+                results.append(
+                    await _execute_case(
+                        case,
+                        interface,
+                        protocol,
+                        rest_ready_by_url.get(route_url, False),
+                        rest_runners[route_url],
+                        demo_runner,
+                        degraded_protocols,
+                        auth_configured=bool(auth or preauthenticated_headers),
+                    )
+                )
+                # 登出等接口可能撤销当前 token。测试用例必须相互隔离，不能让它污染
+                # 同一批中随后“已认证用户”场景；重新登录只作用于下一条 REST 用例。
+                if auth and protocol == "rest" and mutates_auth_session(interface):
+                    auth_headers = await login_for_headers(auth, transport)
+                    for runner in rest_runners.values():
+                        runner.replace_auth_headers(auth_headers)
 
         if e2e and bool(e2e.get("execute_cases")):
             base_url = str(e2e.get("base_url", "")).rstrip("/")
@@ -549,6 +730,18 @@ async def run_auto_execute(
                 message=f"开始执行 {total} 条前端 E2E 用例",
             )
             for index, case in enumerate(e2e_cases, start=1):
+                if setup_block_reason:
+                    results.append(
+                        _skipped_case_result(
+                            {
+                                **dict(case),
+                                "case_type": "e2e",
+                                "interface_id": "UI-E2E-001",
+                            },
+                            setup_block_reason,
+                        )
+                    )
+                    continue
                 case_id = str(case.get("id", f"E2E-{index:03d}"))
                 _append_runtime_log(
                     store,
@@ -579,6 +772,17 @@ async def run_auto_execute(
                     ),
                 )
 
+        if fixture_configs:
+            teardown_records, _ = await _run_fixture_phase(
+                fixture_configs,
+                "teardown",
+                rest_base_url,
+                transport,
+                verify,
+                auth_headers,
+            )
+            fixture_records.extend(teardown_records)
+
         payload: dict[str, Any] = {
             "schema_version": "1.0",
             "job_id": state.job_id,
@@ -587,6 +791,8 @@ async def run_auto_execute(
         }
         if degraded_protocols:
             payload["degraded_protocols"] = list(degraded_protocols.values())
+        if fixture_records:
+            payload["fixtures"] = fixture_records
         path = store.write(state.job_id, "execution.json", payload)
         # D4：允许失败用例——失败二态明确即完成（不 mark_degraded）
         engine.mark_completed(state, NODE_NAME)
@@ -730,6 +936,7 @@ async def _execute_case(
     rest_runner: Runner,
     demo_runner: Runner,
     degraded_protocols: dict[str, dict[str, Any]],
+    auth_configured: bool = False,
 ) -> dict[str, Any]:
     """执行单用例并组装 result 条目（失败二态在此判定）。"""
     base: dict[str, Any] = {
@@ -738,6 +945,24 @@ async def _execute_case(
         "expected": str(case.get("expected", "")),
         "timestamp": _now_iso(),
     }
+    # P0-05：先验证请求能否按接口契约构造，再决定是否访问被测服务。这样“缺少
+    # fund_code/share_type”等编排问题不会被服务端 400/401/500 伪装成产品缺陷。
+    normalized_case = materialize_declared_defaults(case, interface)
+    parameter_messages = blocking_parameter_messages(normalized_case, interface)
+    if parameter_messages:
+        base.update(
+            {
+                "passed": False,
+                "failure_kind": None,
+                "failure_reason": "X-EXEC-05：请求前置校验失败；" + "；".join(parameter_messages),
+                "timeout": False,
+                "duration_ms": 0,
+                "skipped": True,
+                "skipped_reason": "前置缺失",
+            }
+        )
+        return base
+    case = normalized_case
     raw_params = case.get("params")
     params: dict[str, Any] = dict(raw_params) if isinstance(raw_params, dict) else {}
 
@@ -797,6 +1022,22 @@ async def _execute_case(
     status = response.status or 0
     base["actual_status"] = status
     base["actual_body"] = _safe_actual_body(response.body)
+    if status in {401, 403} and _expects_success(str(case.get("expected", ""))):
+        auth_hint = (
+            "鉴权配置未提供或凭据未生效"
+            if not auth_configured
+            else "已配置鉴权但服务未接受凭据"
+        )
+        base.update(
+            {
+                "passed": False,
+                "failure_kind": "environment",
+                "failure_reason": f"HTTP {status}（X-EXEC-05：{auth_hint}，不计入产品缺陷）",
+                "timeout": response.timed_out,
+                "duration_ms": response.duration_ms,
+            }
+        )
+        return base
     # X-EXEC-01 同类：HTTP 404 = 路由不存在（接口未部署或指向了别的服务地址）——
     # 归环境失败，不判缺陷（R-EXEC-03/R-DEF-01；业务级「资源不存在」由服务以
     # 4xx 业务码表达，不与 404 混淆）
@@ -834,21 +1075,33 @@ async def _execute_case(
 
 def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     """程序化汇总（数值不经 LLM，execution.json Schema 口径）。"""
-    summary = {
-        "total": len(results),
-        "passed": sum(1 for r in results if r.get("passed") is True),
-        "failed_assertion": sum(
-            1 for r in results if r.get("passed") is False and r.get("failure_kind") == "assertion"
-        ),
-        "failed_environment": sum(
-            1
-            for r in results
-            if r.get("passed") is False and r.get("failure_kind") == "environment"
-        ),
-    }
-    skipped = sum(1 for r in results if r.get("skipped") is True)
-    if skipped:
-        summary["skipped"] = skipped
+    def counts(items: list[dict[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "total": len(items),
+            "passed": sum(1 for item in items if item.get("passed") is True),
+            "failed_assertion": sum(
+                1
+                for item in items
+                if item.get("passed") is False and item.get("failure_kind") == "assertion"
+            ),
+            "failed_environment": sum(
+                1
+                for item in items
+                if item.get("passed") is False and item.get("failure_kind") == "environment"
+            ),
+        }
+        skipped_count = sum(1 for item in items if item.get("skipped") is True)
+        if skipped_count:
+            result["skipped"] = skipped_count
+        return result
+
+    summary = counts(results)
+    # 只有混入 E2E 结果时增加按类型分解，保持历史纯接口产物的精确兼容。
+    if any(result.get("case_type") == "e2e" for result in results):
+        summary["by_type"] = {
+            "api": counts([result for result in results if result.get("case_type") != "e2e"]),
+            "e2e": counts([result for result in results if result.get("case_type") == "e2e"]),
+        }
     return summary
 
 
@@ -861,13 +1114,13 @@ def _append_runtime_log(
     **fields: Any,
 ) -> None:
     """追加脱敏运行事件；执行中的前端可据此显示 E2E 实时进度。"""
-    entry = {
+    entry = redact_secrets({
         "timestamp": _now_iso(),
         "node": NODE_NAME,
         "event": event,
         "message": message,
         **fields,
-    }
+    })
     path = store.job_dir(job_id) / "runtime_log.jsonl"
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")

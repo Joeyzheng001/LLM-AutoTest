@@ -9,6 +9,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import shutil
+import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +22,13 @@ from fastapi import FastAPI
 from helpers import requirement_review_payload
 from orchestrator.api import create_app
 from orchestrator.config import Settings
+from orchestrator.persistence import Database, JobRecord
 from orchestrator.pipeline import NODE_ORDER, NodeStatus
 from orchestrator.runner import PipelineOutcome
+from orchestrator.security import SecretStore
 
 _DOC = "# 需求\n\n1. 查询用户\n2. 创建用户\n"
+_GIT_BINARY = shutil.which("git") or "git"
 
 
 class FakeRunner:
@@ -47,6 +53,7 @@ class FakeRunner:
         auth_headers: dict[str, str] | None = None,
         llm_config: dict[str, Any] | None = None,
         document_pairs: list[dict[str, str | None]] | None = None,
+        fixtures: list[dict[str, Any]] | None = None,
     ) -> PipelineOutcome:
         self.calls.append(
             {
@@ -60,6 +67,7 @@ class FakeRunner:
                 "auth_headers": auth_headers,
                 "llm_config": llm_config,
                 "document_pairs": document_pairs,
+                "fixtures": fixtures,
             }
         )
         job_dir = self.orch_store.job_dir(job_id)
@@ -234,6 +242,7 @@ async def env(tmp_path: Path) -> tuple[FastAPI, FakeRunner, httpx.AsyncClient, P
         llm_seed=None,
         llm_timeout_s=5.0,
         schemas_dir=str(schemas),
+        repositories_root=str(repo_dir.parent),
     )
     app = create_app(settings)
     fake = FakeRunner(settings, app.state.engine, app.state.orch_store, app.state.te_store)
@@ -253,6 +262,12 @@ def _submit_body(repo_dir: Path, job_id: str | None = None, **overrides: Any) ->
     }
     body.update(overrides)
     return body
+
+
+def _run_git(cwd: Path, *args: str) -> None:
+    subprocess.run(  # noqa: S603 - tests invoke a fixed local git executable
+        [_GIT_BINARY, *args], cwd=cwd, check=True, capture_output=True
+    )
 
 
 async def _await_task(app: FastAPI, job_id: str) -> None:
@@ -284,6 +299,340 @@ async def test_submit_job_happy_path(
     assert saved["doc_paths"] == [str(job_dir / "input" / "requirements.md")]
     assert saved["rest_url"] == "http://127.0.0.1:9000"
     assert saved["rest_insecure_tls"] is True
+
+
+async def test_job_logs_keeps_run_scope_and_same_call_id_from_reruns(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """重跑追加日志时，同名 call_id 也不能覆盖历史轮次。"""
+    app, _fake, client, repo_dir = env
+    response = await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-log1"))
+    assert response.status_code == 202
+    await _await_task(app, "job-api-log1")
+    job_dir = Path(str(app.state.settings.artifacts_root)) / "job-api-log1"
+    current = {
+        "call_id": "LLM-same-001",
+        "run_id": "run-new",
+        "timestamp": "2026-09-21T01:00:00+00:00",
+        "node": "code_review",
+        "ok": True,
+    }
+    archived = {
+        "call_id": "LLM-same-001",
+        "run_id": "run-old",
+        "timestamp": "2026-09-20T01:00:00+00:00",
+        "node": "code_review",
+        "ok": True,
+    }
+    (job_dir / "llm_calls.jsonl").write_text(json.dumps(current) + "\n", encoding="utf-8")
+    archive = job_dir / "archive" / "code_review"
+    archive.mkdir(parents=True)
+    (archive / "llm_calls.jsonl").write_text(json.dumps(archived) + "\n", encoding="utf-8")
+
+    logs_response = await client.get("/api/v1/jobs/job-api-log1/logs")
+    assert logs_response.status_code == 200
+    logs = logs_response.json()["logs"]
+    assert len(logs) == 2
+    assert {item["run_scope"] for item in logs} == {"current", "archive"}
+    assert {item["run_id"] for item in logs} == {"run-new", "run-old"}
+
+
+async def test_preflight_checks_configuration_without_creating_job(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    app, _fake, client, repo_dir = env
+    response = await client.post("/api/v1/preflight", json=_submit_body(repo_dir, "job-api-pf1"))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is True
+    assert {item["name"] for item in payload["checks"]} == {
+        "documents",
+        "repositories",
+        "rest",
+        "auth",
+        "llm",
+    }
+    assert not (Path(str(app.state.settings.artifacts_root)) / "job-api-pf1").exists()
+
+
+async def test_repository_root_endpoint_and_relative_path_are_server_resolved(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    app, fake, client, repo_dir = env
+    root_response = await client.get("/api/v1/system/repository-root")
+    assert root_response.status_code == 200
+    assert root_response.json() == {"root": str(repo_dir.parent), "exists": True}
+
+    body = _submit_body(
+        repo_dir,
+        "job-api-relative-repo",
+        repos=[{"name": "repo-a", "path": "repo-a", "branch": "main"}],
+    )
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 202
+    await _await_task(app, "job-api-relative-repo")
+    assert fake.calls[-1]["repos"] == [("repo-a", str(repo_dir))]
+
+
+async def test_submit_job_remote_git_keeps_token_out_of_job_input(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """内部 Git 配置可提交，令牌只进入运行期/SecretStore，不写普通任务配置。"""
+    app, fake, client, repo_dir = env
+    source = repo_dir.parent / "remote-source"
+    source.mkdir()
+    _run_git(source, "init", "-b", "main")
+    _run_git(source, "config", "user.email", "test@example.com")
+    _run_git(source, "config", "user.name", "test")
+    (source / "README.md").write_text("remote\n", encoding="utf-8")
+    _run_git(source, "add", ".")
+    _run_git(source, "commit", "-m", "init")
+    bare = repo_dir.parent / "remote.git"
+    _run_git(repo_dir.parent, "clone", "--bare", str(source), str(bare))
+    body = _submit_body(
+        repo_dir,
+        "job-api-remote1",
+        repos=[
+            {
+                "name": "remote-service",
+                "source": "git",
+                "remote_url": bare.as_uri(),
+                "branch": "main",
+                "access_token": "token-should-not-be-persisted",
+            }
+        ],
+    )
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 202
+    await _await_task(app, "job-api-remote1")
+    saved = json.loads(
+        (
+            Path(str(app.state.settings.artifacts_root))
+            / "job-api-remote1"
+            / "job_input.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert "access_token" not in saved["repos"][0]
+    # 运行完成后，Git token 不应继续留在进程级运行期映射中；执行期间已由
+    # resolver 使用，重跑/服务重启场景由 SecretStore 恢复。
+    assert "job-api-remote1" not in app.state.job_repo_tokens
+    assert fake.calls[-1]["repos"][0][0] == "remote-service"
+
+
+async def test_submit_job_persists_fixture_protocol_and_passes_to_runner(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """P0-05：夹具配置随任务保存并传入流水线，不进入 LLM。"""
+    app, fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-fixture1")
+    body["fixtures"] = [
+        {
+            "name": "seed-user",
+            "phase": "setup",
+            "method": "POST",
+            "path": "/fixtures/users",
+            "body": {"id": 1},
+            "expected": "status=201",
+            "required": True,
+        }
+    ]
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 202
+    await _await_task(app, "job-api-fixture1")
+    saved = json.loads(
+        (
+            Path(str(app.state.settings.artifacts_root))
+            / "job-api-fixture1"
+            / "job_input.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert saved["fixtures"][0]["name"] == "seed-user"
+    assert fake.calls[-1]["fixtures"] == saved["fixtures"]
+
+
+async def test_database_backed_queue_claims_and_releases_job(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """配置数据库后，API 队列实际写入任务租约并在执行后释放。"""
+    base_app, _, _, repo_dir = env
+    db_path = repo_dir.parent / "queue-state.db"
+    artifacts_root = repo_dir.parent / "database-artifacts"
+    settings = replace(
+        base_app.state.settings,
+        artifacts_root=str(artifacts_root),
+        database_url=f"sqlite:///{db_path}",
+        database_auto_create=True,
+    )
+    app = create_app(settings)
+    fake = FakeRunner(settings, app.state.engine, app.state.orch_store, app.state.te_store)
+    app.state.runner = fake
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    try:
+        response = await client.post(
+            "/api/v1/jobs", json=_submit_body(repo_dir, "job-api-db01")
+        )
+        assert response.status_code == 202
+        await _await_task(app, "job-api-db01")
+        database = Database(f"sqlite:///{db_path}")
+        with database.session() as session:
+            record = session.get(JobRecord, "job-api-db01")
+            assert record is not None
+            assert record.status == "completed"
+            assert record.worker_id is None
+    finally:
+        await client.aclose()
+        await app.state.job_queue.shutdown()
+
+
+async def test_database_backed_job_views_survive_missing_state_file(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """多实例部署中本地卷暂不可见时，任务列表/详情仍由数据库索引返回。"""
+    base_app, _, _, repo_dir = env
+    db_path = repo_dir.parent / "authoritative-state.db"
+    artifacts_root = repo_dir.parent / "authoritative-artifacts"
+    settings = replace(
+        base_app.state.settings,
+        artifacts_root=str(artifacts_root),
+        database_url=f"sqlite:///{db_path}",
+        database_auto_create=True,
+    )
+    app = create_app(settings)
+    fake = FakeRunner(settings, app.state.engine, app.state.orch_store, app.state.te_store)
+    app.state.runner = fake
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    try:
+        response = await client.post(
+            "/api/v1/jobs", json=_submit_body(repo_dir, "job-api-db-index")
+        )
+        assert response.status_code == 202
+        await _await_task(app, "job-api-db-index")
+        database = Database(f"sqlite:///{db_path}")
+        for node_name in NODE_ORDER:
+            database.record_node("job-api-db-index", node_name, status="completed", attempts=1)
+        state_path = artifacts_root / "job-api-db-index" / "state.json"
+
+        # 文件快照若比数据库更晚（例如数据库短暂不可用），应保留文件侧的新状态。
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["nodes"][0]["status"] = "pending"
+        state["nodes"][0]["updated_at"] = "2099-01-01T00:00:00+00:00"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        merged = await client.get("/api/v1/jobs")
+        assert merged.json()["jobs"][0]["completed"] == len(NODE_ORDER) - 1
+
+        state_path.unlink()
+
+        listed = await client.get("/api/v1/jobs")
+        assert listed.status_code == 200
+        assert listed.json()["jobs"][0]["job_id"] == "job-api-db-index"
+        assert listed.json()["jobs"][0]["completed"] == len(NODE_ORDER)
+
+        detail = await client.get("/api/v1/jobs/job-api-db-index")
+        assert detail.status_code == 200
+        assert len(detail.json()["nodes"]) == len(NODE_ORDER)
+        assert detail.json()["artifacts"]
+    finally:
+        await client.aclose()
+        await app.state.job_queue.shutdown()
+
+
+async def test_database_backed_configuration_survives_missing_job_input(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """任务目录中的配置文件不可见时，配置页从数据库快照恢复。"""
+    base_app, _, _, repo_dir = env
+    db_path = repo_dir.parent / "configuration-state.db"
+    artifacts_root = repo_dir.parent / "configuration-artifacts"
+    settings = replace(
+        base_app.state.settings,
+        artifacts_root=str(artifacts_root),
+        database_url=f"sqlite:///{db_path}",
+        database_auto_create=True,
+    )
+    app = create_app(settings)
+    fake = FakeRunner(settings, app.state.engine, app.state.orch_store, app.state.te_store)
+    app.state.runner = fake
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    try:
+        response = await client.post(
+            "/api/v1/jobs", json=_submit_body(repo_dir, "job-api-db-config")
+        )
+        assert response.status_code == 202
+        await _await_task(app, "job-api-db-config")
+        (artifacts_root / "job-api-db-config" / "job_input.json").unlink()
+
+        configuration = await client.get("/api/v1/jobs/job-api-db-config/configuration")
+        assert configuration.status_code == 200
+        assert configuration.json()["rest_url"] == "http://127.0.0.1:9000"
+        assert configuration.json()["documents"] == ["requirements.md"]
+        database = Database(f"sqlite:///{db_path}")
+        database.append_event(
+            "job-api-db-config",
+            "runtime_node_started",
+            node_name="req_parse",
+            payload={
+                "timestamp": "2026-09-21T00:00:00+00:00",
+                "run_id": "run-db",
+                "event": "node_started",
+                "node": "req_parse",
+                "message": "数据库事件回退",
+            },
+        )
+        logs = await client.get("/api/v1/jobs/job-api-db-config/logs")
+        assert logs.status_code == 200
+        assert any(item["run_scope"] == "database" for item in logs.json()["logs"])
+    finally:
+        await client.aclose()
+        await app.state.job_queue.shutdown()
+
+
+async def test_database_queued_job_is_reenqueued_on_startup(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """服务启动时，数据库中的 queued 任务会自动恢复到本实例队列。"""
+    base_app, _, _, repo_dir = env
+    db_path = repo_dir.parent / "startup-recovery.db"
+    artifacts_root = repo_dir.parent / "startup-artifacts"
+    settings = replace(
+        base_app.state.settings,
+        artifacts_root=str(artifacts_root),
+        database_url=f"sqlite:///{db_path}",
+        database_auto_create=True,
+    )
+    app = create_app(settings)
+    fake = FakeRunner(settings, app.state.engine, app.state.orch_store, app.state.te_store)
+    app.state.runner = fake
+    job_id = "job-api-recover01"
+    job_dir = app.state.orch_store.job_dir(job_id)
+    input_dir = job_dir / "input"
+    input_dir.mkdir(parents=True)
+    doc_path = input_dir / "requirements.md"
+    doc_path.write_text(_DOC, encoding="utf-8")
+    (job_dir / "job_input.json").write_text(
+        json.dumps(
+            {
+                "job_id": job_id,
+                "doc_paths": [str(doc_path)],
+                "repos": [{"name": "repo-a", "path": str(repo_dir), "branch": "main"}],
+                "rest_url": "http://127.0.0.1:9000",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    app.state.database.ensure_job(job_id)
+    try:
+        for handler in app.router.on_startup:
+            await handler()
+        await _await_task(app, job_id)
+        assert len(fake.calls) == 1
+        with app.state.database.session() as session:
+            record = session.get(JobRecord, job_id)
+            assert record is not None
+            assert record.status == "completed"
+    finally:
+        for handler in app.router.on_shutdown:
+            await handler()
 
 
 async def test_submit_job_multi_docs(
@@ -494,6 +843,31 @@ async def test_submit_job_repo_language_validation(
     assert saved["repos"][0]["language"] == "python"
 
 
+async def test_submit_job_repo_service_base_url_validation(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """C-07：仓库级接口服务地址仅允许 http(s)，避免把路由配置静默吞掉。"""
+    _app, fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-route0")
+    body["repos"][0]["service_base_url"] = "ftp://not-an-http-service"
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 400
+    assert "service_base_url 须为 http(s) 地址" in response.json()["detail"]
+    assert fake.calls == []
+
+    valid = _submit_body(repo_dir, "job-api-route1")
+    valid["repos"][0]["service_base_url"] = "http://user-service.internal:9000/"
+    response = await client.post("/api/v1/jobs", json=valid)
+    assert response.status_code == 202
+    await _await_task(_app, "job-api-route1")
+    saved = json.loads(
+        (
+            Path(str(_app.state.settings.artifacts_root)) / "job-api-route1" / "job_input.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert saved["repos"][0]["service_base_url"] == "http://user-service.internal:9000/"
+
+
 async def test_submit_job_validations(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:
@@ -582,6 +956,208 @@ async def test_submit_job_auth_persisted_and_passed(
     assert fake.calls[-1]["auth"] is None
 
 
+async def test_submit_job_uses_encrypted_secret_store_when_configured(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """配置主密钥后，job_input 只留元数据，重跑仍可恢复完整凭据。"""
+    app, _fake, _client, repo_dir = env
+    from cryptography.fernet import Fernet
+
+    key = Fernet.generate_key().decode("ascii")
+    secure_settings = replace(app.state.settings, secrets_encryption_key=key)
+    secure_app = create_app(secure_settings)
+    secure_fake = FakeRunner(
+        secure_settings,
+        secure_app.state.engine,
+        secure_app.state.orch_store,
+        secure_app.state.te_store,
+    )
+    secure_app.state.runner = secure_fake
+    secure_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=secure_app), base_url="http://test"
+    )
+    try:
+        body = _submit_body(repo_dir, "job-api-secure1")
+        body["auth"] = {
+            "login_url": "https://example.test/login/",
+            "username": "admin",
+            "password": "secret-password",
+        }
+        body["llm"] = {
+            "api_key": "sk-secure-test-key",
+            "model": "MiniMax-M3",
+            "base_url": "https://api.minimaxi.com/v1",
+            "max_tokens": 8192,
+        }
+        response = await secure_client.post("/api/v1/jobs", json=body)
+        assert response.status_code == 202
+        await _await_task(secure_app, "job-api-secure1")
+
+        root = Path(str(secure_app.state.settings.artifacts_root)) / "job-api-secure1"
+        saved = json.loads((root / "job_input.json").read_text(encoding="utf-8"))
+        assert saved["auth"]["password_configured"] is True
+        assert "password" not in saved["auth"]
+        assert "api_key" not in saved.get("llm", {})
+        blob = root / ".job-credentials.enc"
+        assert blob.is_file()
+        assert body["auth"]["password"].encode() not in blob.read_bytes()
+        assert secure_fake.calls[-1]["auth"]["password"] == body["auth"]["password"]
+        assert secure_fake.calls[-1]["llm_config"]["api_key"] == "sk-secure-test-key"
+        assert isinstance(secure_app.state.secret_store, SecretStore)
+
+        config_response = await secure_client.get("/api/v1/jobs/job-api-secure1/configuration")
+        assert config_response.status_code == 200
+        config = config_response.json()
+        assert config["auth"]["password_configured"] is True
+        assert config["llm"]["api_key_configured"] is True
+
+        restarted_app = create_app(secure_settings)
+        restarted_fake = FakeRunner(
+            secure_settings,
+            restarted_app.state.engine,
+            restarted_app.state.orch_store,
+            restarted_app.state.te_store,
+        )
+        restarted_app.state.runner = restarted_fake
+        restarted_client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=restarted_app), base_url="http://test"
+        )
+        try:
+            rerun = await restarted_client.post(
+                "/api/v1/jobs/job-api-secure1/rerun",
+                json={"from_node": "auto_execute"},
+            )
+            assert rerun.status_code == 200
+            await _await_task(restarted_app, "job-api-secure1")
+            assert restarted_fake.calls[-1]["auth"]["password"] == body["auth"]["password"]
+            assert restarted_fake.calls[-1]["llm_config"]["api_key"] == body["llm"]["api_key"]
+        finally:
+            await restarted_client.aclose()
+    finally:
+        await secure_client.aclose()
+
+
+async def test_access_policy_scopes_jobs_by_token_and_project(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """启用部门令牌后，任务 owner/project 由服务端确定并隔离读写。"""
+    app, _fake, _client, repo_dir = env
+    access_settings = replace(
+        app.state.settings,
+        access_tokens_json=json.dumps(
+            {
+                "token-alice": {"user_id": "alice", "projects": ["fund"]},
+                "token-bob": {"user_id": "bob", "projects": ["fund"]},
+            }
+        ),
+    )
+    access_app = create_app(access_settings)
+    access_fake = FakeRunner(
+        access_settings,
+        access_app.state.engine,
+        access_app.state.orch_store,
+        access_app.state.te_store,
+    )
+    access_app.state.runner = access_fake
+    access_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=access_app), base_url="http://test"
+    )
+    try:
+        body = _submit_body(repo_dir, "job-api-scope1")
+        no_token = await access_client.post("/api/v1/jobs", json=body)
+        assert no_token.status_code == 401
+        alice_headers = {
+            "Authorization": "Bearer token-alice",
+            "X-Project-Id": "fund",
+        }
+        created = await access_client.post("/api/v1/jobs", json=body, headers=alice_headers)
+        assert created.status_code == 202
+        await _await_task(access_app, "job-api-scope1")
+        saved = json.loads(
+            (
+                Path(str(access_app.state.settings.artifacts_root))
+                / "job-api-scope1"
+                / "job_input.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert saved["owner_id"] == "alice"
+        assert saved["project_id"] == "fund"
+
+        bob_headers = {"Authorization": "Bearer token-bob", "X-Project-Id": "fund"}
+        hidden = await access_client.get("/api/v1/jobs/job-api-scope1", headers=bob_headers)
+        assert hidden.status_code == 404
+        visible = await access_client.get("/api/v1/jobs/job-api-scope1", headers=alice_headers)
+        assert visible.status_code == 200
+        listed = await access_client.get("/api/v1/jobs", headers=bob_headers)
+        assert listed.status_code == 200
+        assert listed.json()["jobs"] == []
+    finally:
+        await access_client.aclose()
+
+
+async def test_department_quota_and_audit_are_enforced(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+    tmp_path: Path,
+) -> None:
+    """部门令牌可限制日配额，并能读取脱敏操作审计。"""
+    app, _fake, _client, repo_dir = env
+    access_settings = replace(
+        app.state.settings,
+        database_url=f"sqlite:///{tmp_path / 'quota-api.db'}",
+        database_auto_create=True,
+        access_tokens_json=json.dumps(
+            {
+                "token-alice": {
+                    "user_id": "alice",
+                    "projects": ["fund"],
+                    "daily_job_limit": 1,
+                }
+            }
+        ),
+    )
+    quota_app = create_app(access_settings)
+    quota_fake = FakeRunner(
+        access_settings,
+        quota_app.state.engine,
+        quota_app.state.orch_store,
+        quota_app.state.te_store,
+    )
+    quota_app.state.runner = quota_fake
+    quota_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=quota_app), base_url="http://test"
+    )
+    headers = {"Authorization": "Bearer token-alice", "X-Project-Id": "fund"}
+    try:
+        first = await quota_client.post(
+            "/api/v1/jobs", json=_submit_body(repo_dir, "job-api-quota1"), headers=headers
+        )
+        assert first.status_code == 202
+        await _await_task(quota_app, "job-api-quota1")
+
+        second = await quota_client.post(
+            "/api/v1/jobs", json=_submit_body(repo_dir, "job-api-quota2"), headers=headers
+        )
+        assert second.status_code == 429
+        assert "日配额" in second.json()["detail"]
+
+        rerun = await quota_client.post(
+            "/api/v1/jobs/job-api-quota1/rerun",
+            json={"from_node": "auto_execute"},
+            headers=headers,
+        )
+        assert rerun.status_code == 200
+        await _await_task(quota_app, "job-api-quota1")
+
+        audit = await quota_client.get("/api/v1/jobs/job-api-quota1/audit", headers=headers)
+        assert audit.status_code == 200
+        assert audit.json()["storage"] == "database"
+        event_types = [item["event_type"] for item in audit.json()["events"]]
+        assert "job_submitted" in event_types
+        assert any(item.startswith("audit_") for item in event_types)
+    finally:
+        await quota_client.aclose()
+
+
 async def test_verify_authentication_returns_opaque_session_only(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -608,6 +1184,7 @@ async def test_verify_authentication_returns_opaque_session_only(
     assert payload["credential_type"] == "token"
     assert "never-return-this-value" not in response.text
     assert payload["session_id"] in app.state.pending_auth_sessions
+    assert "created_at" in app.state.pending_auth_sessions[payload["session_id"]]
 
 
 async def test_submit_job_llm_key_is_runtime_only(
@@ -634,15 +1211,17 @@ async def test_submit_job_llm_key_is_runtime_only(
         "model": "MiniMax-M2",
         "base_url": "https://api.minimaxi.com/v1",
         "max_tokens": 8192,
+        "api_key_configured": True,
     }
     assert "api_key" not in saved["llm"]
     assert fake.calls[-1]["llm_config"]["api_key"] == "sk-test-key-123456"
+    assert "job-api-llm1" not in app.state.job_llm_configs
 
 
 async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:
-    """完整配置读取脱敏；编辑可保留文档/密码/内存 Key，保存后从 req_parse 全量重跑。"""
+    """完整配置读取脱敏；编辑可保留文档/密码并从 req_parse 全量重跑。"""
     app, fake, client, repo_dir = env
     body = _submit_body(repo_dir, "job-api-edit1")
     body["auth"] = {
@@ -676,6 +1255,7 @@ async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
         "resume": False,
         "auth": {"login_url": "https://example.test/login/", "username": "admin"},
         "llm": {
+            "api_key": "sk-test-key-123456",
             "model": "MiniMax-M2.5",
             "base_url": "https://api.minimaxi.com/v1",
             "max_tokens": 4096,
@@ -696,6 +1276,48 @@ async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
     assert saved["llm"]["model"] == "MiniMax-M2.5"
     assert "api_key" not in saved["llm"]
     assert saved["doc_paths"][-1].endswith("input/requirements.md")
+
+
+async def test_edit_configuration_can_switch_to_service_level_llm(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """编辑任务时关闭任务级模型覆盖，不能继续偷偷沿用旧 LLM 配置。"""
+    app, _fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-service-llm")
+    body["llm"] = {
+        "api_key": "sk-test-key-123456",
+        "model": "MiniMax-M3",
+        "base_url": "https://api.minimaxi.com/v1",
+        "max_tokens": 8192,
+    }
+    assert (await client.post("/api/v1/jobs", json=body)).status_code == 202
+    await _await_task(app, "job-api-service-llm")
+
+    response = await client.put(
+        "/api/v1/jobs/job-api-service-llm/configuration",
+        json={
+            "docs": [],
+            "keep_existing_docs": True,
+            "repos": [{"name": "repo-a", "path": str(repo_dir), "branch": "main"}],
+            "rest_url": "http://127.0.0.1:9000",
+            "resume": True,
+            "run_after_save": False,
+            "llm_enabled": False,
+        },
+    )
+    assert response.status_code == 202
+    saved = json.loads(
+        (
+            Path(str(app.state.settings.artifacts_root))
+            / "job-api-service-llm"
+            / "job_input.json"
+        ).read_text()
+    )
+    assert "llm" not in saved
+    configuration = (
+        await client.get("/api/v1/jobs/job-api-service-llm/configuration")
+    ).json()
+    assert configuration["llm"] is None
 
 
 async def test_edit_full_job_configuration_replaces_documents(
@@ -727,8 +1349,19 @@ async def test_edit_configuration_can_save_without_rerun(
 ) -> None:
     """仅保存配置不得创建后台任务、归档产物或消耗模型调用。"""
     app, fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-saveonly")
+    body["fixtures"] = [
+        {
+            "name": "seed-user",
+            "phase": "setup",
+            "method": "POST",
+            "path": "/fixtures/users",
+            "expected": "status=201",
+            "required": True,
+        }
+    ]
     assert (
-        await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-saveonly"))
+        await client.post("/api/v1/jobs", json=body)
     ).status_code == 202
     await _await_task(app, "job-api-saveonly")
     calls_before = len(fake.calls)
@@ -741,6 +1374,8 @@ async def test_edit_configuration_can_save_without_rerun(
             "rest_url": "http://127.0.0.1:9002",
             "resume": True,
             "run_after_save": False,
+            "fixtures": [],
+            "replace_fixtures": True,
         },
     )
     assert response.status_code == 202
@@ -758,6 +1393,7 @@ async def test_edit_configuration_can_save_without_rerun(
         ).read_text()
     )
     assert saved["rest_url"] == "http://127.0.0.1:9002"
+    assert saved["fixtures"] == []
 
 
 async def test_job_status_and_artifacts(
@@ -1039,3 +1675,15 @@ async def test_resume_false_wipes_job_dir(
     # P-11 回归：清空不得误删本次提交的输入文档（req_parse 依赖）
     doc = next((job_dir / "input").glob("*.md"), None)
     assert doc is not None and doc.read_text(encoding="utf-8") == _DOC
+
+
+async def test_submit_existing_job_with_resume_true_is_idempotency_conflict(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """已有 job 不接受第二次普通提交，避免误覆盖；重跑走专用端点。"""
+    app, _, client, repo_dir = env
+    await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-idem01"))
+    await _await_task(app, "job-api-idem01")
+    response = await client.post("/api/v1/jobs", json=_submit_body(repo_dir, "job-api-idem01"))
+    assert response.status_code == 409
+    assert "重跑" in response.json()["detail"]

@@ -358,6 +358,11 @@ async def test_defect_list_only_assertion_failures(
         "status": 500,
         "body": {"detail": "server error", "token": "<redacted>"},
     }
+    assert defects[0]["triage"] == {
+        "kind": "product_suspect",
+        "confidence": "high",
+        "reason": "服务端返回 5xx；在非环境失败前提下优先按真实服务端缺陷候选排查。",
+    }
 
 
 async def test_defect_list_keeps_e2e_context_separate(
@@ -500,6 +505,57 @@ async def test_retest_regression_still_failed_retained(
     assert [s["case_id"] for s in index["suites"][0]["scripts"]] == ["TC-001"]
 
 
+async def test_retest_regression_runs_fixtures_and_skips_on_required_setup_failure(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """复测复用 setup/teardown；必需 setup 失败时不发业务复测请求。"""
+    await _run_defect_list(env)
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        if request.url.path == "/setup":
+            return httpx.Response(503, json={"detail": "fixture unavailable"})
+        return httpx.Response(200, json={"ok": True})
+
+    await run_retest_regression(
+        engine,
+        state,
+        te_store,
+        "http://mock:9000",
+        httpx.MockTransport(handler),
+        fixtures=[
+            {
+                "name": "准备账户",
+                "phase": "setup",
+                "method": "POST",
+                "path": "/setup",
+                "expected": "status_class=2xx",
+                "required": True,
+            },
+            {
+                "name": "清理账户",
+                "phase": "teardown",
+                "method": "POST",
+                "path": "/teardown",
+                "expected": "status_class=2xx",
+                "required": True,
+            },
+        ],
+    )
+
+    defects = te_store.read_json(_JOB, "defects.json")["defects"]
+    assert all(item["status"] == "discovered" for item in defects)
+    assert calls == ["/health", "/setup", "/teardown"]
+    warnings = te_store.read_json(_JOB, "defects.json").get("warnings", [])
+    assert any("本轮复测全部跳过" in warning for warning in warnings)
+    assert te_store.read_json(_JOB, "regression_index.json")["suites"] == []
+
+
 async def test_retest_regression_script_missing_skipped(
     env: tuple[Engine, ArtifactStore, ArtifactStore],
 ) -> None:
@@ -579,3 +635,32 @@ async def test_retest_regression_missing_defects(
     assert err.value.code == X_ORCH_01
     assert "defects.json 缺失" in err.value.message
     assert state.node("retest_regression").status is NodeStatus.PENDING
+
+
+async def test_retest_routes_defects_by_repository_service_url(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """C-07：回归复测同样按接口所属仓库选择服务地址。"""
+    await _run_defect_list(env)
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+    calls: list[tuple[str, str]] = []
+
+    def service(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.host or "", request.url.path))
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(200, json={"ok": True})
+
+    await run_retest_regression(
+        engine,
+        state,
+        te_store,
+        "http://user-host:9000",
+        httpx.MockTransport(service),
+        service_base_urls={"order-center": "http://order-host:9100"},
+    )
+
+    business_calls = {(host, path) for host, path in calls if path != "/health"}
+    assert ("user-host", "/api/v1/users") in business_calls
+    assert ("order-host", "/api/v1/orders") in business_calls

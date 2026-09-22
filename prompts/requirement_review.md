@@ -1,4 +1,4 @@
-<!-- 需求质量评审：移植自 htftest-agent requirement-review Skill；由本项目 GLM 客户端执行。 -->
+<!-- 需求质量评审：移植自 htftest-agent requirement-review Skill；由本项目 MiniMax/OpenAI 兼容客户端执行。 -->
 
 ---
 version: 1.5

@@ -19,7 +19,10 @@ export default [
   {
     // 格式交给 prettier：关闭与具冲突的 vue 格式化规则
     rules: {
+      'vue/html-indent': 'off',
+      'vue/html-closing-bracket-newline': 'off',
       'vue/max-attributes-per-line': 'off',
+      'vue/multiline-html-element-content-newline': 'off',
       'vue/singleline-html-element-content-newline': 'off',
       'vue/html-self-closing': 'off',
     },

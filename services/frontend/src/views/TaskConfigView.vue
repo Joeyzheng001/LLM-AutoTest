@@ -2,24 +2,32 @@
 // 任务配置页（07 页 01 · 真实提交）：多文档上传（C-10，base64）+ 本地仓库路径（R-CODE-01 口径）+
 // 被测服务地址 + 断点续跑开关 + 鉴权配置（C-15，可选）→ POST /api/v1/jobs（后台驱动同一 PipelineRunner，F-ORCH-01）。
 // 红线：协议范围由源码扫描自动识别（非表单参数）；鉴权走表单兜底（C-15，D8 升版），
-// 其余 fixtures 前置数据仍在流程启动前预置，不在本表单收集。
+// 接口前置夹具可在高级配置区编辑；密码、Token、模型 Key 仍由后端安全存储管理。
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   getJobConfiguration,
+  getRepositoryRoot,
+  preflightJob,
   submitJob,
   updateJobConfiguration,
   verifyAuthentication,
 } from '../api/client'
 import { navigateTo } from '../api/navigation'
-import type { JobConfigurationUpdatePayload, JobSubmitPayload } from '../api/types'
+import type { FixtureStep, JobConfigurationUpdatePayload, JobSubmitPayload } from '../api/types'
 
 const props = defineProps<{ initialJobId?: string }>()
 
 interface RepoRow {
   name: string
+  source: 'local' | 'git'
   path: string
+  remoteUrl: string
+  serviceBaseUrl: string
   branch: string
+  commit: string
   baselineBranch: string
+  accessToken: string
+  accessTokenConfigured: boolean
   language: 'java' | 'python' // C-13：仓库语言（扫描器分流）
   isFallback: boolean
 }
@@ -49,9 +57,11 @@ const authVerificationMessage = ref('')
 const authSessionId = ref('')
 const savedOnly = ref(false)
 
-// 真实模型配置：随任务提交；可由用户选择仅保存在当前浏览器，避免重复填写。
+// 真实模型配置：随任务提交；浏览器只记住非敏感模型参数，API Key 由服务端 SecretStore 复用。
 const LLM_BROWSER_CONFIG_KEY = 'llm-autotest.llm-config.v1'
-const llmEnabled = ref(true)
+const DRAFT_BROWSER_CONFIG_KEY = 'llm-autotest.task-draft.v1'
+// 新任务默认复用部门服务级 LLM 配置；只有需要覆盖模型/Key 时才启用任务级配置。
+const llmEnabled = ref(false)
 const rememberLlm = ref(true)
 const llm = reactive({
   apiKey: '',
@@ -62,25 +72,43 @@ const llm = reactive({
 const e2eEnabled = ref(false)
 const restInsecureTls = ref(true)
 const e2e = reactive({
-  baseUrl: 'http://47.83.181.191:8080',
+  // 部门部署不绑定任何公网地址；由任务配置填写内网被测前端地址。
+  baseUrl: '',
   generateCases: false,
   executeCases: false,
   insecureTls: true,
 })
+const fixturesJson = ref('')
+const fixturePlaceholder =
+  '[{"name":"seed-user","phase":"setup","method":"POST","path":"/fixtures/users","body":{"id":1},"expected":"status=201","required":true}]'
 
 onMounted(() => {
+  void loadRepositoryRoot()
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(LLM_BROWSER_CONFIG_KEY) ?? 'null')
     if (!saved || typeof saved !== 'object') return
     const config = saved as Record<string, unknown>
-    if (typeof config.apiKey === 'string') llm.apiKey = config.apiKey
     if (typeof config.model === 'string') llm.model = config.model
     if (typeof config.baseUrl === 'string') llm.baseUrl = config.baseUrl
     if (typeof config.maxTokens === 'number') llm.maxTokens = config.maxTokens
+    // 兼容并清理旧版本曾写入 localStorage 的 API Key；从此不再恢复或重新保存。
+    if ('apiKey' in config) {
+      delete config.apiKey
+      localStorage.setItem(LLM_BROWSER_CONFIG_KEY, JSON.stringify(config))
+    }
   } catch {
     // 私密浏览/损坏缓存时继续使用空配置，不阻断任务提交。
   }
 })
+
+async function loadRepositoryRoot(): Promise<void> {
+  try {
+    const result = await getRepositoryRoot()
+    if (result.root.trim()) repositoryRoot.value = result.root.trim()
+  } catch {
+    // 兼容旧服务或未授权场景；提交时仍由后端进行最终路径校验。
+  }
+}
 
 function saveLlmConfig(): void {
   try {
@@ -91,7 +119,6 @@ function saveLlmConfig(): void {
     localStorage.setItem(
       LLM_BROWSER_CONFIG_KEY,
       JSON.stringify({
-        apiKey: llm.apiKey.trim(),
         model: llm.model,
         baseUrl: llm.baseUrl.trim(),
         maxTokens: llm.maxTokens,
@@ -99,6 +126,69 @@ function saveLlmConfig(): void {
     )
   } catch {
     // 浏览器拒绝存储时只影响预填，不影响本次模型调用。
+  }
+}
+
+const draftSavedAt = ref('')
+
+function saveDraft(): void {
+  try {
+    localStorage.setItem(
+      DRAFT_BROWSER_CONFIG_KEY,
+      JSON.stringify({
+        form: { ...form },
+        repos: repos.map((repo) => {
+          const { accessToken, accessTokenConfigured, ...safeRepo } = repo
+          void accessToken
+          void accessTokenConfigured
+          return safeRepo
+        }),
+        auth: { loginUrl: auth.loginUrl, username: auth.username, insecureTls: auth.insecureTls },
+        authEnabled: authEnabled.value,
+        llm: { model: llm.model, baseUrl: llm.baseUrl, maxTokens: llm.maxTokens },
+        llmEnabled: llmEnabled.value,
+        e2e: { ...e2e },
+        e2eEnabled: e2eEnabled.value,
+        fixturesJson: fixturesJson.value,
+        restInsecureTls: restInsecureTls.value,
+        savedAt: new Date().toISOString(),
+      }),
+    )
+    draftSavedAt.value = new Date().toLocaleString()
+  } catch {
+    submitError.value = '本地草稿保存失败，请检查浏览器存储权限'
+  }
+}
+
+function restoreDraft(): void {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(DRAFT_BROWSER_CONFIG_KEY) ?? 'null')
+    if (!raw || typeof raw !== 'object') return
+    const draft = raw as Record<string, unknown>
+    if (draft.form && typeof draft.form === 'object') Object.assign(form, draft.form)
+    if (Array.isArray(draft.repos) && draft.repos.length) {
+      repos.splice(
+        0,
+        repos.length,
+        ...draft.repos.map((repo) => ({
+          ...(repo as RepoRow),
+          accessToken: '',
+          accessTokenConfigured: false,
+        })),
+      )
+    }
+    if (draft.auth && typeof draft.auth === 'object') Object.assign(auth, draft.auth)
+    authEnabled.value = Boolean(draft.authEnabled)
+    if (draft.llm && typeof draft.llm === 'object') Object.assign(llm, draft.llm)
+    llmEnabled.value = Boolean(draft.llmEnabled)
+    if (draft.e2e && typeof draft.e2e === 'object') Object.assign(e2e, draft.e2e)
+    e2eEnabled.value = Boolean(draft.e2eEnabled)
+    if (typeof draft.fixturesJson === 'string') fixturesJson.value = draft.fixturesJson
+    restInsecureTls.value = Boolean(draft.restInsecureTls)
+    draftSavedAt.value =
+      typeof draft.savedAt === 'string' ? new Date(draft.savedAt).toLocaleString() : ''
+  } catch {
+    submitError.value = '本地草稿读取失败，已保留当前填写内容'
   }
 }
 
@@ -113,17 +203,29 @@ const dirPickHint = ref('')
 const repos = reactive<RepoRow[]>([
   {
     name: 'user-service',
+    source: 'local',
     path: '',
+    remoteUrl: '',
+    serviceBaseUrl: '',
     branch: 'main',
+    commit: '',
     baselineBranch: '',
+    accessToken: '',
+    accessTokenConfigured: false,
     language: 'java',
     isFallback: false,
   },
   {
     name: 'order-center',
+    source: 'local',
     path: '',
+    remoteUrl: '',
+    serviceBaseUrl: '',
     branch: 'main',
+    commit: '',
     baselineBranch: '',
+    accessToken: '',
+    accessTokenConfigured: false,
     language: 'java',
     isFallback: false,
   },
@@ -136,14 +238,40 @@ const editingJobId = ref('')
 const existingDocs = ref<string[]>([])
 const existingAuthPassword = ref(false)
 const existingLlmKey = ref(false)
+const repositoryRoot = ref('/opt/repos')
 const loadingConfiguration = ref(false)
+const preflightResult = ref<{
+  ready: boolean
+  checks: Array<{ name: string; status: 'ok' | 'error' | 'skipped'; message: string }>
+} | null>(null)
+const activeStep = ref('documents')
+
+const configSteps = [
+  { id: 'documents', label: '需求与仓库', hint: '文档版本、源码来源' },
+  { id: 'environment', label: '执行环境', hint: '接口地址、E2E 开关' },
+  { id: 'credentials', label: '模型与鉴权', hint: 'MiniMax、登录会话' },
+  { id: 'confirm', label: '确认提交', hint: '校验并启动' },
+] as const
+
+function goToStep(stepId: string): void {
+  activeStep.value = stepId
+  document
+    .getElementById(`config-step-${stepId}`)
+    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 function addRepo(): void {
   repos.push({
     name: '',
+    source: 'local',
     path: '',
+    remoteUrl: '',
+    serviceBaseUrl: '',
     branch: 'main',
+    commit: '',
     baselineBranch: '',
+    accessToken: '',
+    accessTokenConfigured: false,
     language: 'java',
     isFallback: false,
   })
@@ -193,8 +321,24 @@ async function verifyAuthBeforeSave(): Promise<void> {
 const reposValid = computed(
   () =>
     repos.length >= 1 &&
-    repos.every((row) => row.name.trim() !== '' && isAbsoluteRepositoryPath(row.path)),
+    repos.every(
+      (row) =>
+        row.name.trim() !== '' &&
+        (!row.serviceBaseUrl.trim() || /^https?:\/\//.test(row.serviceBaseUrl.trim())) &&
+        (row.source === 'git'
+          ? /^(https?|ssh|git|file):\/\//.test(row.remoteUrl.trim()) ||
+            row.remoteUrl.trim().startsWith('git@')
+          : isAbsoluteRepositoryPath(row.path)),
+    ),
 )
+
+const documentsValid = computed(
+  () =>
+    documentRows.some((row) => row.target !== null) ||
+    (editingJobId.value !== '' && existingDocs.value.length >= 1),
+)
+
+const restValid = computed(() => form.restUrl.trim().startsWith('http'))
 
 // C-15：开启鉴权时三项必填 + login_url 须为 http(s)
 const authValid = computed(
@@ -215,26 +359,89 @@ const llmValid = computed(
       llm.maxTokens <= 16384),
 )
 
+const e2eValid = computed(
+  () =>
+    !e2eEnabled.value ||
+    (e2e.baseUrl.trim().startsWith('http') && (!e2e.executeCases || e2e.generateCases)),
+)
+
+const fixturesValid = computed(() => {
+  const raw = fixturesJson.value.trim()
+  if (!raw) return true
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return false
+    return parsed.every((item) => {
+      if (!item || typeof item !== 'object') return false
+      const record = item as Record<string, unknown>
+      const methodValid = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(String(record.method))
+      const objectFieldValid = (key: string) => {
+        const value = record[key]
+        return (
+          value === undefined ||
+          (typeof value === 'object' && value !== null && !Array.isArray(value))
+        )
+      }
+      return (
+        typeof record.name === 'string' &&
+        record.name.trim() !== '' &&
+        (record.phase === 'setup' || record.phase === 'teardown') &&
+        methodValid &&
+        typeof record.path === 'string' &&
+        record.path.startsWith('/') &&
+        typeof record.expected === 'string' &&
+        record.expected.trim() !== '' &&
+        (record.required === undefined || typeof record.required === 'boolean') &&
+        objectFieldValid('query') &&
+        objectFieldValid('body')
+      )
+    })
+  } catch {
+    return false
+  }
+})
+
+function formatFixturesJson(): void {
+  const raw = fixturesJson.value.trim()
+  if (!raw) return
+  try {
+    fixturesJson.value = JSON.stringify(JSON.parse(raw), null, 2)
+    submitError.value = ''
+  } catch {
+    submitError.value = '夹具 JSON 格式不合法，无法格式化'
+  }
+}
+
+function clearFixtures(): void {
+  fixturesJson.value = ''
+  submitError.value = ''
+}
+
 const formValid = computed(
   () =>
-    (documentRows.some((row) => row.target) || (editingJobId.value !== '' && existingDocs.value.length >= 1)) &&
+    documentsValid.value &&
     reposValid.value &&
-    form.restUrl.startsWith('http') &&
+    restValid.value &&
     authValid.value &&
-    llmValid.value,
+    llmValid.value &&
+    e2eValid.value &&
+    fixturesValid.value,
 )
 
 const formInvalidReasons = computed(() => {
   const reasons: string[] = []
-  if (!documentRows.some((row) => row.target) && existingDocs.value.length < 1) {
+  if (!documentsValid.value) {
     reasons.push('每行至少选择一份被测版本需求文档')
   }
-  if (!reposValid.value) reasons.push('补全仓库名称和本地绝对路径')
-  if (!form.restUrl.trim().startsWith('http')) reasons.push('填写合法的 REST 服务地址')
+  if (!reposValid.value) reasons.push('补全仓库名称、源码来源和可选接口服务地址')
+  if (!restValid.value) reasons.push('填写合法的 REST 服务地址')
   if (!authValid.value) reasons.push('补全鉴权地址、用户名和密码')
   if (!llmValid.value) {
     reasons.push('填写合法的 MiniMax API Key、模型和 Base URL，或关闭本次模型配置')
   }
+  if (!e2eValid.value) reasons.push('E2E 地址须为 http(s)，执行 E2E 前需开启用例生成')
+  if (!fixturesValid.value)
+    reasons.push('前置夹具必须是 JSON 数组，且每项包含 name、phase、method、path、expected')
   return reasons
 })
 
@@ -270,7 +477,10 @@ function pickRepositoryDirectory(event: Event): void {
   const dirName = relative.includes('/') ? relative.split('/')[0]! : file.name
   const row = repos[pendingRepoIndex]
   if (!row.name.trim()) row.name = dirName
-  dirPickHint.value = `已选择目录「${dirName}」：浏览器不提供绝对路径，请在路径框补全为运行服务机器上的绝对路径（如 /opt/repos/${dirName}）`
+  const root = repositoryRoot.value.replace(/[\\/]+$/, '')
+  const separator = /^[A-Za-z]:[\\/]/.test(root) ? '\\' : '/'
+  row.path = `${root}${separator}${dirName}`
+  dirPickHint.value = `已选择目录「${dirName}」，已自动填写服务端路径：${row.path}；若该目录未挂载到运行服务机器，请改用内部 Git。`
 }
 
 async function loadConfiguration(jobId: string): Promise<void> {
@@ -285,19 +495,31 @@ async function loadConfiguration(jobId: string): Promise<void> {
     restInsecureTls.value = config.rest_insecure_tls
     form.resume = config.resume
     existingDocs.value = config.documents
-    documentRows.splice(0, documentRows.length, ...(
-      config.document_pairs.length
+    documentRows.splice(
+      0,
+      documentRows.length,
+      ...(config.document_pairs.length
         ? config.document_pairs.map(() => ({ target: null, baseline: null }))
-        : [{ target: null, baseline: null }]
-    ))
-    repos.splice(0, repos.length, ...config.repos.map((repo) => ({
-      name: repo.name,
-      path: repo.path,
-      branch: repo.branch || 'main',
-      baselineBranch: repo.baseline_branch || '',
-      language: repo.language || 'java',
-      isFallback: repo.is_fallback,
-    })))
+        : [{ target: null, baseline: null }]),
+    )
+    repos.splice(
+      0,
+      repos.length,
+      ...config.repos.map((repo) => ({
+        name: repo.name,
+        source: repo.source || 'local',
+        path: repo.path,
+        remoteUrl: repo.remote_url || '',
+        serviceBaseUrl: repo.service_base_url || '',
+        branch: repo.branch || 'main',
+        commit: repo.commit || '',
+        baselineBranch: repo.baseline_branch || '',
+        accessToken: '',
+        accessTokenConfigured: repo.access_token_configured ?? false,
+        language: repo.language || 'java',
+        isFallback: repo.is_fallback,
+      })),
+    )
     authEnabled.value = config.auth !== null
     existingAuthPassword.value = config.auth?.password_configured ?? false
     Object.assign(auth, {
@@ -308,11 +530,12 @@ async function loadConfiguration(jobId: string): Promise<void> {
     })
     llmEnabled.value = config.llm !== null
     existingLlmKey.value = config.llm?.api_key_configured ?? false
-    if (config.llm) Object.assign(llm, {
-      model: config.llm.model,
-      baseUrl: config.llm.base_url,
-      maxTokens: config.llm.max_tokens,
-    })
+    if (config.llm)
+      Object.assign(llm, {
+        model: config.llm.model,
+        baseUrl: config.llm.base_url,
+        maxTokens: config.llm.max_tokens,
+      })
     e2eEnabled.value = config.e2e !== null
     Object.assign(e2e, {
       baseUrl: config.e2e?.base_url ?? e2e.baseUrl,
@@ -320,14 +543,20 @@ async function loadConfiguration(jobId: string): Promise<void> {
       executeCases: config.e2e?.execute_cases ?? false,
       insecureTls: config.e2e?.insecure_tls ?? true,
     })
+    fixturesJson.value = config.fixtures?.length ? JSON.stringify(config.fixtures, null, 2) : ''
   } catch (err) {
-    submitError.value = err instanceof Error ? `加载任务配置失败：${err.message}` : '加载任务配置失败'
+    submitError.value =
+      err instanceof Error ? `加载任务配置失败：${err.message}` : '加载任务配置失败'
   } finally {
     loadingConfiguration.value = false
   }
 }
 
-watch(() => props.initialJobId, (jobId) => void loadConfiguration(jobId ?? ''), { immediate: true })
+watch(
+  () => props.initialJobId,
+  (jobId) => void loadConfiguration(jobId ?? ''),
+  { immediate: true },
+)
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -347,6 +576,109 @@ function readFileAsBase64(file: File): Promise<string> {
   })
 }
 
+async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCount: number }> {
+  let fixtures: FixtureStep[] = []
+  const rawFixtures = fixturesJson.value.trim()
+  if (rawFixtures) {
+    try {
+      const parsed: unknown = JSON.parse(rawFixtures)
+      if (!Array.isArray(parsed)) throw new Error('前置夹具必须是 JSON 数组')
+      fixtures = parsed as FixtureStep[]
+    } catch {
+      throw new Error('前置夹具 JSON 格式不合法')
+    }
+  }
+  const documentPairs = await Promise.all(
+    documentRows
+      .filter((row) => row.target !== null)
+      .map(async (row) => ({
+        target: {
+          doc_name: row.target!.name,
+          doc_content_b64: await readFileAsBase64(row.target!),
+        },
+        ...(row.baseline
+          ? {
+              baseline: {
+                doc_name: row.baseline.name,
+                doc_content_b64: await readFileAsBase64(row.baseline),
+              },
+            }
+          : {}),
+      })),
+  )
+  const payload: JobSubmitPayload = {
+    docs: [],
+    ...(documentPairs.length ? { document_pairs: documentPairs } : {}),
+    repos: repos.map((row) => ({
+      name: row.name.trim(),
+      source: row.source,
+      path: row.source === 'local' ? row.path.trim() : '',
+      ...(row.source === 'git' ? { remote_url: row.remoteUrl.trim() } : {}),
+      ...(row.serviceBaseUrl.trim() ? { service_base_url: row.serviceBaseUrl.trim() } : {}),
+      branch: row.branch.trim() || 'main',
+      ...(row.commit.trim() ? { commit: row.commit.trim() } : {}),
+      // C-09：基线分支可选（空 = 不比对；非空 → code_review 派生变更范围视图）
+      ...(row.baselineBranch.trim() ? { baseline_branch: row.baselineBranch.trim() } : {}),
+      is_fallback: row.isFallback,
+      // C-13：仓库语言（java → java-parser；python → 内置 AST 扫描 Django/FastAPI/Flask）
+      language: row.language,
+      ...(row.accessToken.trim() ? { access_token: row.accessToken.trim() } : {}),
+    })),
+    rest_url: form.restUrl.trim(),
+    rest_insecure_tls: restInsecureTls.value,
+    resume: form.resume,
+    // C-15：鉴权配置（可选；开启才随提交发送，凭据只落本机 job_input.json）
+    ...(authEnabled.value
+      ? {
+          auth: {
+            login_url: auth.loginUrl.trim(),
+            username: auth.username.trim(),
+            password: auth.password,
+            insecure_tls: auth.insecureTls,
+          },
+          ...(authSessionId.value ? { auth_session_id: authSessionId.value } : {}),
+        }
+      : {}),
+    ...(llmEnabled.value
+      ? {
+          llm: {
+            api_key: llm.apiKey.trim(),
+            model: llm.model,
+            base_url: llm.baseUrl.trim(),
+            max_tokens: llm.maxTokens,
+          },
+        }
+      : {}),
+    ...(e2eEnabled.value
+      ? {
+          e2e: {
+            base_url: e2e.baseUrl.trim(),
+            generate_cases: e2e.generateCases,
+            execute_cases: e2e.executeCases,
+            insecure_tls: e2e.insecureTls,
+          },
+        }
+      : {}),
+    ...(rawFixtures ? { fixtures } : {}),
+  }
+  return { payload, documentCount: documentPairs.length }
+}
+
+async function handlePreflight(): Promise<void> {
+  if (!formValid.value || submitting.value) return
+  submitting.value = true
+  submitError.value = ''
+  preflightResult.value = null
+  try {
+    const { payload } = await buildPayload()
+    preflightResult.value = await preflightJob(payload)
+  } catch (err) {
+    submitError.value = err instanceof Error ? `配置预检失败：${err.message}` : '配置预检失败'
+  } finally {
+    submitting.value = false
+  }
+}
+
 async function handleSubmit(runAfterSave = true): Promise<void> {
   if (!formValid.value || submitting.value) return
   submitting.value = true
@@ -355,73 +687,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   savedOnly.value = Boolean(editingJobId.value && !runAfterSave)
   try {
     if (llmEnabled.value) saveLlmConfig()
-    const documentPairs = await Promise.all(
-      documentRows
-        .filter((row) => row.target !== null)
-        .map(async (row) => ({
-          target: {
-            doc_name: row.target!.name,
-            doc_content_b64: await readFileAsBase64(row.target!),
-          },
-          ...(row.baseline
-            ? {
-                baseline: {
-                  doc_name: row.baseline.name,
-                  doc_content_b64: await readFileAsBase64(row.baseline),
-                },
-              }
-            : {}),
-        })),
-    )
-    const commonPayload = {
-      docs: [],
-      ...(documentPairs.length ? { document_pairs: documentPairs } : {}),
-      repos: repos.map((row) => ({
-        name: row.name.trim(),
-        path: row.path.trim(),
-        branch: row.branch.trim() || 'main',
-        // C-09：基线分支可选（空 = 不比对；非空 → code_review 派生变更范围视图）
-        ...(row.baselineBranch.trim() ? { baseline_branch: row.baselineBranch.trim() } : {}),
-        is_fallback: row.isFallback,
-        // C-13：仓库语言（java → java-parser；python → 内置 AST 扫描 Django/FastAPI/Flask）
-        language: row.language,
-      })),
-      rest_url: form.restUrl.trim(),
-      rest_insecure_tls: restInsecureTls.value,
-      resume: form.resume,
-      // C-15：鉴权配置（可选；开启才随提交发送，凭据只落本机 job_input.json）
-      ...(authEnabled.value
-        ? {
-            auth: {
-              login_url: auth.loginUrl.trim(),
-              username: auth.username.trim(),
-              password: auth.password,
-              insecure_tls: auth.insecureTls,
-            },
-            ...(authSessionId.value ? { auth_session_id: authSessionId.value } : {}),
-          }
-        : {}),
-      ...(llmEnabled.value
-        ? {
-            llm: {
-              api_key: llm.apiKey.trim(),
-              model: llm.model,
-              base_url: llm.baseUrl.trim(),
-              max_tokens: llm.maxTokens,
-            },
-          }
-        : {}),
-      ...(e2eEnabled.value
-        ? {
-            e2e: {
-              base_url: e2e.baseUrl.trim(),
-              generate_cases: e2e.generateCases,
-              execute_cases: e2e.executeCases,
-              insecure_tls: e2e.insecureTls,
-            },
-          }
-        : {}),
-    }
+    const { payload: commonPayload, documentCount } = await buildPayload()
     const trimmedJobId = form.jobId.trim()
     if (trimmedJobId && !trimmedJobId.startsWith('job-')) {
       submitError.value = '任务 ID 须以 job- 开头（横切 ID 约定）；留空可自动生成'
@@ -431,8 +697,13 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
     if (editingJobId.value) {
       const payload: JobConfigurationUpdatePayload = {
         ...commonPayload,
-        keep_existing_docs: documentPairs.length === 0,
+        llm_enabled: llmEnabled.value,
+        rest_insecure_tls: restInsecureTls.value,
+        resume: form.resume,
+        keep_existing_docs: documentCount === 0,
         run_after_save: runAfterSave,
+        // 编辑页拥有夹具的完整控制权：空白也要明确清空旧夹具。
+        replace_fixtures: true,
       }
       result = await updateJobConfiguration(editingJobId.value, payload)
     } else {
@@ -452,6 +723,22 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 
 <template>
   <div class="config">
+    <nav class="config-steps" aria-label="任务配置步骤">
+      <button
+        v-for="(step, index) in configSteps"
+        :key="step.id"
+        type="button"
+        class="config-step"
+        :class="{ active: activeStep === step.id }"
+        @click="goToStep(step.id)"
+      >
+        <span class="step-index">{{ index + 1 }}</span>
+        <span class="step-copy"
+          ><strong>{{ step.label }}</strong
+          ><small>{{ step.hint }}</small></span
+        >
+      </button>
+    </nav>
     <form class="card" @submit.prevent="handleSubmit()">
       <div v-if="editingJobId" class="edit-banner" role="status">
         <div>
@@ -461,7 +748,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         <p>保存后会归档旧结果，并从「需求解析」开始重新运行整个流程。</p>
       </div>
       <!-- 需求文档（三格式 F-REQ-01~03；C-10 可多份） -->
-      <section class="field-group">
+      <section id="config-step-documents" class="field-group">
         <header class="group-title">
           需求文档版本
           <span class="group-note">每行一组被测/基线文档；仅上传被测版本时按原需求文档处理</span>
@@ -470,48 +757,100 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           <label class="doc-upload">
             <span>被测版本（必填）</span>
             <strong class="mono">{{ row.target?.name ?? '选择文件…' }}</strong>
-            <input class="doc-file-input" type="file" accept=".md,.docx,.xlsx" @change="pickDocumentVersion($event, index, 'target')" />
+            <input
+              class="doc-file-input"
+              type="file"
+              accept=".md,.docx,.xlsx"
+              @change="pickDocumentVersion($event, index, 'target')"
+            />
           </label>
           <label class="doc-upload baseline-upload">
             <span>基线版本（可选）</span>
             <strong class="mono">{{ row.baseline?.name ?? '不选择则作为新需求处理' }}</strong>
-            <input class="doc-file-input" type="file" accept=".md,.docx,.xlsx" @change="pickDocumentVersion($event, index, 'baseline')" />
+            <input
+              class="doc-file-input"
+              type="file"
+              accept=".md,.docx,.xlsx"
+              @change="pickDocumentVersion($event, index, 'baseline')"
+            />
           </label>
-          <button class="icon-btn" type="button" :disabled="documentRows.length <= 1" @click="removeDocumentRow(index)">移除</button>
+          <button
+            class="icon-btn"
+            type="button"
+            :disabled="documentRows.length <= 1"
+            @click="removeDocumentRow(index)"
+          >
+            移除
+          </button>
         </div>
         <button class="ghost-btn" type="button" @click="addDocumentRow">+ 添加一行版本文档</button>
         <p v-if="editingJobId && existingDocs.length" class="preserved-docs">
           当前保留：<span v-for="name in existingDocs" :key="name" class="mono">{{ name }}</span>
         </p>
         <p v-if="docError" class="field-error" role="alert">{{ docError }}</p>
+        <p v-if="!documentsValid" class="field-error" role="status">
+          请至少选择一份被测版本需求文档。
+        </p>
         <p class="switch-note">
-          同时上传基线与被测文档时，系统先生成“需求版本差异分析”，后续评审、Code Review 和用例生成只处理新增/修改范围；删除项进入影响核查与回归风险。
+          同时上传基线与被测文档时，系统先生成“需求版本差异分析”，后续评审、Code Review
+          和用例生成只处理新增/修改范围；删除项进入影响核查与回归风险。
+        </p>
+      </section>
+
+      <section id="config-step-environment" class="field-group">
+        <header class="group-title">接口测试环境</header>
+        <label class="switch-row"
+          ><input v-model="restInsecureTls" type="checkbox" /><span
+            >跳过 REST HTTPS 证书校验（测试环境自签名证书）</span
+          ></label
+        >
+        <p class="switch-note">
+          此设置同时用于接口连通性探测、接口用例执行和缺陷复测；与登录和 E2E 的证书设置互不影响。
         </p>
       </section>
 
       <section class="field-group">
-        <header class="group-title">接口测试环境</header>
-        <label class="switch-row"><input v-model="restInsecureTls" type="checkbox" /><span>跳过 REST HTTPS 证书校验（测试环境自签名证书）</span></label>
-        <p class="switch-note">此设置同时用于接口连通性探测、接口用例执行和缺陷复测；与登录和 E2E 的证书设置互不影响。</p>
-      </section>
-
-      <section class="field-group">
         <header class="group-title">前端 E2E 功能测试（可选）</header>
-        <label class="switch-row"><input v-model="e2eEnabled" type="checkbox" /><span>启用前端功能测试配置</span></label>
+        <label class="switch-row"
+          ><input v-model="e2eEnabled" type="checkbox" /><span>启用前端功能测试配置</span></label
+        >
         <template v-if="e2eEnabled">
-          <label class="field"><span class="field-label">前端访问地址</span><input v-model="e2e.baseUrl" type="url" placeholder="http://47.83.181.191:8080" /></label>
-          <label class="switch-row"><input v-model="e2e.generateCases" type="checkbox" /><span>生成 E2E 测试用例</span></label>
-          <label class="switch-row"><input v-model="e2e.executeCases" type="checkbox" :disabled="!e2e.generateCases" /><span>执行 E2E 用例（Playwright）</span></label>
-          <label class="switch-row"><input v-model="e2e.insecureTls" type="checkbox" /><span>跳过 HTTPS 证书校验（测试环境自签名证书）</span></label>
+          <label class="field"
+            ><span class="field-label">前端访问地址</span
+            ><input v-model="e2e.baseUrl" type="url" placeholder="http(s)://内部被测前端地址"
+          /></label>
+          <label class="switch-row"
+            ><input v-model="e2e.generateCases" type="checkbox" /><span
+              >生成 E2E 测试用例</span
+            ></label
+          >
+          <label class="switch-row"
+            ><input
+              v-model="e2e.executeCases"
+              type="checkbox"
+              :disabled="!e2e.generateCases"
+            /><span>执行 E2E 用例（Playwright）</span></label
+          >
+          <label class="switch-row"
+            ><input v-model="e2e.insecureTls" type="checkbox" /><span
+              >跳过 HTTPS 证书校验（测试环境自签名证书）</span
+            ></label
+          >
           <p class="switch-note">默认关闭，不影响接口用例；执行前会使用真实浏览器访问上述地址。</p>
+          <p v-if="!e2eValid" class="field-error" role="status">
+            E2E 地址须为 http(s)；若要执行 E2E，请先开启用例生成。
+          </p>
         </template>
       </section>
 
-      <!-- 被测仓库（C-10：≥1；R-CODE-01 本地路径口径；D5：兜底分列） -->
+      <!-- 被测仓库（本地目录或内部 Git；远程检出后进入版本化缓存） -->
       <section class="field-group">
         <header class="group-title">
           被测仓库
-          <span class="group-note">至少 1 个（C-10；验收演示仍双仓库口径）；本地绝对路径口径（R-CODE-01，检出正确分支后指向工作区目录）；兑底仓库结果单独分列（D5）</span>
+          <span class="group-note"
+            >至少 1 个；可选择运行服务机器上的本地目录，或填写内部 Git
+            地址按分支/提交检出；访问令牌只加密保存</span
+          >
         </header>
 
         <input
@@ -525,7 +864,9 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         />
 
         <div class="repo-head">
-          <span>仓库名</span><span>本机目录</span><span>语言</span><span>分支</span><span>基线分支</span><span>兑底</span><span />
+          <span>仓库名</span><span>来源</span><span>目录 / Git 地址</span><span>语言</span
+          ><span>分支</span><span>提交号</span><span>基线分支</span><span>令牌</span
+          ><span>兜底</span><span />
         </div>
 
         <div v-for="(row, index) in repos" :key="index" class="repo-row">
@@ -536,9 +877,35 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             placeholder="user-service"
             :aria-label="`仓库 ${index + 1} 名称`"
           />
+          <select v-model="row.source" class="repo-source" :aria-label="`仓库 ${index + 1} 来源`">
+            <option value="local">本地目录</option>
+            <option value="git">内部 Git</option>
+          </select>
           <div class="repo-path-picker">
-            <input v-model="row.path" type="text" class="mono" placeholder="C:\\work\\user-service 或 /workspace/user-service" :aria-label="`仓库 ${index + 1} 路径`" />
-            <button class="select-dir-btn" type="button" @click="chooseRepositoryDirectory(index)">选择目录</button>
+            <input
+              v-if="row.source === 'local'"
+              v-model="row.path"
+              type="text"
+              class="mono"
+              placeholder="C:\\work\\user-service 或 /workspace/user-service"
+              :aria-label="`仓库 ${index + 1} 路径`"
+            />
+            <input
+              v-else
+              v-model="row.remoteUrl"
+              type="url"
+              class="mono"
+              placeholder="https://git.example.com/team/service.git"
+              :aria-label="`仓库 ${index + 1} Git 地址`"
+            />
+            <button
+              v-if="row.source === 'local'"
+              class="select-dir-btn"
+              type="button"
+              @click="chooseRepositoryDirectory(index)"
+            >
+              选择目录
+            </button>
           </div>
           <select
             v-model="row.language"
@@ -556,12 +923,28 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             :aria-label="`仓库 ${index + 1} 分支`"
           />
           <input
+            v-model="row.commit"
+            type="text"
+            class="mono repo-commit"
+            placeholder="提交号（可选）"
+            :aria-label="`仓库 ${index + 1} 提交号`"
+          />
+          <input
             v-model="row.baselineBranch"
             type="text"
             class="mono"
             placeholder="可选，如 main"
             :aria-label="`仓库 ${index + 1} 基线分支`"
           />
+          <input
+            v-if="row.source === 'git'"
+            v-model="row.accessToken"
+            type="password"
+            class="mono repo-token"
+            :placeholder="row.accessTokenConfigured ? '已配置，留空复用' : '访问令牌（可选）'"
+            :aria-label="`仓库 ${index + 1} 访问令牌`"
+          />
+          <span v-else class="repo-token-placeholder" aria-hidden="true" />
           <input
             v-model="row.isFallback"
             type="checkbox"
@@ -575,17 +958,29 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           >
             移除
           </button>
+          <label class="repo-service-field">
+            <span>接口服务地址（可选）</span>
+            <input
+              v-model="row.serviceBaseUrl"
+              type="url"
+              class="mono"
+              placeholder="http://127.0.0.1:9000（留空使用任务级 REST 地址）"
+              :aria-label="`仓库 ${index + 1} 接口服务地址（可选）`"
+            />
+          </label>
         </div>
 
         <button class="ghost-btn" type="button" @click="addRepo">+ 添加仓库</button>
         <p v-if="dirPickHint" class="dir-pick-note" role="status">{{ dirPickHint }}</p>
         <p v-if="!reposValid" class="field-error">
-          每个仓库需有名称与绝对路径（以 / 开头），且仓库数 ≥ 1。
+          每个仓库需有名称，并填写本地绝对路径或合法 Git 地址；接口服务地址如填写须为
+          http(s)；仓库数 ≥ 1。
         </p>
         <p class="switch-note">
-          基线分支（C-09，可选）：非空时后端按 merge-base 做双分支 diff，CodeReview
-          页展示变更范围视图；留空 = 不比对。仓库须为本地 Git 仓库且分支须存在。语言（C-13）：Java
-          仓走 java-parser；Python 仓（Django / FastAPI / Flask）走内置 AST 扫描，同口径产出。
+          基线分支（可选）用于 Code Review
+          变更范围；提交号优先于分支，适合固定版本复跑。远程仓库会按地址+版本建立缓存，后续重跑复用同一检出结果。
+          接口服务地址（可选）用于多仓库/多服务任务：接口按扫描结果中的仓库归属路由到对应地址；留空则使用下方任务级
+          REST 地址。语言：Java 走 java-parser；Python 走内置 AST 扫描。
         </p>
       </section>
 
@@ -601,6 +996,9 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             placeholder="http://127.0.0.1:9000"
           />
         </label>
+        <p v-if="!restValid" class="field-error" role="status">
+          请输入以 http:// 或 https:// 开头的被测服务地址。
+        </p>
         <label class="field">
           <span class="field-label">任务 ID（可选，留空自动生成；须以 job- 开头）</span>
           <input v-model="form.jobId" type="text" class="mono" placeholder="job-web-…" />
@@ -613,20 +1011,62 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         </label>
         <p class="switch-note">
           协议范围由源码扫描自动识别（R-CODE-01，非表单参数）；鉴权可由下方「鉴权配置」提供（C-15，D8
-          升版：fixtures 优先、表单兜底）；造数等其余前置数据仍预置于 fixtures，不在本表单收集。
+          升版：fixtures 优先、表单兜底）；如需固定造数，可在下方「接口前置夹具」编辑。
         </p>
       </section>
 
       <section class="field-group">
+        <header class="group-title">
+          接口前置夹具（可选）
+          <span class="group-note">setup/teardown 造数步骤；保存任务时可清空旧夹具</span>
+        </header>
+        <label class="field">
+          <span class="field-label">夹具 JSON</span>
+          <textarea
+            v-model="fixturesJson"
+            class="mono fixture-editor"
+            rows="8"
+            spellcheck="false"
+            :placeholder="fixturePlaceholder"
+          />
+        </label>
+        <div class="inline-action-row">
+          <button
+            class="ghost-btn"
+            type="button"
+            :disabled="!fixturesJson.trim()"
+            @click="formatFixturesJson"
+          >
+            格式化 JSON
+          </button>
+          <button
+            class="ghost-btn"
+            type="button"
+            :disabled="!fixturesJson.trim()"
+            @click="clearFixtures"
+          >
+            清空夹具
+          </button>
+        </div>
+        <p v-if="!fixturesValid" class="field-error" role="status">
+          夹具必须是 JSON 数组；每项至少包含 name、phase、method、path、expected，path 需以 / 开头。
+        </p>
+        <p class="switch-note">
+          夹具只在接口用例执行前调用，不会发送给大模型；留空表示不配置夹具。支持
+          query、body、required 等字段。
+        </p>
+      </section>
+
+      <section id="config-step-credentials" class="field-group">
         <header class="group-title">大模型配置</header>
         <label class="switch-row">
           <input v-model="llmEnabled" type="checkbox" />
-          <span>使用本次填写的 MiniMax 配置运行语义节点</span>
+          <span>使用本次填写的 MiniMax 配置（关闭则复用服务级配置）</span>
         </label>
         <template v-if="llmEnabled">
           <label class="switch-row">
             <input v-model="rememberLlm" type="checkbox" @change="saveLlmConfig" />
-            <span>在此浏览器记住模型配置和 API Key</span>
+            <span>在此浏览器记住非敏感模型配置（不保存 API Key）</span>
           </label>
           <label class="field">
             <span class="field-label">MiniMax API Key</span>
@@ -665,11 +1105,15 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             请填写有效 API Key、模型、服务地址和 1024–16384 的 Token 上限。
           </p>
           <p v-if="editingJobId && !llm.apiKey && existingLlmKey" class="switch-note">
-            未重新填写 API Key，将复用本次服务进程中已有的密钥。
+            未重新填写 API Key，将复用服务端安全存储中的密钥。
           </p>
           <p class="switch-note">
-            勾选“记住”后，密钥仅保存在当前浏览器的本地存储，不会写入 job_input、产物或 LLM 调用留痕；
-            取消勾选会立即清除。需求解析、接口还原、Code Review、用例生成会按章节或实体分批调用，再由程序校验并合并。
+            当前默认复用部署服务器的 MiniMax 配置；需要临时切换模型或 API Key 时再开启本次任务配置。
+          </p>
+          <p class="switch-note">
+            浏览器只保存模型、地址和 Token 上限；API Key 不进入浏览器持久化存储，提交后由服务端
+            SecretStore 安全复用。重跑已有任务时留空即可复用服务端密钥。需求解析、接口还原、Code
+            Review、 用例生成会按章节或实体分批调用，再由程序校验并合并。
           </p>
         </template>
       </section>
@@ -702,7 +1146,9 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                 v-model="auth.password"
                 type="password"
                 autocomplete="new-password"
-                :placeholder="editingJobId && existingAuthPassword ? '留空则保留原密码' : '••••••••'"
+                :placeholder="
+                  editingJobId && existingAuthPassword ? '留空则保留原密码' : '••••••••'
+                "
               />
             </label>
           </div>
@@ -719,7 +1165,12 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             >
               {{ verifyingAuth ? '正在验证登录…' : '测试鉴权并保存会话' }}
             </button>
-            <span v-if="authVerificationMessage" :class="authVerificationMessage.startsWith('鉴权成功') ? 'inline-success' : 'field-error'">
+            <span
+              v-if="authVerificationMessage"
+              :class="
+                authVerificationMessage.startsWith('鉴权成功') ? 'inline-success' : 'field-error'
+              "
+            >
               {{ authVerificationMessage }}
             </span>
           </div>
@@ -731,21 +1182,51 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           </p>
           <p class="switch-note">
             登录响应含 token 字段 → Authorization: Token 注入；无 token 则回带 Set-Cookie
-            会话。点击“测试鉴权”可在启动前验证，并将凭据头仅存于后端内存；Token 不会返回浏览器、不写入任务文件或 LLM。
+            会话。点击“测试鉴权”可在启动前验证，并将凭据头仅存于后端内存；Token
+            不会返回浏览器、不写入任务文件或 LLM。
           </p>
         </template>
       </section>
 
       <!-- 提交 -->
-      <div class="submit-row">
-        <button v-if="editingJobId" class="ghost-btn" type="button" :disabled="!formValid || submitting" @click="handleSubmit(false)">
+      <div id="config-step-confirm" class="submit-row">
+        <button class="ghost-btn" type="button" :disabled="submitting" @click="saveDraft">
+          保存本地草稿
+        </button>
+        <button class="ghost-btn" type="button" :disabled="submitting" @click="restoreDraft">
+          恢复草稿
+        </button>
+        <button
+          class="ghost-btn"
+          type="button"
+          :disabled="!formValid || submitting"
+          @click="handlePreflight"
+        >
+          {{ submitting && !submittedJobId ? '检查中…' : '配置预检' }}
+        </button>
+        <button
+          v-if="editingJobId"
+          class="ghost-btn"
+          type="button"
+          :disabled="!formValid || submitting"
+          @click="handleSubmit(false)"
+        >
           {{ submitting ? '正在保存…' : '仅保存配置' }}
         </button>
         <button class="primary-btn" type="submit" :disabled="!formValid || submitting">
-          {{ submitting ? '保存并启动中…' : editingJobId ? '保存配置并全量重新运行' : '启动全流程（F-ORCH-01）' }}
+          {{
+            submitting
+              ? '保存并启动中…'
+              : editingJobId
+                ? '保存配置并全量重新运行'
+                : '启动全流程（F-ORCH-01）'
+          }}
         </button>
         <span v-if="submittedJobId" class="submit-ok" role="status">
-          已{{ savedOnly ? '保存配置' : editingJobId ? '保存并重新运行' : '提交' }}：<span class="mono">{{ submittedJobId }}</span>
+          已{{ savedOnly ? '保存配置' : editingJobId ? '保存并重新运行' : '提交' }}：<span
+            class="mono"
+            >{{ submittedJobId }}</span
+          >
           <template v-if="!savedOnly">—— 已跳转到「流水线总览」</template>
         </span>
         <span v-else class="submit-note">与 CLI 走同一 PipelineRunner（Web 与命令行入口等价）</span>
@@ -754,6 +1235,20 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         暂不能启动：{{ formInvalidReasons.join('；') }}。
       </p>
       <p v-if="submitError" class="field-error" role="alert">{{ submitError }}</p>
+      <p v-if="draftSavedAt" class="submit-note" role="status">
+        草稿仅保存在当前浏览器（{{ draftSavedAt }}），不会保存密码、API Key 或 Git Token。
+      </p>
+      <div v-if="preflightResult" class="preflight-result" :data-ready="preflightResult.ready">
+        <strong>{{
+          preflightResult.ready ? '配置预检通过，可以提交' : '配置预检未通过，请先修正问题'
+        }}</strong>
+        <ul>
+          <li v-for="check in preflightResult.checks" :key="check.name" :data-status="check.status">
+            <span>{{ check.name }}</span
+            ><span>{{ check.message }}</span>
+          </li>
+        </ul>
+      </div>
     </form>
   </div>
 </template>
@@ -762,6 +1257,80 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 .config {
   max-width: 860px;
   margin: 0 auto;
+}
+
+.config-steps {
+  position: sticky;
+  top: var(--space-3);
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(10px);
+}
+
+.config-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-2);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.config-step:hover,
+.config-step.active {
+  color: var(--accent-strong);
+  background: var(--accent-dim);
+  border-color: var(--accent-glow);
+}
+
+.step-index {
+  display: grid;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: var(--accent-strong);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+}
+
+.step-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.step-copy strong,
+.step-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-copy strong {
+  font-size: var(--text-sm);
+}
+
+.step-copy small {
+  color: var(--text-3);
+  font-size: var(--text-xs);
 }
 
 .card {
@@ -849,6 +1418,16 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 .field-label {
   font-size: var(--text-sm);
   color: var(--text-2);
+}
+
+.fixture-editor {
+  width: 100%;
+  min-height: 160px;
+  padding: var(--space-3);
+  line-height: 1.5;
+  resize: vertical;
+  white-space: pre;
+  overflow: auto;
 }
 
 .field-error {
@@ -979,7 +1558,6 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   }
 }
 
-
 /* C-10：已选文档清单 */
 .doc-list {
   list-style: none;
@@ -1015,7 +1593,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 .repo-head,
 .repo-row {
   display: grid;
-  grid-template-columns: 150px 1fr 92px 90px 90px 40px 56px;
+  grid-template-columns: 132px 96px minmax(250px, 1fr) 82px 90px 150px 110px 150px 42px 56px;
   gap: var(--space-2);
   align-items: center;
 }
@@ -1034,7 +1612,10 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   border-radius: var(--radius-md);
 }
 
-.repo-row input[type='text'] {
+.repo-row input[type='text'],
+.repo-row input[type='url'],
+.repo-row input[type='password'],
+.repo-row select {
   width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-elev);
@@ -1044,7 +1625,37 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   font-size: var(--text-sm);
 }
 
-.repo-row input[type='text']:focus {
+.repo-service-field {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-1);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.repo-service-field input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font-size: var(--text-sm);
+}
+
+.repo-service-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+  outline: none;
+}
+
+.repo-row input[type='text']:focus,
+.repo-row input[type='url']:focus,
+.repo-row input[type='password']:focus,
+.repo-row select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-dim);
   outline: none;
@@ -1072,9 +1683,31 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 }
 
 @media (max-width: 860px) {
+  .config-steps {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
   .repo-head,
   .repo-row {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .repo-service-field {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .config-steps {
+    grid-template-columns: 1fr;
+  }
+
+  .submit-row {
+    align-items: stretch;
+  }
+
+  .submit-row button {
+    width: 100%;
   }
 }
 
@@ -1131,12 +1764,21 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 
 /* 提交区 */
 .submit-row {
+  position: sticky;
+  bottom: var(--space-3);
+  z-index: 4;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-3);
   padding-top: var(--space-4);
+  padding: var(--space-3);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
   border-top: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 -8px 24px color-mix(in srgb, var(--shadow) 12%, transparent);
+  backdrop-filter: blur(10px);
 }
 
 .primary-btn {
@@ -1170,5 +1812,45 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 .submit-note {
   font-size: var(--text-xs);
   color: var(--text-3);
+}
+
+.preflight-result {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+
+.preflight-result[data-ready='true'] {
+  border-color: color-mix(in srgb, var(--success) 55%, var(--border));
+}
+
+.preflight-result[data-ready='false'] {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--border));
+}
+
+.preflight-result ul {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.preflight-result li {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: var(--space-2);
+}
+
+.preflight-result li[data-status='ok'] span:first-child {
+  color: var(--success);
+}
+
+.preflight-result li[data-status='error'] span:first-child {
+  color: var(--warning);
 }
 </style>

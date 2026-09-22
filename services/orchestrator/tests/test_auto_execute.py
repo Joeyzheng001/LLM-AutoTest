@@ -22,6 +22,7 @@ from orchestrator.nodes.auto_execute import (
     RestRunner,
     _expects_404,
     _judge_assertion,
+    _summarize,
     login_for_headers,
     mutates_auth_session,
     resolved_auth_mode,
@@ -275,6 +276,50 @@ async def test_auto_execute_assertion_failure(
     assert payload["summary"]["failed_assertion"] == 2
 
 
+def test_summary_contains_api_and_e2e_breakdown_for_mixed_execution() -> None:
+    summary = _summarize(
+        [
+            {"case_id": "TC-001", "case_type": "api", "passed": True},
+            {
+                "case_id": "E2E-001",
+                "case_type": "e2e",
+                "passed": False,
+                "failure_kind": "environment",
+            },
+        ]
+    )
+    assert summary["total"] == 2
+    assert summary["by_type"]["api"]["passed"] == 1
+    assert summary["by_type"]["e2e"]["failed_environment"] == 1
+
+
+async def test_auto_execute_auth_failure_is_environment_not_defect(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """P0-05：成功预期收到 401/403 时按鉴权前置失败隔离，不进入 defects。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+
+    def unauthorized(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        return httpx.Response(401, json={"detail": "认证凭据无效"})
+
+    testcases = te_store.read_json(_JOB, "testcases.json")
+    testcases["cases"] = [
+        {**testcases["cases"][0], "expected": "status=200"},
+    ]
+    te_store.write(_JOB, "testcases.json", testcases)
+    await run_auto_execute(
+        engine, state, te_store, "http://mock:9000", httpx.MockTransport(unauthorized)
+    )
+
+    result = te_store.read_json(_JOB, "execution.json")["results"][0]
+    assert result["failure_kind"] == "environment"
+    assert "X-EXEC-05" in result["failure_reason"]
+    assert "不计入产品缺陷" in result["failure_reason"]
+
+
 async def test_auto_execute_environment_failure(
     env: tuple[Engine, ArtifactStore, ArtifactStore],
 ) -> None:
@@ -338,6 +383,175 @@ async def test_auto_execute_unloadable_skipped(
     assert "loadable=false" in skipped[0]["failure_reason"]
     assert payload["summary"]["skipped"] == 1
     assert payload["summary"]["total"] == 3
+
+
+async def test_auto_execute_skips_missing_required_before_http_call(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """P0-05：成功场景缺少必填参数时不访问业务接口，不伪造 400/500 缺陷。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+    testcases = te_store.read_json(_JOB, "testcases.json")
+    testcases["cases"][0]["params"] = {}
+    testcases["cases"][0]["expected"] = "status=200"
+    te_store.write(_JOB, "testcases.json", testcases)
+    business_calls = 0
+
+    def service(request: httpx.Request) -> httpx.Response:
+        nonlocal business_calls
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        business_calls += 1
+        return httpx.Response(400, json={"detail": "missing"})
+
+    await run_auto_execute(
+        engine, state, te_store, "http://mock:9000", httpx.MockTransport(service)
+    )
+
+    payload = te_store.read_json(_JOB, "execution.json")
+    result = next(item for item in payload["results"] if item["case_id"] == "TC-001")
+    assert result["passed"] is False
+    assert result["failure_kind"] is None
+    assert result["skipped"] is True
+    assert result["skipped_reason"] == "前置缺失"
+    assert "fund_code" not in result["failure_reason"]
+    assert "id" in result["failure_reason"]
+    assert business_calls == 1  # 仅探活请求
+
+
+async def test_auto_execute_allows_missing_required_for_negative_case(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """P0-05：明确期待 4xx 的异常用例允许缺参并验证服务端校验。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+    testcases = te_store.read_json(_JOB, "testcases.json")
+    testcases["cases"] = [
+        {
+            **testcases["cases"][0],
+            "category": "exception",
+            "expected": "status=400",
+            "params": {},
+        }
+    ]
+    te_store.write(_JOB, "testcases.json", testcases)
+
+    def service(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(400, json={"detail": "fund_code required"})
+
+    await run_auto_execute(
+        engine, state, te_store, "http://mock:9000", httpx.MockTransport(service)
+    )
+
+    result = te_store.read_json(_JOB, "execution.json")["results"][0]
+    assert result["passed"] is True
+    assert result.get("skipped") is not True
+
+
+async def test_auto_execute_runs_fixtures_before_cases_and_teardown_after(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """P0-05：夹具按 setup→用例→teardown 顺序执行并记录，不把响应体落盘。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+    testcases = te_store.read_json(_JOB, "testcases.json")
+    testcases["cases"] = [testcases["cases"][0]]
+    te_store.write(_JOB, "testcases.json", testcases)
+    paths: list[str] = []
+
+    def service(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        if request.url.path == "/fixtures/users":
+            return httpx.Response(201, json={"token": "secret-token", "created": True})
+        if request.url.path == "/api/v1/users":
+            return httpx.Response(200, json={"id": 1, "name": "u"})
+        if request.url.path == "/fixtures/cleanup":
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    fixtures = [
+        {
+            "name": "create-user",
+            "phase": "setup",
+            "method": "POST",
+            "path": "/fixtures/users",
+            "body": {"id": 1},
+            "expected": "status=201",
+            "required": True,
+        },
+        {
+            "name": "cleanup-user",
+            "phase": "teardown",
+            "method": "DELETE",
+            "path": "/fixtures/cleanup",
+            "expected": "status=204",
+            "required": False,
+        },
+    ]
+    await run_auto_execute(
+        engine,
+        state,
+        te_store,
+        "http://mock:9000",
+        httpx.MockTransport(service),
+        fixtures=fixtures,
+    )
+
+    payload = te_store.read_json(_JOB, "execution.json")
+    assert paths == ["/health", "/fixtures/users", "/api/v1/users", "/fixtures/cleanup"]
+    assert [item["name"] for item in payload["fixtures"]] == [
+        "create-user",
+        "cleanup-user",
+    ]
+    assert payload["fixtures"][0]["passed"] is True
+    assert "token" not in json.dumps(payload["fixtures"], ensure_ascii=False)
+    assert payload["results"][0]["passed"] is True
+
+
+async def test_auto_execute_required_fixture_failure_skips_cases(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """P0-05：必需夹具失败时不执行业务用例，统一记前置缺失。"""
+    engine, te_store, _orch_store = env
+    state = engine.open_job(_JOB)
+    business_calls = 0
+
+    def service(request: httpx.Request) -> httpx.Response:
+        nonlocal business_calls
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        if request.url.path == "/fixtures/users":
+            return httpx.Response(500, json={"error": "seed failed"})
+        business_calls += 1
+        return httpx.Response(200, json={"id": 1})
+
+    await run_auto_execute(
+        engine,
+        state,
+        te_store,
+        "http://mock:9000",
+        httpx.MockTransport(service),
+        fixtures=[
+            {
+                "name": "create-user",
+                "phase": "setup",
+                "method": "POST",
+                "path": "/fixtures/users",
+                "expected": "status=201",
+                "required": True,
+            }
+        ],
+    )
+
+    payload = te_store.read_json(_JOB, "execution.json")
+    assert payload["fixtures"][0]["passed"] is False
+    assert all(item["skipped_reason"] == "前置缺失" for item in payload["results"])
+    assert all("create-user" in item["failure_reason"] for item in payload["results"])
+    assert business_calls == 0
 
 
 async def test_auto_execute_skip_order_guard(
@@ -902,3 +1116,62 @@ async def test_rest_runner_unwraps_unknown_query_container() -> None:
     )
     assert response.status == 200
     assert captured == {"fund_code": "F001", "business_code": "24"}
+
+
+async def test_auto_execute_routes_interfaces_by_repository_service_url(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """C-07：不同仓库的接口按 code_location.repo 路由到各自服务地址。"""
+    engine, te_store, orch_store = env
+    state = engine.open_job(_JOB)
+    interfaces = orch_store.read_json(_JOB, "interfaces.json")
+    interfaces["interfaces"].append(
+        {
+            "id": "IF-REST-002",
+            "protocol": "rest",
+            "signature": {"method": "GET", "path": "/api/v1/orders", "summary": "查订单"},
+            "params": [],
+            "code_location": {
+                "repo": "order-center",
+                "file": "OrderController.java",
+                "start_line": 10,
+                "end_line": 20,
+            },
+            "is_fallback": False,
+        }
+    )
+    orch_store.write(_JOB, "interfaces.json", interfaces)
+    cases = te_store.read_json(_JOB, "testcases.json")
+    cases["cases"].append(
+        {
+            "id": "TC-004",
+            "interface_id": "IF-REST-002",
+            "category": "normal",
+            "title": "正常查询订单",
+            "expected": "status=200",
+            "params": {},
+            "script_path": "scripts/test_TC_004.py",
+            "loadable": True,
+        }
+    )
+    te_store.write(_JOB, "testcases.json", cases)
+    calls: list[tuple[str, str]] = []
+
+    def service(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.host or "", request.url.path))
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(200, json={"ok": True})
+
+    await run_auto_execute(
+        engine,
+        state,
+        te_store,
+        "http://user-host:9000",
+        httpx.MockTransport(service),
+        service_base_urls={"order-center": "http://order-host:9100"},
+    )
+
+    business_calls = {(host, path) for host, path in calls if path != "/health"}
+    assert ("user-host", "/api/v1/users") in business_calls
+    assert ("order-host", "/api/v1/orders") in business_calls

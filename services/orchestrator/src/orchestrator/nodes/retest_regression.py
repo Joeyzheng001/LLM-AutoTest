@@ -30,14 +30,18 @@ from typing import Any
 import httpx
 
 from orchestrator.artifacts import ArtifactStore
+from orchestrator.case_validation import blocking_parameter_messages
 from orchestrator.engine import Engine, JobState
 from orchestrator.errors import X_ORCH_01, PipelineError
 from orchestrator.nodes.auto_execute import (
     InvokeRequest,
     MockDemoRunner,
     RestRunner,
+    _expects_success,
     _judge_assertion,
+    _run_fixture_phase,
     auth_exempt_paths,
+    interface_service_base_url,
     login_for_headers,
     prefers_django_trailing_slash,
     probe_rest,
@@ -57,6 +61,8 @@ async def run_retest_regression(
     auth: dict[str, Any] | None = None,
     insecure_tls: bool = True,
     preauthenticated_headers: dict[str, str] | None = None,
+    fixtures: list[dict[str, Any]] | None = None,
+    service_base_urls: dict[str, str] | None = None,
 ) -> Path:
     """复测全量缺陷并沉淀回归资产：defects.json（状态流转）+ regression_index.json。
 
@@ -65,6 +71,8 @@ async def run_retest_regression(
         rest_base_url: REST 被测/Mock 服务地址（复测重跑共用）。
         transport: 测试注入（MockTransport），生产留 None。
         auth: C-15 鉴权配置（与 auto_execute 同口径，凭据头注入复测请求）。
+        fixtures: 与首次执行相同的 setup/teardown 夹具；必需 setup 失败时不发起复测请求。
+        service_base_urls: 仓库名到接口服务地址的可选映射（C-07）；未命中回退 rest_base_url。
 
     Returns:
         regression_index.json 产物路径。
@@ -83,6 +91,8 @@ async def run_retest_regression(
             auth=auth,
             insecure_tls=insecure_tls,
             preauthenticated_headers=preauthenticated_headers,
+            fixtures=fixtures,
+            service_base_urls=service_base_urls,
         )
         engine.mark_completed(state, NODE_NAME)
         return Path(str(result["regression_index_path"]))
@@ -100,6 +110,8 @@ async def retest_defects(
     auth: dict[str, Any] | None = None,
     insecure_tls: bool = True,
     preauthenticated_headers: dict[str, str] | None = None,
+    fixtures: list[dict[str, Any]] | None = None,
+    service_base_urls: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """复测核心（供 9 节点流水线与 REST API 单条复测共用）。
 
@@ -108,6 +120,8 @@ async def retest_defects(
         only_defect_ids: None → 全量复测（F-DEF-02）；指定集合 → 仅复测该批缺陷
             （Web 缺陷闭环页「单条复测」按钮，07 §3.5）。
         auth: C-15 鉴权配置（登录失败 → X-EXEC-01，凭据头注入复测请求）。
+        fixtures: 与首次执行相同的 setup/teardown 夹具；不把响应正文写入产物。
+        service_base_urls: 仓库名到接口服务地址的可选映射（C-07）。
 
     Returns:
         {"retested": [缺陷 ID 清单], "archived": [归档条目], "warnings": [告警],
@@ -134,22 +148,58 @@ async def retest_defects(
     if auth and not auth_headers:
         auth_headers = await login_for_headers(auth, transport)
 
-    rest_ready = await probe_rest(rest_base_url, transport, verify)
-    rest_runner = RestRunner(
-        rest_base_url,
-        transport,
-        auth_headers,
-        verify,
-        auth_exempt_paths(auth),
-        prefers_django_trailing_slash(auth),
+    default_service_url = rest_base_url.rstrip("/")
+    route_urls = {default_service_url}
+    route_urls.update(
+        str(url).strip().rstrip("/")
+        for url in (service_base_urls or {}).values()
+        if str(url).strip()
     )
+    rest_ready_by_url = {
+        url: await probe_rest(url, transport, verify) for url in route_urls
+    }
+    rest_runners = {
+        url: RestRunner(
+            url,
+            transport,
+            auth_headers,
+            verify,
+            auth_exempt_paths(auth),
+            prefers_django_trailing_slash(auth),
+        )
+        for url in route_urls
+    }
     demo_runner = MockDemoRunner()
     warnings: list[str] = []
     archived: list[dict[str, Any]] = []
     retested: list[str] = []
     job_dir = te_store.job_dir(job_id)
 
+    # 首次执行和复测必须共享同一组前置条件，否则“复测通过/失败”可能只是
+    # 造数或清理状态不同造成的假象。夹具响应只保留状态与原因，不扩散 token。
+    fixture_configs = fixtures or []
+    setup_block_reason: str | None = None
+    if fixture_configs:
+        setup_records, setup_block_reason = await _run_fixture_phase(
+            fixture_configs,
+            "setup",
+            rest_base_url,
+            transport,
+            verify,
+            auth_headers,
+        )
+        for record in setup_records:
+            if not record.get("passed"):
+                warnings.append(
+                    f"X-EXEC-05：复测夹具 {record.get('name')} 执行失败："
+                    f"{record.get('failure_reason', '前置条件未满足')}"
+                )
+        if setup_block_reason:
+            warnings.append(setup_block_reason + "；本轮复测全部跳过")
+
     for defect in defects:
+        if setup_block_reason:
+            continue
         if only_defect_ids is not None and str(defect.get("id", "")) not in only_defect_ids:
             continue
         case_id = str(defect.get("case_id", ""))
@@ -160,9 +210,22 @@ async def retest_defects(
         interface = interface_by_id.get(if_id, {})
         protocol = str(interface.get("protocol", "rest"))
 
+        # 复测不能绕过生成/执行阶段的参数契约；不发送不可执行的业务请求，
+        # 也不把它误记成产品缺陷修复失败。
+        parameter_issues = blocking_parameter_messages(case or {}, interface)
+        if parameter_issues:
+            warnings.append(
+                f"X-EXEC-05：缺陷 {defect.get('id')}（用例 {case_id}）复测跳过："
+                + "；".join(parameter_issues)
+            )
+            continue
+
         # 复测环境探测（R-EXEC-02 同源口径）：REST 不可达 → 跳过该项，
         # 不判缺陷状态流转（环境失败不判为缺陷，X-EXEC-01 同源精神）
-        if protocol == "rest" and not rest_ready:
+        route_url = interface_service_base_url(
+            interface, default_service_url, service_base_urls
+        )
+        if protocol == "rest" and not rest_ready_by_url.get(route_url, False):
             warnings.append(
                 f"复测环境不可达（X-EXEC-01 同源）：缺陷 {defect.get('id')}"
                 f"（用例 {case_id}）跳过复测，状态保持不变"
@@ -179,7 +242,7 @@ async def retest_defects(
 
         # 复测重跑（R-DEF-02：重跑关联用例；判定与 auto_execute 同源：
         # status token > 2xx + 语义等值对；404 归环境失败不判缺陷修复）
-        runner = rest_runner if protocol == "rest" else demo_runner
+        runner = rest_runners[route_url] if protocol == "rest" else demo_runner
         params = case.get("params") if isinstance(case.get("params"), dict) else {}
         response = await runner.invoke(
             InvokeRequest(interface=interface, params=params)
@@ -193,6 +256,14 @@ async def retest_defects(
                 retest_passed, _failures = _judge_assertion(
                     str(case.get("expected", "")), response.status, response.body
                 )
+                if response.status in {401, 403} and _expects_success(
+                    str(case.get("expected", ""))
+                ):
+                    warnings.append(
+                        f"X-EXEC-05：缺陷 {defect.get('id')}（用例 {case_id}）复测鉴权前置失败，"
+                        "状态保持不变，不计入产品缺陷结果"
+                    )
+                    continue
 
         now = _now_iso()
         history: list[dict[str, Any]] = list(defect.get("history", []))
@@ -238,6 +309,8 @@ async def retest_defects(
     except PipelineError:
         execution = {"results": []}
     for result in execution.get("results", []):
+        if setup_block_reason:
+            break
         case_id = str(result.get("case_id", ""))
         case = case_by_id.get(case_id)
         if (
@@ -277,6 +350,22 @@ async def retest_defects(
             }
         )
         archived_case_ids.add(case_id)
+
+    if fixture_configs:
+        teardown_records, _ = await _run_fixture_phase(
+            fixture_configs,
+            "teardown",
+            rest_base_url,
+            transport,
+            verify,
+            auth_headers,
+        )
+        for record in teardown_records:
+            if not record.get("passed"):
+                warnings.append(
+                    f"X-EXEC-05：复测清理夹具 {record.get('name')} 执行失败："
+                    f"{record.get('failure_reason', '清理失败')}"
+                )
 
     defects_payload["defects"] = defects
     if warnings:

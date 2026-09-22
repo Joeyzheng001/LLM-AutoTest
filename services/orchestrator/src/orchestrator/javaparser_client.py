@@ -40,6 +40,8 @@ class RepositoryInput:
     is_fallback: bool = False
     include_paths: tuple[str, ...] = field(default_factory=tuple)
     language: str = "java"
+    # 可选的真实服务入口；源码扫描契约不消费该字段，执行节点按 code_location.repo 路由。
+    service_base_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """请求体序列化（可选字段仅在非默认时出现）。"""

@@ -91,6 +91,14 @@ _CASES = [
     {
         "interface_id": "IF-REST-001",
         "requirement_id": "REQ-001",
+        "category": "boundary",
+        "title": "零值边界查询",
+        "expected": "status=200；返回空结果或明确业务提示",
+        "params": {"id": 0},
+    },
+    {
+        "interface_id": "IF-REST-001",
+        "requirement_id": "REQ-001",
         "category": "exception",
         "title": "非法 id",
         "expected": "400",
@@ -344,6 +352,24 @@ async def test_runner_full_pipeline_e2e(tmp_path: Path) -> None:
         # 注：stub LLM 不经 LlmClient，故无 llm_calls.jsonl 留痕（生产路径有）
     ):
         assert (job_dir / filename).is_file(), filename
+    runtime_events = [
+        json.loads(line)
+        for line in (job_dir / "runtime_log.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert runtime_events[0]["event"] == "run_started"
+    assert any(
+        event["event"] == "node_started" and event["node"] == "req_parse"
+        for event in runtime_events
+    )
+    assert any(
+        event["event"] == "node_finished" and event["node"] == "retest_regression"
+        for event in runtime_events
+    )
+    manifest = json.loads((job_dir / "artifact_manifest.json").read_text(encoding="utf-8"))
+    manifest_paths = {entry["path"] for entry in manifest["files"]}
+    assert "requirement_items.json" in manifest_paths
+    assert any(path.endswith("/test_TC_001.py") for path in manifest_paths)
+    assert ".job-credentials.enc" not in manifest_paths
     # 需求节点包含评审与条目提取两个子阶段，LLM 共调用 5 次。
     assert llm.calls == [
         "req_parse", "req_parse", "interface_reconstruct", "code_review", "testcase_generate"
@@ -450,8 +476,8 @@ async def test_runner_rest_down_environment_failures_flow(
 
     assert outcome.ok
     defects = json.loads((tmp_path / _JOB / "defects.json").read_text(encoding="utf-8"))
-    # 两条用例均断言失败 → 缺陷清单
-    assert len(defects["defects"]) == 2
+    # 三类用例均断言失败 → 缺陷清单
+    assert len(defects["defects"]) == 3
     # 复测仍 500 → retained
     assert all(d["status"] == "retained" for d in defects["defects"])
     # 回归索引空（无复测通过可沉淀）

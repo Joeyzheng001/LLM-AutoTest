@@ -3,7 +3,7 @@
 // 溯源 F-REG-02）+ 回归套件重跑（F-REG-03 复用全量复测端点）+ 度量报告
 // （metrics.json：自动化率大数 + 分节点分解 + 瓶颈分析 F-MTR-03/04）。
 // 红线：自动化率/分子分母全部来自后端 metrics 程序化汇总；data_complete=false → 如实显示「—」。
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
 import { getMetrics, getRegressionIndex, retestFull } from '../api/client'
 import type { MetricsPayload, RegressionIndexPayload } from '../api/types'
@@ -12,7 +12,7 @@ import { NODE_LABELS } from '../api/labels'
 const _jobId = ref('')
 
 // C-16：总览页节点卡跳转携带 jobId（App.vue 动态组件下发）
-const props = defineProps<{ initialJobId?: string }>()
+const props = defineProps<{ initialJobId?: string; viewKey?: string }>()
 
 const index = ref<RegressionIndexPayload | null>(null)
 const metrics = ref<MetricsPayload | null>(null)
@@ -22,6 +22,19 @@ const error = ref('')
 const rerunning = ref(false)
 const rerunError = ref('')
 const rerunQueued = ref(false)
+const regressionType = computed<'api' | 'e2e' | null>(() => {
+  if (props.viewKey === 'e2e-regression') return 'e2e'
+  if (props.viewKey === 'interface-regression') return 'api'
+  return null
+})
+const visibleSuites = computed(() => {
+  if (!index.value) return []
+  if (regressionType.value === 'e2e')
+    return index.value.suites.filter((suite) => suite.protocol === 'e2e')
+  if (regressionType.value === 'api')
+    return index.value.suites.filter((suite) => suite.protocol !== 'e2e')
+  return index.value.suites
+})
 
 async function load(): Promise<void> {
   if (!_jobId.value) return
@@ -95,17 +108,30 @@ function nodeLabel(name: string): string {
     <p v-else-if="error" class="state-line state-error" role="alert">{{ error }}</p>
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
 
+    <div class="view-title">
+      {{
+        regressionType === 'e2e'
+          ? 'E2E 回归资产'
+          : regressionType === 'api'
+            ? '接口回归资产'
+            : '回归资产与度量'
+      }}
+      <span v-if="regressionType" class="tag tag-accent">已按类型分开展示</span>
+    </div>
     <div class="layout">
       <!-- 左栏：资产树（regression_index 为唯一事实源） -->
       <div class="card asset-card">
         <header class="card-title">
           回归资产树（R-REG-02 按协议组织 · 归档为移动非复制 R-REG-01）
         </header>
-        <p v-if="!index || !index.suites.length" class="state-line">
-          {{ index?.empty_reason ?? '暂无符合沉淀原则的资产：需存在执行通过或缺陷复测通过，且具备可加载脚本与需求溯源。' }}
+        <p v-if="!index || !visibleSuites.length" class="state-line">
+          {{
+            index?.empty_reason ??
+            '暂无符合沉淀原则的资产：需存在执行通过或缺陷复测通过，且具备可加载脚本与需求溯源。'
+          }}
         </p>
         <template v-else>
-          <div v-for="suite in index.suites" :key="suite.protocol" class="suite">
+          <div v-for="suite in visibleSuites" :key="suite.protocol" class="suite">
             <header class="suite-head">
               <span class="tag tag-accent mono">{{ suite.protocol }}</span>
               <span class="suite-count">{{ suite.scripts.length }} 个脚本</span>
@@ -227,6 +253,16 @@ function nodeLabel(name: string): string {
 
 .state-error {
   color: var(--warning);
+}
+
+.view-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  color: var(--text-1);
+  font-size: var(--text-lg);
+  font-weight: 600;
 }
 
 .layout {

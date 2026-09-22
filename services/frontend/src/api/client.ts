@@ -14,6 +14,7 @@ import type {
   JobConfigurationUpdateResponse,
   JobSubmitPayload,
   JobSubmitResponse,
+  PreflightResponse,
   LlmCallLog,
   MetricsPayload,
   MissingFeature,
@@ -36,10 +37,60 @@ import type {
   AuthVerificationResponse,
 } from './types'
 
+const ACCESS_TOKEN_KEY = 'llm-autotest.access-token.session'
+const PROJECT_ID_KEY = 'llm-autotest.project-id.session'
+
+export interface AccessContext {
+  token: string
+  projectId: string
+}
+
+export function getAccessContext(): AccessContext {
+  try {
+    return {
+      token: sessionStorage.getItem(ACCESS_TOKEN_KEY) ?? '',
+      projectId: sessionStorage.getItem(PROJECT_ID_KEY) ?? '',
+    }
+  } catch {
+    return { token: '', projectId: '' }
+  }
+}
+
+export function setAccessContext(context: AccessContext): void {
+  const token = context.token.trim()
+  const projectId = context.projectId.trim()
+  if (!token || !projectId) throw new Error('访问令牌和项目标识必须同时填写')
+  try {
+    sessionStorage.setItem(ACCESS_TOKEN_KEY, token)
+    sessionStorage.setItem(PROJECT_ID_KEY, projectId)
+  } catch {
+    throw new Error('当前浏览器不允许保存会话访问配置')
+  }
+}
+
+export function clearAccessContext(): void {
+  try {
+    sessionStorage.removeItem(ACCESS_TOKEN_KEY)
+    sessionStorage.removeItem(PROJECT_ID_KEY)
+  } catch {
+    // 私密浏览器限制不影响本地兼容模式请求。
+  }
+}
+
+function accessHeaders(): Record<string, string> {
+  const context = getAccessContext()
+  return context.token && context.projectId
+    ? { Authorization: `Bearer ${context.token}`, 'X-Project-Id': context.projectId }
+    : {}
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  headers.set('Content-Type', 'application/json')
+  for (const [key, value] of Object.entries(accessHeaders())) headers.set(key, value)
   const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers,
   })
   if (!response.ok) {
     let detail = `${response.status}`
@@ -66,6 +117,10 @@ export function submitJob(payload: JobSubmitPayload): Promise<JobSubmitResponse>
   return request('/api/v1/jobs', { method: 'POST', body: JSON.stringify(payload) })
 }
 
+export function preflightJob(payload: JobSubmitPayload): Promise<PreflightResponse> {
+  return request('/api/v1/preflight', { method: 'POST', body: JSON.stringify(payload) })
+}
+
 /** 配置阶段真实登录；响应不含 Token，仅返回内存会话标识。 */
 export function verifyAuthentication(
   auth: AuthConfig,
@@ -75,6 +130,10 @@ export function verifyAuthentication(
     method: 'POST',
     body: JSON.stringify({ ...auth, ...(jobId ? { job_id: jobId } : {}) }),
   })
+}
+
+export function getRepositoryRoot(): Promise<{ root: string; exists: boolean }> {
+  return request('/api/v1/system/repository-root')
 }
 
 export function getJobConfiguration(jobId: string): Promise<JobConfiguration> {
@@ -128,7 +187,7 @@ export function postReviewLog(
 }
 
 export async function getReportMd(jobId: string): Promise<string> {
-  const response = await fetch(`/api/v1/jobs/${jobId}/report`)
+  const response = await fetch(`/api/v1/jobs/${jobId}/report`, { headers: accessHeaders() })
   if (!response.ok) throw new Error('报告尚未生成')
   return response.text()
 }
@@ -148,19 +207,26 @@ export function getRequirementReview(jobId: string): Promise<RequirementReview> 
 
 /** 读取已脱敏的 LLM 调用留痕；不包含 API Key、输入内容或模型原文。 */
 export async function getLlmCallLogs(jobId: string): Promise<LlmCallLog[]> {
-  const response = await fetch(`/api/v1/jobs/${jobId}/logs`)
+  const response = await fetch(`/api/v1/jobs/${jobId}/logs`, { headers: accessHeaders() })
   if (!response.ok) return []
   const payload = (await response.json()) as { logs?: LlmCallLog[] }
   return Array.isArray(payload.logs) ? payload.logs : []
 }
 
-export function exportJobResults(jobId: string): void {
+export async function exportJobResults(jobId: string): Promise<void> {
+  const response = await fetch(`/api/v1/jobs/${encodeURIComponent(jobId)}/export`, {
+    headers: accessHeaders(),
+  })
+  if (!response.ok) throw new Error(`导出失败：${response.status}`)
+  const blob = await response.blob()
+  const objectUrl = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
-  anchor.href = `/api/v1/jobs/${encodeURIComponent(jobId)}/export`
+  anchor.href = objectUrl
   anchor.download = `${jobId}-results.zip`
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
 }
 
 // C-10：源码扫描清单（独立展示页数据源）

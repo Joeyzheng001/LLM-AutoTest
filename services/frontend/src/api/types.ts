@@ -32,6 +32,7 @@ export interface JobStatus {
   nodes: NodeState[]
   degraded: DegradedRecord[]
   artifacts: string[]
+  runtime_error?: { code?: string; message?: string } | string | null
   e2e?: {
     base_url: string
     generate_cases: boolean
@@ -43,6 +44,11 @@ export interface JobStatus {
 export interface JobSubmitResponse {
   job_id: string
   status: string
+}
+
+export interface PreflightResponse {
+  ready: boolean
+  checks: Array<{ name: string; status: 'ok' | 'error' | 'skipped'; message: string }>
 }
 
 export interface RetestResponse {
@@ -85,29 +91,49 @@ export interface StopJobResponse {
 
 export interface LlmCallLog {
   call_id?: string
+  run_id?: string
+  run_scope?: 'current' | 'archive'
+  run_file?: string
   timestamp: string
   node: string
   prompt_file?: string
   duration_ms?: number | null
   tokens?: number | null
   ok?: boolean
-  event?: 'started' | 'e2e_started' | 'e2e_case_started' | 'e2e_case_completed'
+  event?:
+    | 'started'
+    | 'e2e_started'
+    | 'e2e_case_started'
+    | 'e2e_case_completed'
+    | 'run_started'
+    | 'node_started'
+    | 'node_finished'
+    | 'node_error'
+    | 'node_skipped'
   batch?: { index: number; total: number; requirements: number }
   index?: number
   total?: number
   case_id?: string
   message?: string
+  code?: string
   error?: string | null
 }
 
 export interface RepoConfig {
   name: string
+  source?: 'local' | 'git'
   path: string
+  remote_url?: string | null
   branch: string
+  commit?: string | null
   baseline_branch?: string // C-09：基线分支（非空 → 双分支 diff 变更范围视图）
   is_fallback: boolean
   include_paths?: string[]
+  /** C-07：接口执行按 code_location.repo 路由到该仓库对应服务；为空回退任务级 rest_url。 */
+  service_base_url?: string | null
   language?: 'java' | 'python' // C-13：仓库语言（java → java-parser；python → 内置 AST 扫描）
+  access_token?: string
+  access_token_configured?: boolean
 }
 
 // C-10：多需求文档（docs 列表；后端兼容旧单文档字段，前端统一走新口径）
@@ -153,6 +179,18 @@ export interface E2eConfig {
   insecure_tls?: boolean
 }
 
+/** 接口测试前置夹具；仅用于任务配置和执行前造数，不送入 LLM。 */
+export interface FixtureStep {
+  name: string
+  phase: 'setup' | 'teardown'
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  path: string
+  query?: Record<string, unknown>
+  body?: Record<string, unknown>
+  expected: string
+  required: boolean
+}
+
 export interface JobSubmitPayload {
   job_id?: string
   docs: DocInput[]
@@ -165,6 +203,7 @@ export interface JobSubmitPayload {
   auth_session_id?: string
   llm?: LlmConfig // 运行时模型配置；密钥不在任务产物中保存
   e2e?: E2eConfig
+  fixtures?: FixtureStep[]
 }
 
 /** 完整任务配置读取结果；密码和 API Key 永不返回，只说明能否复用。 */
@@ -176,9 +215,10 @@ export interface JobConfiguration {
   rest_url: string
   rest_insecure_tls: boolean
   resume: boolean
-  auth: Omit<AuthConfig, 'password'> & { password_configured: boolean } | null
-  llm: Omit<LlmConfig, 'api_key'> & { api_key_configured: boolean } | null
+  auth: (Omit<AuthConfig, 'password'> & { password_configured: boolean }) | null
+  llm: (Omit<LlmConfig, 'api_key'> & { api_key_configured: boolean }) | null
   e2e: E2eConfig | null
+  fixtures: FixtureStep[]
 }
 
 export interface JobConfigurationUpdatePayload {
@@ -190,10 +230,14 @@ export interface JobConfigurationUpdatePayload {
   rest_insecure_tls: boolean
   resume: boolean
   run_after_save?: boolean
+  /** false 明确切换为服务级 LLM 配置并清除任务级覆盖。 */
+  llm_enabled?: boolean
   auth?: Omit<AuthConfig, 'password'> & { password?: string }
   auth_session_id?: string
   llm?: Omit<LlmConfig, 'api_key'> & { api_key?: string }
   e2e?: E2eConfig
+  fixtures?: FixtureStep[]
+  replace_fixtures?: boolean
 }
 
 export interface JobConfigurationUpdateResponse {
@@ -396,6 +440,7 @@ export interface ExecSummary {
   failed_assertion: number
   failed_environment: number
   skipped?: number
+  by_type?: Record<'api' | 'e2e', Omit<ExecSummary, 'by_type'>>
 }
 
 export interface DefectEntry {
@@ -403,6 +448,11 @@ export interface DefectEntry {
   case_id: string
   interface_id: string
   failure_reason: string
+  triage?: {
+    kind: 'input_construction' | 'assertion_or_setup' | 'product_suspect' | 'needs_evidence'
+    confidence: 'high' | 'medium' | 'low'
+    reason: string
+  }
   interface?: { protocol?: string; method?: string; path?: string; summary?: string }
   testcase?: { title?: string; category?: string; expected?: string }
   actual?: { status?: number; body?: unknown }

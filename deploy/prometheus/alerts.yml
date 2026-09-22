@@ -1,0 +1,29 @@
+groups:
+  - name: llm-autotest-orchestrator
+    rules:
+      - alert: AutotestReadinessUnavailable
+        expr: min_over_time(autotest_database_up[5m]) < 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLM-AutoTest 数据库不可用"
+          description: "编排服务仍可能存活，但数据库就绪探活连续失败。"
+
+      - alert: AutotestQueueBacklog
+        expr: autotest_queue_queued_jobs > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM-AutoTest 队列持续积压"
+          description: "排队任务超过 10 个，请检查并发上限、LLM 延迟和被测环境。"
+
+      - alert: AutotestHttp5xx
+        expr: sum(rate(autotest_http_requests_total{status=~"5.."}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM-AutoTest API 出现 5xx"
+          description: "最近 5 分钟持续出现服务端错误，请结合审计和运行日志定位。"

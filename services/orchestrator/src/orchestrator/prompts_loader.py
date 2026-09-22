@@ -72,35 +72,46 @@ _NODE_KNOWLEDGE: dict[str, tuple[str, ...]] = {
     "requirement_diff": (
         "skills/requirement-diff-analysis.md",
         "skills/structured-output-compatibility.md",
+        "skills/requirement-diff-output-contract.md",
     ),
     "requirement_review": (
         "skills/requirement-output-stability.md",
         "skills/structured-output-compatibility.md",
         "memory/model-output-drift.md",
+        "skills/requirement-review-output-contract.md",
     ),
     "req_parse": (
         "skills/requirement-item-extraction.md",
         "skills/structured-output-compatibility.md",
         "memory/model-output-drift.md",
+        "skills/requirement-items-output-contract.md",
     ),
     "interface_reconstruct": (
         "skills/interface-reconstruction.md",
         "skills/structured-output-compatibility.md",
+        "skills/interface-output-contract.md",
     ),
     "code_review": (
         "skills/code-review-evidence.md",
         "skills/structured-output-compatibility.md",
         "memory/server-side-evidence.md",
+        "memory/failure-triage.md",
+        "skills/code-review-output-contract.md",
     ),
     "testcase_generate": (
         "skills/functional-test-design.md",
         "skills/structured-output-compatibility.md",
         "memory/test-design-lessons.md",
+        "memory/failure-triage.md",
+        # 必须最后注入：将本节点唯一允许的顶层 JSON 结构置于模型上下文末尾。
+        "skills/testcase-output-contract.md",
     ),
     "e2e_testcase_generate": (
         "skills/e2e-automation.md",
         "skills/structured-output-compatibility.md",
         "memory/e2e-environment.md",
+        "memory/failure-triage.md",
+        "skills/e2e-output-contract.md",
     ),
 }
 

@@ -17,7 +17,12 @@ from orchestrator.engine import Engine
 from orchestrator.errors import X_ORCH_02, PipelineError
 from orchestrator.llm import LlmResult
 from orchestrator.nodes import run_testcase_generate
-from orchestrator.nodes.testcase_generate import _filter_param_violations, _parse_e2e_cases
+from orchestrator.nodes.testcase_generate import (
+    _filter_param_violations,
+    _parse_e2e_cases,
+    _parse_llm_cases,
+    _validate_batch_coverage,
+)
 from orchestrator.pipeline import NodeStatus
 from orchestrator.prompts_loader import PromptSpec
 
@@ -281,6 +286,57 @@ def test_filter_rejects_semantic_placeholder_for_unknown_body() -> None:
     assert valid == concrete
     assert violations == []
 
+
+def test_filter_rejects_missing_required_for_success_and_materializes_declared_default() -> None:
+    """成功场景不能漏必填参数；接口显式 default 可确定性补入。"""
+    interfaces = [
+        {
+            "id": "IF-REST-001",
+            "params": [
+                {"name": "fund_code", "type": "string", "required": True, "in": "query"},
+                {
+                    "name": "page_size",
+                    "type": "integer",
+                    "required": True,
+                    "in": "query",
+                    "default": 20,
+                },
+            ],
+        }
+    ]
+    cases = [
+        {
+            "interface_id": "IF-REST-001",
+            "category": "normal",
+            "expected": "status=200",
+            "params": {},
+        },
+    ]
+    valid, violations = _filter_param_violations(cases, interfaces)
+    assert valid == []
+    assert "fund_code" in violations[0]["message"]
+
+
+def test_filter_allows_missing_required_for_explicit_client_error() -> None:
+    """异常场景可故意省略必填字段，以验证后端的 4xx 校验。"""
+    interfaces = [
+        {
+            "id": "IF-REST-001",
+            "params": [{"name": "fund_code", "type": "string", "required": True}],
+        }
+    ]
+    cases = [
+        {
+            "interface_id": "IF-REST-001",
+            "category": "exception",
+            "expected": "status_class=4xx",
+            "params": {},
+        },
+    ]
+    valid, violations = _filter_param_violations(cases, interfaces)
+    assert len(valid) == 1
+    assert violations == []
+
     # gRPC/非 REST 容器的 unknown 标量字段仍是合法参数，不能被误拦截。
     grpc = [{"id": "IF-GRPC-001", "params": [{"name": "order_id", "type": "unknown"}]}]
     valid, violations = _filter_param_violations(
@@ -288,6 +344,58 @@ def test_filter_rejects_semantic_placeholder_for_unknown_body() -> None:
     )
     assert len(valid) == 1
     assert violations == []
+
+
+@pytest.mark.parametrize(
+    "container",
+    [
+        '{"test_cases": [{"interface_id": "IF-REST-001", "category": "normal"}]}',
+        '{"response": {"case_list": [{"interface_id": "IF-REST-001", "category": "normal"}]}}',
+        (
+            '{"content": {"testcases": "[{\\"interface_id\\": '
+            '\\"IF-REST-001\\", \\"category\\": \\"normal\\"}]"}}'
+        ),
+        (
+            '{"body": "{\\"cases\\": [{\\"interface_id\\": '
+            '\\"IF-REST-001\\", \\"category\\": \\"normal\\"}]}"}'
+        ),
+    ],
+)
+def test_parse_llm_cases_accepts_known_model_container_variants(container: str) -> None:
+    """容器兼容只放宽结构，不放宽接口 ID/category 校验。"""
+    cases = _parse_llm_cases(container, [_INTERFACES[0]])
+    assert cases == [{"interface_id": "IF-REST-001", "category": "normal"}]
+
+
+def test_parse_llm_cases_accepts_complete_single_case_object() -> None:
+    """单条完整用例对象可无损提升为 cases 数组。"""
+    text = (
+        '{"interface_id":"IF-REST-001","category":"normal",'
+        '"title":"查询用户","params":{"id":1},"auth_mode":"inherit",'
+        '"expected":"status=200"}'
+    )
+    cases = _parse_llm_cases(text, [_INTERFACES[0]])
+    assert len(cases) == 1
+    assert cases[0]["params"] == {"id": 1}
+
+
+def test_batch_coverage_requires_all_interfaces_and_categories() -> None:
+    """单条完整对象可解析，但不能绕过批次覆盖门禁。"""
+    with pytest.raises(PipelineError) as excinfo:
+        _validate_batch_coverage(
+            [
+                {
+                    "interface_id": "IF-REST-001",
+                    "category": "normal",
+                    "title": "查询用户",
+                    "params": {"id": 1},
+                    "expected": "status=200",
+                }
+            ],
+            _INTERFACES,
+        )
+    assert excinfo.value.code == "X-LLM-02"
+    assert "IF-GRPC-001" in excinfo.value.message
 
 
 async def test_testcase_generate_abandon_interface(
@@ -309,11 +417,11 @@ async def test_testcase_generate_abandon_interface(
     assert len(payload["cases"]) == 3
 
 
-async def test_testcase_generate_skip_interface_warning(
+async def test_testcase_generate_missing_interface_fails_after_repair(
     env: tuple[Engine, ArtifactStore, ArtifactStore],
 ) -> None:
-    """X-GEN-01：某接口零用例 → 告警跳过，节点仍完成。"""
-    engine, store, te_store = env
+    """漏产接口必须进修复轮；两轮仍不全则失败，不能生成残缺报告。"""
+    engine, _store, te_store = env
     state = engine.open_job(_JOB)
     # 只产 GRPC 用例（REST 漏产）
     grpc_only = """{
@@ -330,11 +438,36 @@ async def test_testcase_generate_skip_interface_warning(
       ]
     }"""
 
-    await run_testcase_generate(engine, state, te_store, _StubLlm([grpc_only]), _PROMPTS)
+    with pytest.raises(PipelineError) as excinfo:
+        await run_testcase_generate(engine, state, te_store, _StubLlm([grpc_only]), _PROMPTS)
+    assert excinfo.value.code == "X-LLM-02"
 
-    payload = store.read_json(_JOB, "testcases.json")
-    assert any("X-GEN-01" in w and "IF-REST-001" in w for w in payload["warnings"])
-    assert state.node("testcase_generate").status is NodeStatus.COMPLETED
+
+async def test_testcase_generate_repairs_cross_node_recon_payload(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """接口还原字段误串（recon_date）时，节点隔离修复轮应恢复 cases。"""
+    engine, store, te_store = env
+    drift = '{"recon_date":"2026-09-18T00:00:00Z","interfaces":[]}'
+    llm = _StubLlm([drift, drift, _LLM_GOOD])
+
+    await run_testcase_generate(engine, engine.open_job(_JOB), te_store, llm, _PROMPTS)
+
+    assert len(llm.received) == 3
+    assert len(store.read_json(_JOB, "testcases.json")["cases"]) == 6
+
+
+async def test_testcase_generate_repairs_empty_object(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """空对象不是可接受降级结果，应进入节点专用修复轮。"""
+    engine, store, te_store = env
+    llm = _StubLlm(["{}", "{}", _LLM_GOOD])
+
+    await run_testcase_generate(engine, engine.open_job(_JOB), te_store, llm, _PROMPTS)
+
+    assert len(llm.received) == 3
+    assert len(store.read_json(_JOB, "testcases.json")["cases"]) == 6
 
 
 async def test_testcase_generate_all_abandoned(
@@ -432,6 +565,39 @@ def test_e2e_expect_url_does_not_require_selector() -> None:
         '{"action":"expect_url","selector":"","value":"/home"}]}]}'
     )
     assert cases[0]["steps"][-1] == {"action": "expect_url", "value": "/home"}
+
+
+def test_parse_llm_cases_accepts_registered_container_forms() -> None:
+    """drift 登记的容器形态（裸数组/别名/包装键）仅解包容器，条目仍走硬校验。"""
+    entry = (
+        '{"interface_id": "IF-REST-001", "category": "normal", '
+        '"title": "正常查询", "params": {"id": 1}, "expected": "返回用户"}'
+    )
+    # 契约原生形态
+    assert _parse_llm_cases(f'{{"cases": [{entry}]}}', _INTERFACES)[0]["title"] == "正常查询"
+    # 裸数组：把「只输出 cases 数组」误解为直接输出数组
+    assert _parse_llm_cases(f'[{entry}]', _INTERFACES)[0]["title"] == "正常查询"
+    # 已登记别名 testcases / items / results
+    for alias in ("testcases", "items", "results"):
+        assert _parse_llm_cases(f'{{"{alias}": [{entry}]}}', _INTERFACES)[0]["title"] == "正常查询"
+    # 已登记包装键 data / result / output 嵌套
+    for wrapper in ("data", "result", "output"):
+        text = f'{{"{wrapper}": {{"cases": [{entry}]}}}}'
+        assert _parse_llm_cases(text, _INTERFACES)[0]["title"] == "正常查询"
+
+
+def test_parse_llm_cases_rejects_unregistered_forms() -> None:
+    """无法无歧义定位用例数组时 X-LLM-02（宁停不猜，禁止拿半份数据下游硬凑）。"""
+    for text in (
+        '{"data": {"foo": "没有数组"}}',  # 包装键内无已登记容器
+        '{"cases": "不是数组"}',  # 容器名对但类型错
+        '"纯字符串"',
+        '{}',
+    ):
+        with pytest.raises(PipelineError) as err:
+            _parse_llm_cases(text, _INTERFACES)
+        assert err.value.code == "X-LLM-02"
+        assert "缺少 cases 数组" in err.value.message
 
 
 async def test_testcase_generate_skip_order_guard(

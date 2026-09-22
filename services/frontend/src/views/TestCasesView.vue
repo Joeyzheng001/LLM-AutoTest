@@ -11,7 +11,7 @@ import { CASE_CATEGORY_LABELS } from '../api/labels'
 const _jobId = ref('')
 
 // C-16：总览页节点卡跳转携带 jobId（App.vue 动态组件下发）
-const props = defineProps<{ initialJobId?: string }>()
+const props = defineProps<{ initialJobId?: string; viewKey?: string }>()
 
 const cases = ref<TestCaseEntry[]>([])
 const e2eCases = ref<E2eTestCaseEntry[]>([])
@@ -25,6 +25,13 @@ const byCategory = computed(() => ({
   boundary: cases.value.filter((c) => c.category === 'boundary'),
   exception: cases.value.filter((c) => c.category === 'exception'),
 }))
+const caseType = computed<'api' | 'e2e' | null>(() => {
+  if (props.viewKey === 'e2e-cases') return 'e2e'
+  if (props.viewKey === 'interface-cases') return 'api'
+  return null
+})
+const visibleCases = computed(() => (caseType.value === 'e2e' ? [] : cases.value))
+const visibleE2eCases = computed(() => (caseType.value === 'api' ? [] : e2eCases.value))
 
 async function load(): Promise<void> {
   if (!_jobId.value) return
@@ -75,15 +82,21 @@ function paramsText(params: Record<string, unknown> | undefined): string {
     <p v-else-if="error" class="state-line state-error" role="alert">{{ error }}</p>
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
 
-    <template v-else-if="cases.length || e2eCases.length">
+    <template v-else-if="visibleCases.length || visibleE2eCases.length">
       <div class="view-head">
-        <span class="tag tag-accent">用例生成结果（testcases.json）</span>
+        <span class="tag tag-accent"
+          >{{
+            caseType === 'e2e' ? 'E2E 用例' : caseType === 'api' ? '接口用例' : '测试用例'
+          }}（testcases.json）</span
+        >
         <span class="coverage-note">
-          共 <span class="mono">{{ cases.length }}</span> 条（正常
-          <span class="mono">{{ byCategory.normal.length }}</span> / 边界
-          <span class="mono">{{ byCategory.boundary.length }}</span> / 异常
-          <span class="mono">{{ byCategory.exception.length }}</span
-          >，F-GEN-01 三类）
+          共 <span class="mono">{{ visibleCases.length + visibleE2eCases.length }}</span> 条<span
+            v-if="caseType !== 'e2e'"
+            >（正常 <span class="mono">{{ byCategory.normal.length }}</span> / 边界
+            <span class="mono">{{ byCategory.boundary.length }}</span> / 异常
+            <span class="mono">{{ byCategory.exception.length }}</span
+            >，F-GEN-01 三类）</span
+          >
         </span>
       </div>
 
@@ -106,7 +119,7 @@ function paramsText(params: Record<string, unknown> | undefined): string {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in cases" :key="item.id">
+            <tr v-for="item in visibleCases" :key="item.id">
               <td>
                 <span class="mono case-id">{{ item.id }}</span>
               </td>
@@ -144,20 +157,22 @@ function paramsText(params: Record<string, unknown> | undefined): string {
         </table>
       </div>
 
-      <div v-if="e2eCases.length" class="card e2e-card">
+      <div v-if="visibleE2eCases.length" class="card e2e-card">
         <header class="card-title">
           前端 E2E 用例
-          <span class="e2e-count mono">{{ e2eCases.length }} 条</span>
+          <span class="e2e-count mono">{{ visibleE2eCases.length }} 条</span>
         </header>
         <p class="e2e-note">由需求测试点生成，步骤仅使用受限的浏览器动作与语义定位器。</p>
-        <article v-for="item in e2eCases" :key="item.id" class="e2e-case">
+        <article v-for="item in visibleE2eCases" :key="item.id" class="e2e-case">
           <div class="e2e-head">
             <span class="mono case-id">{{ item.id }}</span>
             <span class="tag tag-e2e">前端 E2E</span>
             <span class="mono loc">{{ item.requirement_id }}</span>
             <strong>{{ item.title }}</strong>
           </div>
-          <p v-if="item.preconditions?.length" class="e2e-detail">前置：{{ item.preconditions.join('；') }}</p>
+          <p v-if="item.preconditions?.length" class="e2e-detail">
+            前置：{{ item.preconditions.join('；') }}
+          </p>
           <ol class="e2e-steps">
             <li v-for="(step, index) in item.steps" :key="index">
               <span class="mono">{{ step.action }}</span>
@@ -242,13 +257,41 @@ function paramsText(params: Record<string, unknown> | undefined): string {
   color: var(--accent-strong);
 }
 
-.tag-e2e { background: var(--warning-dim); color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, var(--border)); }
-.e2e-count { margin-left: var(--space-2); color: var(--text-3); font-weight: 400; }
-.e2e-note, .e2e-detail { color: var(--text-2); font-size: var(--text-sm); }
-.e2e-case { padding: var(--space-3) 0; border-top: 1px solid var(--border); }
-.e2e-head { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; font-size: var(--text-sm); }
-.e2e-steps { margin: var(--space-2) 0; padding-left: 24px; font-size: var(--text-sm); color: var(--text-2); }
-.e2e-steps li { margin: 4px 0; }
+.tag-e2e {
+  background: var(--warning-dim);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 35%, var(--border));
+}
+.e2e-count {
+  margin-left: var(--space-2);
+  color: var(--text-3);
+  font-weight: 400;
+}
+.e2e-note,
+.e2e-detail {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.e2e-case {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+}
+.e2e-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  font-size: var(--text-sm);
+}
+.e2e-steps {
+  margin: var(--space-2) 0;
+  padding-left: 24px;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+.e2e-steps li {
+  margin: 4px 0;
+}
 
 .tag[data-category='normal'] {
   background: var(--accent-dim);

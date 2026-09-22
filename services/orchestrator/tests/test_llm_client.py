@@ -65,7 +65,7 @@ async def test_complete_success_writes_trace(tmp_path: Path) -> None:
     assert record["prompt_file"] == "req_parse@1.0"
     assert record["knowledge_refs"] == []
     assert record["prompt_version"] == "1.0"
-    assert record["sampling"]["model"] == "glm-5.3"
+    assert record["sampling"]["model"] == "MiniMax-M3"
     assert record["tokens"] == 128
     assert record["ok"] is True
     assert record["input_digest"] and record["output_digest"]

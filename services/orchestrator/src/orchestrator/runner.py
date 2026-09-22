@@ -15,8 +15,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import os
 import shutil
+import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,7 +44,9 @@ from orchestrator.nodes import (
     run_testcase_generate,
 )
 from orchestrator.nodes.test_report import build_final_metrics
+from orchestrator.persistence import Database
 from orchestrator.pipeline import NODE_ORDER, NodeStatus
+from orchestrator.security import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,10 @@ class PipelineRunner:
         orch_store: ArtifactStore,
         te_store: ArtifactStore,
         java_client: JavaParserClient,
+        *,
+        database: Database | None = None,
+        worker_id: str | None = None,
+        lease_seconds: int = 120,
     ) -> None:
         """双身份产物卷：甲/乙产物 orchestrator 写，丙产物 test-executor 写。"""
         self._settings = settings
@@ -80,6 +90,9 @@ class PipelineRunner:
         self._orch_store = orch_store
         self._te_store = te_store
         self._java_client = java_client
+        self._database = database
+        self._worker_id = worker_id or f"worker-{os.getpid()}"
+        self._lease_seconds = lease_seconds
 
     async def run(
         self,
@@ -94,6 +107,7 @@ class PipelineRunner:
         auth_headers: dict[str, str] | None = None,
         llm_config: dict[str, Any] | None = None,
         e2e: dict[str, Any] | None = None,
+        fixtures: list[dict[str, Any]] | None = None,
     ) -> PipelineOutcome:
         """按固定顺序驱动 9 节点（F-ORCH-01）。
 
@@ -103,26 +117,62 @@ class PipelineRunner:
         auth：C-15 鉴权配置（login_url/username/password/insecure_tls），
             auto_execute/retest_regression 执行前登录注入凭据头。
         """
+        if self._database is not None:
+            self._database.ensure_job(job_id)
         state = self._open_or_init(job_id)
         if force_node is not None:
             # C-14：级联失效——目标节点及全部下游归档重置（防新旧数据混用）
             self._reset_from_node(state, force_node)
+        # 数据库只保存可查询的节点索引，初始化/断点重跑时先与 state.json 对账。
+        for name in NODE_ORDER:
+            await self._sync_db_node(state, name)
+        run_id = uuid.uuid4().hex[:12]
         llm = LlmClient(
             settings=self._runtime_llm_settings(llm_config),
             job_id=job_id,
             trace_path=self._orch_store.job_dir(job_id) / "llm_calls.jsonl",
+            run_id=run_id,
         )
         prompts_dir = Path(__file__).resolve().parents[4] / "prompts"
         outcome = PipelineOutcome(job_id=job_id)
+        service_base_urls = {
+            repository.name: repository.service_base_url.strip().rstrip("/")
+            for repository in repositories
+            if repository.service_base_url
+        }
+        self._append_runtime_event(
+            job_id,
+            run_id=run_id,
+            event="run_started",
+            node="pipeline",
+            message=(f"开始运行（从 {force_node or '断点续跑'}）"),
+            force_node=force_node,
+        )
 
         for node_name in NODE_ORDER:
             status = state.node(node_name).status
             if status is NodeStatus.COMPLETED:
                 outcome.completed.append(node_name)  # 断点续跑：跳过已完成
                 logger.info("节点 %s 已完成（续跑跳过）", node_name)
+                self._append_runtime_event(
+                    job_id,
+                    run_id=run_id,
+                    event="node_skipped",
+                    node=node_name,
+                    message="节点已有合规产物，断点续跑跳过",
+                    status=NodeStatus.COMPLETED.value,
+                )
                 continue
             if status is NodeStatus.MANUAL_INTERVENTION:
                 outcome.degraded.append((node_name, "前次运行降级，等待人工介入"))
+                self._append_runtime_event(
+                    job_id,
+                    run_id=run_id,
+                    event="node_skipped",
+                    node=node_name,
+                    message="节点处于人工介入状态，本轮跳过",
+                    status=NodeStatus.MANUAL_INTERVENTION.value,
+                )
                 continue
 
             await self._run_node_with_retry(
@@ -139,9 +189,13 @@ class PipelineRunner:
                 auth_headers,
                 e2e,
                 document_pairs,
+                fixtures,
+                run_id,
+                service_base_urls,
             )
 
         self._refresh_final_metrics(state)
+        self._orch_store.write_manifest(job_id)
         outcome.artifacts_dir = self._orch_store.job_dir(job_id)
         return outcome
 
@@ -183,11 +237,41 @@ class PipelineRunner:
         auth_headers: dict[str, str] | None = None,
         e2e: dict[str, Any] | None = None,
         document_pairs: list[dict[str, str | None]] | None = None,
+        fixtures: list[dict[str, Any]] | None = None,
+        run_id: str | None = None,
+        service_base_urls: dict[str, str] | None = None,
     ) -> None:
         """单节点治理：LLM 类失败重试一次，再失败或非 LLM 类失败 → 降级并继续（D1）。"""
         attempts = state.node(node_name).attempts
         while attempts < MAX_NODE_ATTEMPTS:
+            attempt = attempts + 1
+            started = datetime.now(UTC)
+            self._append_runtime_event(
+                state.job_id,
+                run_id=run_id,
+                event="node_started",
+                node=node_name,
+                message=f"开始处理（第 {attempt}/{MAX_NODE_ATTEMPTS} 次）",
+                attempt=attempt,
+                total_attempts=MAX_NODE_ATTEMPTS,
+            )
+            await self._sync_db_node(
+                state,
+                node_name,
+                status=NodeStatus.RUNNING.value,
+                attempts=max(attempts, attempt),
+            )
             try:
+                invoke_kwargs: dict[str, Any] = {
+                    "document_pairs": document_pairs,
+                    "rest_insecure_tls": rest_insecure_tls,
+                }
+                # 保持测试替身/旧扩展 runner 的签名兼容；只有任务确实配置夹具时
+                # 才向节点分派新增参数。
+                if fixtures is not None:
+                    invoke_kwargs["fixtures"] = fixtures
+                if service_base_urls:
+                    invoke_kwargs["service_base_urls"] = service_base_urls
                 await self._invoke_node(
                     node_name,
                     state,
@@ -199,14 +283,41 @@ class PipelineRunner:
                     auth,
                     auth_headers,
                     e2e,
-                    document_pairs=document_pairs,
-                    rest_insecure_tls=rest_insecure_tls,
+                    **invoke_kwargs,
                 )
+                await self._sync_db_node(state, node_name)
                 outcome.completed.append(node_name)
+                self._append_runtime_event(
+                    state.job_id,
+                    run_id=run_id,
+                    event="node_finished",
+                    node=node_name,
+                    message="节点完成",
+                    status=NodeStatus.COMPLETED.value,
+                    attempt=attempt,
+                    duration_ms=max(0, int((datetime.now(UTC) - started).total_seconds() * 1000)),
+                )
                 return
             except PipelineError as exc:
                 attempts += 1
                 logger.warning("节点 %s 第 %d 次尝试失败：%s", node_name, attempts, exc.message)
+                await self._sync_db_node(
+                    state,
+                    node_name,
+                    status=NodeStatus.PENDING.value,
+                    attempts=state.node(node_name).attempts or attempts,
+                    error=exc.to_dict(),
+                )
+                self._append_runtime_event(
+                    state.job_id,
+                    run_id=run_id,
+                    event="node_error",
+                    node=node_name,
+                    message=exc.message,
+                    code=exc.code,
+                    attempt=attempt,
+                    retryable=exc.code.startswith("X-LLM-"),
+                )
                 # 设计 §1.3：节点级自动重试仅 LLM 调用类失败（网络级重试在 LlmClient 内）
                 if not exc.code.startswith("X-LLM-"):
                     attempts = MAX_NODE_ATTEMPTS
@@ -214,8 +325,60 @@ class PipelineRunner:
                     # 重试耗尽 → 降级（manual_intervention + 降级清单，D1）
                     reason = f"{exc.code}：{exc.message}"
                     self._engine.mark_degraded(state, node_name, reason)
+                    await self._sync_db_node(state, node_name)
                     outcome.degraded.append((node_name, reason))
+                    self._append_runtime_event(
+                        state.job_id,
+                        run_id=run_id,
+                        event="node_finished",
+                        node=node_name,
+                        message="重试耗尽，节点降级并继续后续流程",
+                        status=NodeStatus.MANUAL_INTERVENTION.value,
+                        attempt=attempt,
+                        duration_ms=max(
+                            0,
+                            int((datetime.now(UTC) - started).total_seconds() * 1000),
+                        ),
+                    )
                     return
+
+    def _append_runtime_event(
+        self,
+        job_id: str,
+        *,
+        run_id: str | None,
+        event: str,
+        node: str,
+        message: str,
+        **fields: Any,
+    ) -> None:
+        """追加流水线级运行事件，供总览时间线显示；只写脱敏后的状态信息。"""
+        entry: dict[str, Any] = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "run_id": run_id,
+            "node": node,
+            "event": event,
+            "message": message,
+            **fields,
+        }
+        path = self._orch_store.job_dir(job_id) / "runtime_log.jsonl"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(redact_secrets(entry), ensure_ascii=False) + "\n")
+        except OSError:
+            # 运行日志是观察性增强，不能覆盖节点产物和状态主流程。
+            logger.warning("无法写入流水线运行日志：%s", path)
+        if self._database is not None:
+            try:
+                self._database.append_event(
+                    job_id,
+                    f"runtime_{event}",
+                    node_name=node,
+                    payload=entry,
+                )
+            except Exception:  # pragma: no cover - 事件索引故障不阻断节点产物
+                logger.exception("无法写入数据库运行事件：%s/%s", job_id, event)
 
     async def _invoke_node(
         self,
@@ -230,7 +393,9 @@ class PipelineRunner:
         auth_headers: dict[str, str] | None = None,
         e2e: dict[str, Any] | None = None,
         document_pairs: list[dict[str, str | None]] | None = None,
+        fixtures: list[dict[str, Any]] | None = None,
         rest_insecure_tls: bool = True,
+        service_base_urls: dict[str, str] | None = None,
     ) -> None:
         """分派到对应节点实现（甲/乙产物走 orch_store，丙产物走 te_store）。"""
         if node_name == "req_parse":
@@ -273,6 +438,8 @@ class PipelineRunner:
                 preauthenticated_headers=auth_headers,
                 e2e=e2e,
                 insecure_tls=rest_insecure_tls,
+                fixtures=fixtures,
+                service_base_urls=service_base_urls,
             )
         elif node_name == "test_report":
             await run_test_report(self._engine, state, self._orch_store)
@@ -287,6 +454,8 @@ class PipelineRunner:
                 auth=auth,
                 preauthenticated_headers=auth_headers,
                 insecure_tls=rest_insecure_tls,
+                fixtures=fixtures,
+                service_base_urls=service_base_urls,
             )
         else:  # pragma: no cover - NODE_ORDER 固定 9 项，防御性兜底
             raise PipelineError(
@@ -333,6 +502,42 @@ class PipelineRunner:
         )
         self._engine._save(state)  # 归档后立即持久化
 
+    async def _sync_db_node(
+        self,
+        state: JobState,
+        node_name: str,
+        *,
+        status: str | None = None,
+        attempts: int | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        """把文件状态镜像到数据库，供多实例任务列表和恢复逻辑读取。
+
+        文件产物仍是节点语义的事实来源；数据库保存可查询的索引快照。镜像失败
+        不应掩盖节点本身的结果，但会记录日志，便于运维发现数据库故障。
+        """
+        if self._database is None:
+            return
+        node = state.node(node_name)
+        try:
+            recorded = await asyncio.to_thread(
+                self._database.record_node,
+                state.job_id,
+                node_name,
+                status=status or node.status.value,
+                attempts=attempts if attempts is not None else node.attempts,
+                error=error if error is not None else node.error,
+                worker_id=self._worker_id,
+            )
+            if recorded is False:
+                logger.warning(
+                    "数据库节点状态镜像已跳过（Worker 未持有任务租约）：%s/%s",
+                    state.job_id,
+                    node_name,
+                )
+        except Exception:  # pragma: no cover - 数据库故障由就绪检查和运维告警发现
+            logger.exception("数据库节点状态镜像失败：%s/%s", state.job_id, node_name)
+
 
 def summarize_outcome(outcome: PipelineOutcome) -> str:
     """CLI 汇总输出（人读，数值程序拼接）。"""
@@ -374,6 +579,7 @@ def repository_inputs_from_config(
                 is_fallback=bool(repo.get("is_fallback", False)),
                 include_paths=tuple(repo.get("include_paths", ())),
                 language=str(repo.get("language", "java")),
+                service_base_url=(str(repo.get("service_base_url") or "").strip() or None),
             )
         )
     return inputs

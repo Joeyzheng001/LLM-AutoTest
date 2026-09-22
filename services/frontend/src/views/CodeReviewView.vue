@@ -190,7 +190,9 @@ const uncoveredCount = computed(
                   {{ MAPPING_STATUS_LABELS[mapping.status] ?? mapping.status }}
                 </span>
               </td>
-              <td><span class="mono loc">{{ mapping.evidence_quality ?? '—' }}</span></td>
+              <td>
+                <span class="mono loc">{{ mapping.evidence_quality ?? '—' }}</span>
+              </td>
               <td>
                 <span class="mono">{{ formatConfidence(mapping.confidence) }}</span>
               </td>
@@ -209,7 +211,10 @@ const uncoveredCount = computed(
               <span class="mono req-id">{{ risk.requirement_id }}</span>
               <span v-if="risk.severity" class="tag severity-tag">{{ risk.severity }}</span>
               <span v-if="risk.kind === 'evidence_gap'" class="tag evidence-tag">待核查</span>
-              <span>{{ risk.description }}<template v-if="risk.action">；建议：{{ risk.action }}</template></span>
+              <span
+                >{{ risk.description
+                }}<template v-if="risk.action">；建议：{{ risk.action }}</template></span
+              >
             </li>
           </ul>
         </div>
@@ -227,11 +232,20 @@ const uncoveredCount = computed(
 
       <div v-if="deterministicChecks.length" class="card evidence-card">
         <header class="derived-title">服务端行为证据检查</header>
-        <p class="panel-note">程序先检查高风险需求是否存在直接代码或配置证据；“待核查”不会被判为已实现。</p>
+        <p class="panel-note">
+          程序先检查高风险需求是否存在直接代码或配置证据；“待核查”不会被判为已实现。
+        </p>
         <ul class="derived-list">
-          <li v-for="check in deterministicChecks" :key="`${check.requirement_id}-${check.rule_id}`" class="derived-item">
+          <li
+            v-for="check in deterministicChecks"
+            :key="`${check.requirement_id}-${check.rule_id}`"
+            class="derived-item"
+          >
             <span class="mono req-id">{{ check.requirement_id }}</span>
-            <span class="tag" :class="check.status === 'needs_verification' ? 'evidence-tag' : 'evidence-ok'">
+            <span
+              class="tag"
+              :class="check.status === 'needs_verification' ? 'evidence-tag' : 'evidence-ok'"
+            >
               {{ check.status === 'needs_verification' ? '待核查' : '已发现证据' }}
             </span>
             <span>{{ check.description }}</span>
@@ -242,7 +256,11 @@ const uncoveredCount = computed(
       <div v-if="incrementalFindings.length" class="card evidence-card">
         <header class="derived-title">增量评审优先项</header>
         <ul class="derived-list">
-          <li v-for="finding in incrementalFindings" :key="`${finding.kind}-${finding.repo}-${finding.file}`" class="derived-item">
+          <li
+            v-for="finding in incrementalFindings"
+            :key="`${finding.kind}-${finding.repo}-${finding.file}`"
+            class="derived-item"
+          >
             <span class="tag severity-tag">{{ finding.severity }}</span>
             <span>{{ finding.description }}</span>
             <span class="mono loc">{{ finding.repo }}/{{ finding.file }}</span>

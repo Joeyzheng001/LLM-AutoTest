@@ -1,5 +1,8 @@
 # 构建上下文 = 仓库根（compose 已指向 ../..）：
 # prompts/ 与 schemas/ 为运行必需（prompt 加载与产物 Schema 校验），随镜像分发
+ARG UV_VERSION=0.12.9
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
 FROM python:3.11-slim
 
 # python_scan 基线 diff（C-09）在进程内 subprocess 调 git，容器须自带
@@ -8,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
 
 WORKDIR /app/services/orchestrator
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=uv /uv /usr/local/bin/uv
 
 COPY services/orchestrator/pyproject.toml services/orchestrator/uv.lock* ./
 RUN uv sync --frozen --no-dev --no-install-project

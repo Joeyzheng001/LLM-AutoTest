@@ -1,4 +1,4 @@
-"""GLM 客户端：OpenAI 兼容 chat/completions 调用 + 留痕 + 超时/重试治理。
+"""MiniMax/OpenAI 兼容客户端：chat/completions 调用 + 留痕 + 超时/重试治理。
 
 口径全部来自 docs/12 第三章：
 - 每次调用向 llm_calls.jsonl 追加一行留痕（call_id 格式 LLM-<job 短码>-<序号>）；
@@ -50,7 +50,7 @@ class LlmResult:
 
 
 class LlmClient:
-    """GLM-5.3 调用客户端（每 job 一个实例，trace 追加到该 job 目录）。"""
+    """MiniMax 调用客户端（每 job 一个实例，trace 追加到该 job 目录）。"""
 
     def __init__(
         self,
@@ -59,6 +59,7 @@ class LlmClient:
         trace_path: Path,
         transport: httpx.AsyncBaseTransport | None = None,
         retry_backoff: tuple[float, float] = DEFAULT_RETRY_BACKOFF,
+        run_id: str | None = None,
     ) -> None:
         """transport 仅测试注入用（httpx.MockTransport），生产留 None。"""
         self._settings = settings
@@ -66,6 +67,8 @@ class LlmClient:
         self._trace_path = trace_path
         self._transport = transport
         self._retry_backoff = retry_backoff
+        # 同一 job 可以多次断点/重跑；run_id 让前端和审计日志能区分每一轮。
+        self._run_id = run_id
         self._seq = self._count_trace_lines() + 1
 
     async def complete(self, node: str, prompt: PromptSpec, user_content: str) -> LlmResult:
@@ -95,6 +98,7 @@ class LlmClient:
         self._append_trace(
             {
                 "call_id": call_id,
+                **({"run_id": self._run_id} if self._run_id else {}),
                 "timestamp": datetime.now(UTC).isoformat(),
                 "node": node,
                 "prompt_file": prompt.ref,

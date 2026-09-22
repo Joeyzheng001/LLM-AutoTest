@@ -14,7 +14,7 @@
 - R-GEN-02：params 参数名 ⊆ 接口定义参数集合——违规用例丢弃，带反馈重生成一次；
   二次仍违规 → 该接口用例放弃，记 X-GEN-02 告警；
 - R-GEN-03：脚本 py_compile，失败记 loadable=false；
-- X-GEN-01：接口零用例（LLM 漏产）→ 告警跳过，其他接口不受影响；
+- X-GEN-01：接口/场景漏产先进入定向补产；补产仍失败则以 X-LLM-02 阻止残缺产物；
 - X-GEN-03：接口含 unknown 参数 → 用例标 low_confidence。
 
 完成判据（docs/12 §1.3）：loadable 全真 → completed；存在不可加载脚本 →
@@ -23,6 +23,7 @@ mark_degraded（manual_intervention，D1：不阻塞下游）。零用例 → X-
 
 from __future__ import annotations
 
+import hashlib
 import json
 from functools import partial
 from pathlib import Path
@@ -33,6 +34,11 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
 from orchestrator.artifacts import ArtifactStore
+from orchestrator.case_validation import (
+    expected_client_error,
+    inspect_case_parameters,
+    materialize_declared_defaults,
+)
 from orchestrator.engine import Engine, JobState
 from orchestrator.errors import X_LLM_02, X_ORCH_01, PipelineError
 from orchestrator.llm import LlmResult
@@ -44,6 +50,25 @@ from orchestrator.prompts_loader import PromptSpec, load_prompt
 NODE_NAME = "testcase_generate"
 
 _VALID_CATEGORIES = ("normal", "boundary", "exception")
+_MAX_CASE_INTERFACES_PER_BATCH = 3
+_CHECKPOINT_FILENAME = "testcase_generate_checkpoint.json"
+
+# 模型常把同一集合命名为 testcases/items/results，或包进 data/result/output，
+# 或把「只输出 cases 数组」误解为裸数组（drift 登记表 testcase 行已验证）。
+# 仅归一化容器名；条目内容仍走下方 interface_id/category 硬校验与 Schema 终审。
+_CASES_CONTAINER_KEYS = (
+    "cases",
+    "testcases",
+    "test_cases",
+    "testCases",
+    "case_list",
+    "testcase_list",
+    "items",
+    "results",
+)
+# 部分本地/兼容网关把模型正文再包为 {"body": "{...}"}；body 只在
+# 顶层响应包裹语义中处理，绝不扫描用例 params 内同名字段。
+_CASES_WRAPPER_KEYS = ("data", "result", "output", "response", "payload", "content", "body")
 
 _SCRIPT_TEMPLATE = '''"""{case_id}: {title!r}
 
@@ -105,19 +130,43 @@ async def run_testcase_generate(
         # 以接口为分批边界：每批只携带相关需求与映射，避免用例 JSON 随接口数线性膨胀。
         valid: list[dict[str, Any]] = []
         retry_feedback: list[dict[str, Any]] = []
-        interface_batches = chunk_json_items(interfaces)
+        # 用例输出随接口数 × 三类场景增长。最多三个接口一批，避免模型只回答
+        # 批次首项而把其余接口静默漏掉。
+        interface_batches = _chunk_case_interfaces(interfaces)
+        checkpoint_fingerprint = _generation_fingerprint(
+            requirements, interfaces, mappings, testpoints
+        )
+        checkpoint = _load_generation_checkpoint(store, state.job_id, checkpoint_fingerprint)
+        completed_batches = {
+            int(str(item.get("index")))
+            for item in checkpoint.get("batches", [])
+            if isinstance(item, dict) and str(item.get("index", "")).isdigit()
+        }
+        if checkpoint:
+            for item in checkpoint.get("batches", []):
+                if not isinstance(item, dict) or not str(item.get("index", "")).isdigit():
+                    continue
+                if int(item["index"]) not in completed_batches:
+                    continue
+                valid.extend(
+                    case for case in item.get("cases", []) if isinstance(case, dict)
+                )
+                if isinstance(item.get("violations"), list):
+                    retry_feedback.extend(item["violations"])
+        checkpoint_batches = [
+            item for item in checkpoint.get("batches", []) if isinstance(item, dict)
+        ]
         for index, batch in enumerate(interface_batches, start=1):
+            if index in completed_batches:
+                continue
             user_content = _build_batch_context(
                 batch, requirements, mappings, testpoints, auth, index, len(interface_batches)
             )
-            raw_cases = await complete_with_json_repair(
-                llm,
-                NODE_NAME,
-                prompt,
-                user_content,
-                partial(_parse_llm_cases, interfaces=batch),
+            raw_cases = await _complete_cases_with_coverage_recovery(
+                llm, prompt, user_content, batch
             )
             batch_valid, violations = _filter_param_violations(raw_cases, batch)
+            violations2: list[dict[str, Any]] = []
             if violations:
                 feedback = json.dumps(
                     {
@@ -136,11 +185,28 @@ async def run_testcase_generate(
                     prompt,
                     f"{user_content}\n\n{feedback}",
                     partial(_parse_llm_cases, interfaces=batch),
+                    validate=partial(_validate_batch_coverage, interfaces=batch),
                 )
                 valid2, violations2 = _filter_param_violations(raw_cases2, batch)
                 batch_valid = _merge_rounds(batch_valid, valid2)
                 retry_feedback.extend(violations2)
             valid.extend(batch_valid)
+            checkpoint_batches = [
+                item for item in checkpoint_batches if int(item.get("index", 0)) != index
+            ]
+            checkpoint_batches.append(
+                {"index": index, "cases": batch_valid, "violations": violations2}
+            )
+            _save_generation_checkpoint(
+                store,
+                state.job_id,
+                {
+                    "schema_version": "1.0",
+                    "fingerprint": checkpoint_fingerprint,
+                    "batch_count": len(interface_batches),
+                    "batches": sorted(checkpoint_batches, key=lambda item: int(item["index"])),
+                },
+            )
 
         warnings: list[str] = []
         # X-GEN-02：二次仍违规的接口——整接口用例放弃（非部分保留）
@@ -152,13 +218,6 @@ async def run_testcase_generate(
             )
         if abandoned:
             valid = [c for c in valid if c["interface_id"] not in set(abandoned)]
-        # X-GEN-01：零用例接口跳过并记录
-        covered_interfaces = {case["interface_id"] for case in valid}
-        for interface in interfaces:
-            if_id = str(interface.get("id", ""))
-            if if_id and if_id not in covered_interfaces:
-                warnings.append(f"X-GEN-01: 接口 {if_id} 未产出用例，跳过并记录")
-
         if not valid:
             raise PipelineError(
                 code="X-GEN-02",
@@ -211,10 +270,64 @@ async def run_testcase_generate(
             )
         else:
             engine.mark_completed(state, NODE_NAME)
+        _clear_generation_checkpoint(store, state.job_id)
         return path
     except PipelineError as exc:
         engine.mark_failed(state, NODE_NAME, exc)
         raise
+
+
+def _generation_fingerprint(
+    requirements: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+    mappings: list[dict[str, Any]],
+    testpoints: list[dict[str, Any]],
+) -> str:
+    """为批次检查点生成输入指纹，防止需求或接口变更时复用旧用例。"""
+    payload = {
+        "requirements": requirements,
+        "interfaces": interfaces,
+        "mappings": mappings,
+        "testpoints": testpoints,
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _load_generation_checkpoint(
+    store: ArtifactStore, job_id: str, fingerprint: str
+) -> dict[str, Any]:
+    """读取未完成的批次检查点；不存在、损坏或输入已变更时从头开始。"""
+    path = store.job_dir(job_id) / _CHECKPOINT_FILENAME
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("fingerprint") != fingerprint:
+        return {}
+    batches = payload.get("batches")
+    if not isinstance(batches, list):
+        return {}
+    return {"batches": batches}
+
+
+def _save_generation_checkpoint(
+    store: ArtifactStore, job_id: str, payload: dict[str, Any]
+) -> None:
+    """原子保存内部检查点（不作为公开产物，不参与节点完成判据）。"""
+    path = store.job_dir(job_id) / _CHECKPOINT_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _clear_generation_checkpoint(store: ArtifactStore, job_id: str) -> None:
+    """节点完整成功后删除检查点，避免用户主动重跑时误跳过全部批次。"""
+    try:
+        (store.job_dir(job_id) / _CHECKPOINT_FILENAME).unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _load_json_array(
@@ -279,6 +392,196 @@ def _build_batch_context(
             "password": auth.get("password"),
         }
     return json.dumps(context, ensure_ascii=False)
+
+
+def _chunk_case_interfaces(interfaces: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """按字符预算后再按最多三个接口拆分，控制用例输出规模。"""
+    batches: list[list[dict[str, Any]]] = []
+    for char_batch in chunk_json_items(interfaces):
+        for index in range(0, len(char_batch), _MAX_CASE_INTERFACES_PER_BATCH):
+            batches.append(char_batch[index : index + _MAX_CASE_INTERFACES_PER_BATCH])
+    return batches
+
+
+def _validate_batch_coverage(cases: list[dict[str, Any]], interfaces: list[dict[str, Any]]) -> None:
+    """F-GEN-01：每个当前批接口必须有 normal/boundary/exception 三类用例。
+
+    覆盖缺失进入 JSON 修复轮，而不是让节点带着“跳过并记录”的残缺产物完成。
+    """
+    categories_by_interface: dict[str, set[str]] = {}
+    for case in cases:
+        interface_id = str(case.get("interface_id", ""))
+        categories_by_interface.setdefault(interface_id, set()).add(str(case.get("category", "")))
+    missing: list[str] = []
+    for interface in interfaces:
+        interface_id = str(interface.get("id", ""))
+        absent = [
+            category
+            for category in _VALID_CATEGORIES
+            if category not in categories_by_interface.get(interface_id, set())
+        ]
+        if absent:
+            missing.append(f"{interface_id}: {', '.join(absent)}")
+    if missing:
+        raise PipelineError(
+            code=X_LLM_02,
+            message="当前批接口/场景漏产，必须补齐后再提交：" + "; ".join(missing),
+            node_id=NODE_NAME,
+        )
+
+
+async def _complete_cases_with_coverage_recovery(
+    llm: SupportsComplete,
+    prompt: PromptSpec,
+    user_content: str,
+    interfaces: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """生成一批用例，并对漏产场景做定向补产。
+
+    模型经常先返回批次中第一个接口，通用 JSON 修复轮只能重复提醒，仍可能
+    静默漏掉后续接口。这里保留两轮通用修复；若输出本身可解析但覆盖不全，
+    再按接口/场景逐项补产，最后才允许批次通过。补产失败仍抛出原始校验错误，
+    不生成残缺 testcases.json。
+    """
+    first = await llm.complete(NODE_NAME, prompt, user_content)
+    first_cases: list[dict[str, Any]] | None = None
+    try:
+        cases = _parse_llm_cases(first.text, interfaces)
+        first_cases = cases
+        _validate_batch_coverage(cases, interfaces)
+        return cases
+    except PipelineError as first_error:
+        if first_error.code != X_LLM_02:
+            raise
+        repair_content = (
+            f"{user_content}\n\n"
+            "上一轮输出未通过机器校验。请仅输出 JSON，必须覆盖本批每一个接口，"
+            "且每个接口恰好包含 normal、boundary、exception 三类用例；"
+            "不得遗漏任何接口，不要解释或输出 Markdown。\n"
+            f"校验错误：{first_error.message}"
+        )
+        second = await llm.complete(NODE_NAME, prompt, repair_content)
+        try:
+            repaired = _parse_llm_cases(second.text, interfaces)
+            _validate_batch_coverage(repaired, interfaces)
+            return repaired
+        except PipelineError as second_error:
+            # 只有结构可解析时才进入按缺失项补产；若结构本身损坏，继续沿用
+            # 原有 X-LLM-02 口径，避免把不相关的模型输出拼进用例清单。
+            try:
+                second_cases = _parse_llm_cases(second.text, interfaces)
+            except PipelineError:
+                if _looks_like_cross_node_payload(second.text, interfaces):
+                    # MiniMax 偶尔把接口还原对象（常见特征是 recon_date）原样回显。
+                    # 这是节点串产物，不是普通 JSON 容器漂移；追加一次明确的节点隔离
+                    # 修复，避免把同一错误在通用修复轮里重复两次。
+                    shape_repair = (
+                        f"{user_content}\n\n"
+                        "上一次输出为空对象或错误地返回了其它节点产物，不是测试用例。"
+                        "当前节点只能输出测试用例 JSON：顶层必须只有 cases 数组；"
+                        "禁止输出 recon_date、interfaces、candidate_id、signature、code_location，"
+                        "也禁止把 pk、close_type 等请求参数提升到根对象；"
+                        "也不要解释或输出 Markdown。"
+                        "每个输入接口必须包含 normal、boundary、exception。"
+                    )
+                    third = await llm.complete(NODE_NAME, prompt, shape_repair)
+                    try:
+                        third_cases = _parse_llm_cases(third.text, interfaces)
+                        _validate_batch_coverage(third_cases, interfaces)
+                        return third_cases
+                    except PipelineError:
+                        pass
+                raise second_error from first_error
+            merged = _merge_case_entries(first_cases or [], second_cases)
+            missing = _missing_categories(merged, interfaces)
+            for interface, categories in missing:
+                targeted_content = (
+                    f"{user_content}\n\n"
+                    "这是漏产补充请求。只为下面指定的接口和场景输出 JSON，"
+                    "禁止输出其它接口、禁止输出其它类别：\n"
+                    f"接口：{json.dumps(interface, ensure_ascii=False)}\n"
+                    f"必须补齐场景：{', '.join(categories)}\n"
+                    '输出格式：{"cases":[{"interface_id":"...","category":"normal|boundary|exception",'
+                    '"title":"...","params":{},"expected":"status=..."}]}。'
+                )
+                targeted = await llm.complete(NODE_NAME, prompt, targeted_content)
+                additions = _parse_llm_cases(targeted.text, [interface])
+                wanted = [
+                    case for case in additions if str(case.get("category", "")) in categories
+                ]
+                if {str(case.get("category", "")) for case in wanted} != set(categories):
+                    raise second_error
+                merged = _merge_case_entries(merged, wanted)
+            _validate_batch_coverage(merged, interfaces)
+            return merged
+
+
+def _missing_categories(
+    cases: list[dict[str, Any]], interfaces: list[dict[str, Any]]
+) -> list[tuple[dict[str, Any], list[str]]]:
+    """返回每个接口仍缺少的场景，保持接口输入顺序。"""
+    categories_by_interface: dict[str, set[str]] = {}
+    for case in cases:
+        categories_by_interface.setdefault(str(case.get("interface_id", "")), set()).add(
+            str(case.get("category", ""))
+        )
+    result: list[tuple[dict[str, Any], list[str]]] = []
+    for interface in interfaces:
+        interface_id = str(interface.get("id", ""))
+        missing = [
+            category
+            for category in _VALID_CATEGORIES
+            if category not in categories_by_interface.get(interface_id, set())
+        ]
+        if missing:
+            result.append((interface, missing))
+    return result
+
+
+def _merge_case_entries(
+    existing: list[dict[str, Any]], additions: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """按接口+类别去重合并，补产结果不覆盖已有完整场景。"""
+    seen = {(str(item.get("interface_id", "")), str(item.get("category", ""))) for item in existing}
+    merged = list(existing)
+    for item in additions:
+        key = (str(item.get("interface_id", "")), str(item.get("category", "")))
+        if key not in seen:
+            merged.append(item)
+            seen.add(key)
+    return merged
+
+
+def _looks_like_cross_node_payload(
+    text: str, interfaces: list[dict[str, Any]] | None = None
+) -> bool:
+    """识别跨节点产物或请求参数对象误串到用例节点的常见形态。"""
+    try:
+        payload = json.loads(_strip_code_fence(text))
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict) or any(
+        isinstance(payload.get(key), list) for key in _CASES_CONTAINER_KEYS
+    ):
+        return False
+    keys = {str(key) for key in payload}
+    if not keys or keys & {
+        "recon_date",
+        "candidate_id",
+        "signature",
+        "code_location",
+        "interfaces",
+    }:
+        return True
+    if interfaces:
+        parameter_names = {
+            str(parameter.get("name"))
+            for interface in interfaces
+            for parameter in interface.get("params", [])
+            if isinstance(parameter, dict) and parameter.get("name")
+        }
+        return bool(keys & parameter_names)
+    return False
 
 
 def _derive_testpoints(
@@ -657,15 +960,16 @@ def _parse_llm_cases(text: str, interfaces: list[dict[str, Any]]) -> list[dict[s
             message=f"LLM 输出不是合法 JSON：{exc}",
             node_id=NODE_NAME,
         ) from exc
-    if not isinstance(data, dict) or not isinstance(data.get("cases"), list):
+    raw_entries = _normalize_cases_container(data)
+    if raw_entries is None:
         raise PipelineError(
             code=X_LLM_02,
-            message="LLM 输出缺少 cases 数组（或结构不符）",
+            message=f"LLM 输出缺少 cases 数组（或结构不符；{_safe_json_shape(data)}）",
             node_id=NODE_NAME,
         )
     if_ids = {str(i.get("id", "")) for i in interfaces}
     cases: list[dict[str, Any]] = []
-    for raw in data["cases"]:
+    for raw in raw_entries:
         if not isinstance(raw, dict):
             raise PipelineError(
                 code=X_LLM_02,
@@ -690,70 +994,116 @@ def _parse_llm_cases(text: str, interfaces: list[dict[str, Any]]) -> list[dict[s
     return cases
 
 
+def _normalize_cases_container(data: Any) -> list[Any] | None:
+    """提取已登记容器形态的用例数组；无法无歧义定位时返回 None（宁停不猜）。
+
+    部分兼容网关会把嵌套 JSON 序列化成字符串；仅在已知案例容器字段下解码该字符串，
+    不从任意文本猜测数组，避免把模型回显的需求/接口清单误当测试用例。
+    """
+    if isinstance(data, list):
+        return list(data)
+    if not isinstance(data, dict):
+        return None
+    # 某些模型在当前批次只有一条时会直接返回 case 对象。所需字段齐全且
+    # 语义唯一时可无损提升为单元素数组；后续仍校验 interface_id/category。
+    if _looks_like_case_entry(data):
+        return [data]
+    for key in _CASES_CONTAINER_KEYS:
+        entries = _decode_case_entries(data.get(key))
+        if entries is not None:
+            return entries
+    for key in _CASES_WRAPPER_KEYS:
+        nested = _decode_wrapper(data.get(key))
+        if isinstance(nested, (dict, list)):
+            inner = _normalize_cases_container(nested)
+            if inner is not None:
+                return inner
+    return None
+
+
+def _looks_like_case_entry(value: dict[str, Any]) -> bool:
+    """仅识别完整的单条接口用例对象，避免把任意模型对象误当 cases。"""
+    return (
+        isinstance(value.get("interface_id"), str)
+        and isinstance(value.get("category"), str)
+        and isinstance(value.get("title"), str)
+        and isinstance(value.get("params"), dict)
+        and isinstance(value.get("expected"), str)
+    )
+
+
+def _decode_case_entries(value: Any) -> list[Any] | None:
+    """将已知 cases 字段的裸数组或 JSON 字符串数组归一化。"""
+    if isinstance(value, list):
+        return list(value)
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return list(parsed) if isinstance(parsed, list) else None
+
+
+def _decode_wrapper(value: Any) -> dict[str, Any] | list[Any] | None:
+    """解码已知响应包裹层中的 JSON 对象/数组，不处理任意业务字段。"""
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(_strip_code_fence(value))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None
+
+
+def _safe_json_shape(data: Any) -> str:
+    """仅提供结构诊断，不记录或暴露模型返回内容。"""
+    if isinstance(data, dict):
+        keys = [str(key) for key in data.keys()][:12]
+        return f"顶层字段：{', '.join(keys) or '<空对象>'}"
+    if isinstance(data, list):
+        return "顶层为数组，但条目结构不符合要求"
+    return f"顶层类型：{type(data).__name__}"
+
+
 def _filter_param_violations(
     cases: list[dict[str, Any]], interfaces: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """R-GEN-02：params 参数名 ⊆ 接口定义参数集合。
+    """R-GEN-02：参数名、必填项和 unknown 容器均与接口定义一致。
 
     Returns:
         (通过校验的用例, 违规记录清单[{interface_id, params, message}]).
     """
-    params_by_if: dict[str, set[str]] = {}
-    structured_unknown_by_if: dict[str, set[str]] = {}
-    for interface in interfaces:
-        if_id = str(interface.get("id", ""))
-        definitions = interface.get("params") or []
-        params_by_if[if_id] = {str(p.get("name")) for p in definitions if p.get("name")}
-        # 静态扫描未展开 DTO/Serializer 时，body/query 容器仍会是 unknown。此时
-        # 文字标签（如 valid_payload）不是可执行请求，必须要求模型给出具体对象。
-        structured_unknown_by_if[if_id] = {
-            str(p.get("name"))
-            for p in definitions
-            if p.get("name")
-            and str(p.get("type")) == "unknown"
-            # 未声明位置的参数（例如 gRPC message 字段）不能按 REST query 容器处理。
-            and str(p.get("in", "")) in {"body", "query"}
-        }
+    interface_by_id = {str(interface.get("id", "")): interface for interface in interfaces}
     valid: list[dict[str, Any]] = []
     violations: list[dict[str, Any]] = []
     for case in cases:
         if_id = str(case.get("interface_id", ""))
-        allowed = params_by_if.get(if_id, set())
-        extra = (
-            {str(k) for k in (case.get("params") or {}).keys() if str(k) not in allowed}
-            if isinstance(case.get("params"), dict)
-            else set()
+        interface = interface_by_id.get(if_id, {})
+        normalized = materialize_declared_defaults(case, interface)
+        issues = inspect_case_parameters(normalized, interface)
+        messages = issues.messages(
+            allow_missing_for_error=expected_client_error(str(normalized.get("expected", "")))
         )
-        if extra:
+        if messages:
+            if issues.invalid_structured:
+                messages = [
+                    message.replace(
+                        "具体 JSON 对象", "禁止语义占位符，必须是具体 JSON 对象"
+                    )
+                    for message in messages
+                ]
             violations.append(
                 {
                     "interface_id": if_id,
-                    "params": case.get("params"),
-                    "message": f"清单外参数：{sorted(extra)}（允许：{sorted(allowed) or '无'})",
-                }
-            )
-            continue
-        raw_params = case.get("params")
-        placeholders = [
-            name
-            for name in structured_unknown_by_if.get(if_id, set())
-            if isinstance(raw_params, dict)
-            and name in raw_params
-            and not isinstance(raw_params[name], dict)
-        ]
-        if placeholders:
-            violations.append(
-                {
-                    "interface_id": if_id,
-                    "params": raw_params,
-                    "message": (
-                        "未知结构的 body/query 参数必须给出真实 JSON 对象，"
-                        f"禁止语义占位符：{sorted(placeholders)}"
-                    ),
+                    "params": normalized.get("params"),
+                    "message": "；".join(messages),
                 }
             )
         else:
-            valid.append(case)
+            valid.append(normalized)
     return valid, violations
 
 
@@ -802,7 +1152,7 @@ def _finalize_cases(
         }
         if case.get("requirement_id"):
             entry["requirement_id"] = str(case["requirement_id"])
-        if isinstance(case.get("params"), dict) and case["params"]:
+        if isinstance(case.get("params"), dict):
             entry["params"] = case["params"]
         if str(case.get("auth_mode", "")) in {"inherit", "missing", "invalid"}:
             entry["auth_mode"] = str(case["auth_mode"])

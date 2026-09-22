@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM-AutoTest · 系统介绍</title>
+  <style>
+    :root {
+      --ink: #f5f7fb;
+      --muted: #9daac0;
+      --line: rgba(196, 211, 236, .18);
+      --panel: rgba(21, 34, 57, .78);
+      --panel-strong: #172943;
+      --navy: #0b1423;
+      --blue: #62a6ff;
+      --cyan: #65e0d2;
+      --orange: #ffb86b;
+      --pink: #e8a1ff;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .30);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #07101d; }
+    body {
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      overflow: hidden;
+    }
+
+    .deck {
+      width: 100vw; height: 100vh; min-width: 960px; min-height: 540px;
+      position: relative; overflow: hidden;
+      background:
+        radial-gradient(circle at 78% 16%, rgba(75, 157, 255, .17), transparent 28%),
+        radial-gradient(circle at 12% 86%, rgba(101, 224, 210, .08), transparent 31%),
+        linear-gradient(135deg, #0c1728 0%, #0a1321 53%, #0d1c30 100%);
+    }
+    .deck::before {
+      content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .16;
+      background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: linear-gradient(to bottom, black 0%, transparent 86%);
+    }
+
+    .slide {
+      display: none; position: absolute; inset: 0; padding: 46px 72px 56px;
+      animation: in .35s ease-out;
+    }
+    .slide.active { display: block; }
+    @keyframes in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+    .topbar, .footer { position: absolute; left: 72px; right: 72px; display: flex; align-items: center; justify-content: space-between; }
+    .topbar { top: 28px; }
+    .footer { bottom: 24px; color: var(--muted); font-size: 12px; letter-spacing: .05em; }
+    .brand { display: flex; align-items: center; gap: 10px; color: #dfe9f8; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; }
+    .brand-mark { width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid rgba(101,224,210,.65); color: var(--cyan); border-radius: 8px; font-size: 12px; font-weight: 800; }
+    .eyebrow { color: var(--cyan); font-size: 12px; letter-spacing: .18em; font-weight: 700; text-transform: uppercase; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: clamp(42px, 5.1vw, 78px); line-height: 1.04; letter-spacing: -.055em; max-width: 720px; }
+    h2 { font-size: clamp(30px, 3.2vw, 50px); line-height: 1.1; letter-spacing: -.04em; }
+    h3 { font-size: 17px; line-height: 1.35; }
+    .lede { color: #c1ccdc; font-size: 17px; line-height: 1.7; max-width: 650px; }
+    .accent { color: var(--blue); }
+    .accent-cyan { color: var(--cyan); }
+    .accent-orange { color: var(--orange); }
+
+    /* Slide 1 */
+    .s1 .hero { position: relative; margin-top: 112px; display: grid; grid-template-columns: 1.03fr .97fr; gap: 66px; align-items: center; }
+    .s1 .hero-copy { padding-bottom: 22px; }
+    .s1 .hero-copy h1 { margin: 14px 0 23px; }
+    .s1 .hero-copy h1 span { display: block; color: var(--blue); }
+    .s1 .hero-copy .lede { margin-bottom: 30px; }
+    .statement { display: inline-flex; align-items: center; gap: 10px; padding: 11px 15px; border: 1px solid rgba(101,224,210,.27); border-radius: 13px; color: #dbe8f6; background: rgba(101,224,210,.06); font-size: 13px; }
+    .statement b { color: var(--cyan); }
+    .feature-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .feature { min-height: 142px; padding: 18px 18px 16px; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(145deg, rgba(25,43,71,.87), rgba(13,25,43,.7)); box-shadow: var(--shadow); }
+    .feature:nth-child(2) { transform: translateY(18px); }
+    .feature:nth-child(4) { transform: translateY(18px); }
+    .feature-icon { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; margin-bottom: 18px; background: rgba(98,166,255,.14); color: var(--blue); font-weight: 800; font-size: 13px; }
+    .feature:nth-child(2) .feature-icon, .feature:nth-child(4) .feature-icon { color: var(--orange); background: rgba(255,184,107,.13); }
+    .feature h3 { margin-bottom: 7px; }
+    .feature p { color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; border-top: 1px solid var(--line); margin-top: 44px; max-width: 820px; }
+    .metric { padding: 17px 20px 0 0; }
+    .metric strong { display: block; font-size: 27px; letter-spacing: -.04em; color: #e9f2ff; }
+    .metric span { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); }
+
+    /* Slide 1 · AI + 传统测试互补 */
+    .s1 .synergy-head { margin-top: 82px; }
+    .s1 .synergy-head h1 { margin-top: 12px; max-width: 790px; }
+    .s1 .synergy-head h1 span { color: var(--orange); }
+    .synergy-layout { display: grid; grid-template-columns: 1.06fr .94fr; gap: 62px; align-items: center; margin-top: 20px; }
+    .radar-wrap { position: relative; min-height: 410px; display: grid; place-items: center; }
+    .radar-wrap svg { width: min(100%, 490px); height: auto; overflow: visible; }
+    .radar-legend { position: absolute; top: 11px; left: 50%; transform: translateX(-50%); display: flex; gap: 22px; white-space: nowrap; color: #d9e5f5; font-size: 12px; }
+    .radar-legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .radar-legend i { width: 22px; height: 4px; border-radius: 10px; background: var(--orange); }
+    .radar-legend .ai i { background: var(--blue); }
+    .radar-legend .human i { height: 0; border-top: 3px dashed #27c58b; background: none; }
+    .radar-caption { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .complement { display: grid; gap: 12px; }
+    .complement-card { padding: 17px 19px; border: 1px solid var(--line); border-radius: 16px; background: rgba(22, 39, 64, .72); }
+    .complement-card h3 { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+    .complement-card h3::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 5px rgba(255,184,107,.1); }
+    .complement-card.ai h3::before { background: var(--blue); box-shadow: 0 0 0 5px rgba(98,166,255,.1); }
+    .complement-card.human h3::before { background: var(--cyan); box-shadow: 0 0 0 5px rgba(101,224,210,.1); }
+    .complement-card p { color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .complement-card strong { color: #edf5ff; font-weight: 650; }
+    .synergy-note { margin-top: 16px; padding: 13px 16px; border: 1px solid rgba(39,197,139,.35); border-radius: 13px; background: rgba(39,197,139,.06); color: #b9e8d3; font-size: 13px; line-height: 1.5; }
+    .synergy-note b { color: #46d69e; }
+
+    /* Slide 2 */
+    .s2 .section-head, .s3 .section-head { margin-top: 84px; display: flex; align-items: end; justify-content: space-between; gap: 36px; }
+    .section-head p { color: var(--muted); font-size: 14px; line-height: 1.6; max-width: 470px; text-align: right; }
+    .architecture { margin-top: 38px; display: grid; grid-template-columns: 1fr 1.55fr 1fr; gap: 18px; align-items: stretch; }
+    .arch-column { display: flex; flex-direction: column; gap: 13px; }
+    .arch-label { color: var(--muted); font-size: 11px; letter-spacing: .15em; text-transform: uppercase; margin-bottom: 1px; }
+    .arch-card { position: relative; padding: 16px 17px; border: 1px solid var(--line); border-radius: 15px; background: var(--panel); min-height: 76px; }
+    .arch-card strong { display: block; font-size: 15px; margin-bottom: 5px; }
+    .arch-card span { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .arch-card.input { border-color: rgba(255,184,107,.33); }
+    .arch-card.input strong { color: var(--orange); }
+    .arch-card.core { border-color: rgba(98,166,255,.4); background: linear-gradient(145deg, rgba(28,66,112,.85), rgba(19,37,65,.85)); }
+    .arch-card.core strong { color: #b9d8ff; }
+    .arch-card.output { border-color: rgba(101,224,210,.35); }
+    .arch-card.output strong { color: var(--cyan); }
+    .arrow { position: absolute; right: -29px; top: 50%; width: 40px; height: 1px; background: linear-gradient(90deg, rgba(146,177,218,.45), rgba(101,224,210,.85)); z-index: 2; }
+    .arrow::after { content: ""; position: absolute; right: 0; top: -4px; border-left: 7px solid var(--cyan); border-top: 4px solid transparent; border-bottom: 4px solid transparent; }
+    .arch-middle { padding: 18px; border: 1px solid rgba(98,166,255,.31); border-radius: 21px; background: rgba(19,36,62,.62); box-shadow: inset 0 0 0 1px rgba(255,255,255,.025); }
+    .pipeline { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 11px; }
+    .node { min-height: 72px; padding: 12px 11px; border: 1px solid rgba(178,207,241,.2); border-radius: 12px; background: rgba(9,22,39,.56); }
+    .node b { display: block; color: #e6f0ff; font-size: 12px; margin-bottom: 6px; }
+    .node small { color: #8fa5c2; font-size: 10px; line-height: 1.35; }
+    .node.optional { border-style: dashed; border-color: rgba(255,184,107,.5); }
+    .node.optional b { color: var(--orange); }
+    .loop { margin-top: 13px; padding: 13px; border-top: 1px dashed rgba(101,224,210,.37); color: #b6d8d4; font-size: 12px; line-height: 1.5; }
+    .loop b { color: var(--cyan); }
+    .legend { display: flex; gap: 17px; margin-top: 22px; color: var(--muted); font-size: 11px; }
+    .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--blue); }
+    .legend i.orange { background: var(--orange); }
+    .legend i.cyan { background: var(--cyan); }
+
+    /* Slide 3 */
+    .s3 .section-head { align-items: start; }
+    .s3 .section-head h2 { max-width: 520px; }
+    .s3 .section-head h2 span { color: var(--orange); }
+    .reflection-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 35px; }
+    .reflection { min-height: 273px; padding: 23px 22px 20px; border: 1px solid var(--line); border-radius: 19px; background: linear-gradient(160deg, rgba(25,42,68,.9), rgba(14,26,44,.78)); position: relative; overflow: hidden; }
+    .reflection::after { content: ""; position: absolute; right: -34px; bottom: -45px; width: 120px; height: 120px; border: 1px solid rgba(255,255,255,.08); border-radius: 50%; box-shadow: 0 0 0 16px rgba(255,255,255,.025), 0 0 0 32px rgba(255,255,255,.018); }
+    .r-num { color: var(--orange); font-size: 12px; letter-spacing: .15em; font-weight: 800; }
+    .reflection h3 { margin: 16px 0 11px; font-size: 19px; max-width: 290px; }
+    .question { color: #d3deed; font-size: 14px; line-height: 1.55; min-height: 66px; }
+    .practice { margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .practice b { color: var(--cyan); font-weight: 600; }
+    .conclusion { margin-top: 22px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 24px; padding: 17px 20px; border: 1px solid rgba(101,224,210,.28); border-radius: 15px; background: rgba(101,224,210,.055); }
+    .conclusion p { color: #c9e8e3; font-size: 14px; line-height: 1.55; }
+    .conclusion strong { color: var(--cyan); }
+    .pill { padding: 9px 12px; border: 1px solid rgba(101,224,210,.4); border-radius: 99px; color: var(--cyan); font-size: 12px; white-space: nowrap; }
+
+    /* Slide 3 · 纯技术架构 */
+    .s3 .pure-head { margin-top: 82px; display: flex; justify-content: space-between; align-items: end; gap: 30px; }
+    .s3 .pure-head h2 { margin-top: 11px; }
+    .pure-head > p { max-width: 430px; color: var(--muted); font-size: 13px; line-height: 1.6; text-align: right; }
+    .stack-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 26px; }
+    .stack-chip { padding: 10px 11px; border: 1px solid rgba(98,166,255,.27); border-radius: 11px; background: rgba(23,47,78,.65); }
+    .stack-chip b { display: block; color: #d9e9ff; font-size: 12px; margin-bottom: 4px; }
+    .stack-chip span { color: #8ea8c7; font-size: 10px; }
+    .stack-chip:nth-child(2n) { border-color: rgba(101,224,210,.28); }
+    .pure-architecture { display: grid; grid-template-columns: .77fr 1.35fr .88fr; gap: 15px; margin-top: 17px; min-height: 315px; }
+    .pure-panel { padding: 16px; border: 1px solid var(--line); border-radius: 17px; background: rgba(19,35,59,.72); }
+    .pure-panel h3 { font-size: 14px; margin-bottom: 13px; color: #dce8f8; }
+    .pure-panel h3 span { color: var(--muted); font-size: 10px; font-weight: 500; margin-left: 7px; letter-spacing: .08em; }
+    .tree { margin: 0; padding: 0; list-style: none; color: #b3c3d8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.85; }
+    .tree li::before { content: "├─ "; color: #6884a6; }
+    .tree li:last-child::before { content: "└─ "; }
+    .tree .folder { color: var(--orange); }
+    .tree .desc { color: #8095b2; font-family: inherit; margin-left: 5px; }
+    .layers { display: grid; gap: 8px; }
+    .layer { position: relative; display: grid; grid-template-columns: 112px 1fr; gap: 12px; align-items: center; min-height: 49px; padding: 8px 11px; border: 1px solid rgba(178,207,241,.19); border-radius: 11px; background: rgba(8,21,37,.54); }
+    .layer b { color: var(--blue); font-size: 12px; }
+    .layer b small { color: #88a3c6; font-size: 9px; font-weight: 500; letter-spacing: .04em; }
+    .layer span { color: #a9bad0; font-size: 11px; line-height: 1.4; }
+    .layer:nth-child(2) b { color: var(--cyan); }
+    .layer:nth-child(3) b { color: var(--orange); }
+    .layer:nth-child(4) b { color: var(--pink); }
+    .layer:nth-child(5) b { color: #7fe0a9; }
+    .boundary { margin-top: 10px; padding: 9px 11px; border: 1px dashed rgba(101,224,210,.38); border-radius: 10px; color: #9bcfc8; font-size: 10px; line-height: 1.45; }
+    .responsibility { display: grid; gap: 8px; }
+    .responsibility div { padding: 10px 11px; border-left: 3px solid var(--blue); border-radius: 0 9px 9px 0; background: rgba(98,166,255,.08); }
+    .responsibility div:nth-child(2) { border-color: var(--cyan); background: rgba(101,224,210,.07); }
+    .responsibility div:nth-child(3) { border-color: var(--orange); background: rgba(255,184,107,.07); }
+    .responsibility div:nth-child(4) { border-color: var(--pink); background: rgba(232,161,255,.07); }
+    .responsibility b { display: block; color: #e4eefb; font-size: 11px; margin-bottom: 4px; }
+    .responsibility span { color: #8ea3be; font-size: 10px; line-height: 1.4; }
+
+    .controls { position: absolute; right: 72px; bottom: 20px; display: flex; align-items: center; gap: 8px; z-index: 10; }
+    button { border: 1px solid rgba(196,211,236,.25); background: rgba(17,32,53,.8); color: #cbd8e9; width: 31px; height: 27px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    button:hover { border-color: var(--blue); color: white; }
+    .progress { width: 82px; height: 3px; border-radius: 99px; background: rgba(255,255,255,.13); overflow: hidden; }
+    .progress span { display: block; height: 100%; width: 33.333%; background: var(--blue); transition: width .25s ease; }
+    .page { color: #9db2ce; font-size: 12px; min-width: 36px; text-align: right; }
+
+    @media (max-width: 1100px) {
+      .slide { padding-left: 48px; padding-right: 48px; }
+      .topbar, .footer { left: 48px; right: 48px; }
+      .s1 .hero { gap: 36px; }
+      .feature { min-height: 128px; }
+      .architecture { gap: 12px; }
+    }
+    @media print {
+      body { overflow: visible; background: white; }
+      .deck { width: 100%; height: auto; min-width: 0; background: #0b1423; }
+      .slide, .slide.active { display: block; position: relative; width: 100vw; height: 56.25vw; min-height: 0; page-break-after: always; }
+      .controls { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-label="LLM-AutoTest 系统介绍演示稿">
+    <section class="slide s1 active" data-slide="1" aria-roledescription="slide" aria-label="AI 与传统测试互补">
+      <div class="topbar"><div class="brand"><span class="brand-mark">AI</span> LLM-AutoTest / SYSTEM BRIEF</div><div class="eyebrow">01 · HUMAN × AI</div></div>
+      <div class="synergy-head">
+        <div class="eyebrow">AI-assisted testing is an addition, not a replacement</div>
+        <h1>传统测试守住底线，<span>AI 测试拓展上限</span></h1>
+      </div>
+      <div class="synergy-layout">
+        <div class="radar-wrap" aria-label="传统测试、AI 测试、人机协同能力雷达图">
+          <div class="radar-legend"><span><i></i>传统测试</span><span class="ai"><i></i>AI 测试</span><span class="human"><i></i>人机协同</span></div>
+          <svg viewBox="0 0 520 420" role="img" aria-label="六维能力雷达图">
+            <g transform="translate(260 214)">
+              <polygon points="0,-150 130,-75 130,75 0,150 -130,75 -130,-75" fill="none" stroke="#506887" stroke-opacity=".42" stroke-width="1"/>
+              <polygon points="0,-120 104,-60 104,60 0,120 -104,60 -104,-60" fill="none" stroke="#506887" stroke-opacity=".35" stroke-width="1"/>
+              <polygon points="0,-90 78,-45 78,45 0,90 -78,45 -78,-45" fill="none" stroke="#506887" stroke-opacity=".30" stroke-width="1"/>
+              <polygon points="0,-60 52,-30 52,30 0,60 -52,30 -52,-30" fill="none" stroke="#506887" stroke-opacity=".24" stroke-width="1"/>
+              <polygon points="0,-30 26,-15 26,15 0,30 -26,15 -26,-15" fill="none" stroke="#506887" stroke-opacity=".2" stroke-width="1"/>
+              <g stroke="#617895" stroke-opacity=".42" stroke-width="1"><line x1="0" y1="0" x2="0" y2="-150"/><line x1="0" y1="0" x2="130" y2="-75"/><line x1="0" y1="0" x2="130" y2="75"/><line x1="0" y1="0" x2="0" y2="150"/><line x1="0" y1="0" x2="-130" y2="75"/><line x1="0" y1="0" x2="-130" y2="-75"/></g>
+              <polygon points="0,-150 130,-75 104,60 0,90 -78,45 -78,-45" fill="#ffb86b" fill-opacity=".17" stroke="#ffb86b" stroke-width="3"/>
+              <polygon points="0,-90 104,-60 130,75 0,150 -130,75 -130,-75" fill="#62a6ff" fill-opacity=".17" stroke="#62a6ff" stroke-width="3"/>
+              <polygon points="0,-150 130,-75 130,75 0,150 -130,75 -130,-75" fill="none" stroke="#27c58b" stroke-width="3" stroke-dasharray="14 10"/>
+              <g fill="#ffb86b" stroke="#0b1423" stroke-width="3"><circle cx="0" cy="-150" r="5"/><circle cx="130" cy="-75" r="5"/><circle cx="104" cy="60" r="5"/><circle cx="0" cy="90" r="5"/><circle cx="-78" cy="45" r="5"/><circle cx="-78" cy="-45" r="5"/></g>
+              <g fill="#62a6ff" stroke="#0b1423" stroke-width="3"><circle cx="0" cy="-90" r="5"/><circle cx="104" cy="-60" r="5"/><circle cx="130" cy="75" r="5"/><circle cx="0" cy="150" r="5"/><circle cx="-130" cy="75" r="5"/><circle cx="-130" cy="-75" r="5"/></g>
+              <g fill="#27c58b" stroke="#0b1423" stroke-width="3"><circle cx="0" cy="-150" r="5"/><circle cx="130" cy="-75" r="5"/><circle cx="130" cy="75" r="5"/><circle cx="0" cy="150" r="5"/><circle cx="-130" cy="75" r="5"/><circle cx="-130" cy="-75" r="5"/></g>
+              <g fill="#c9d8eb" font-size="13" text-anchor="middle"><text x="0" y="-174">业务理解</text><text x="164" y="-77">风险判断</text><text x="164" y="91">探索洞察</text><text x="0" y="184">自动化执行</text><text x="-164" y="91">数据分析</text><text x="-164" y="-77">代码能力</text></g>
+            </g>
+          </svg>
+          <div class="radar-caption">能力不是简单相加，而是在人机协同处形成新的质量上限</div>
+        </div>
+        <div class="complement">
+          <article class="complement-card"><h3>传统测试 · 可靠性</h3><p><strong>规则、经验、领域判断和责任边界</strong>，守住核心流程、验收口径、风险优先级和发布底线。</p></article>
+          <article class="complement-card ai"><h3>AI 测试 · 放大器</h3><p><strong>理解、生成、归纳和探索</strong>，快速扫描代码与需求，扩展场景组合，减少机械劳动和信息遗漏。</p></article>
+          <article class="complement-card human"><h3>人机协同 · 闭环</h3><p><strong>人定义质量，AI 扩展覆盖，程序验证事实</strong>：模型不确定就留痕，执行结果反哺规则和回归资产。</p></article>
+          <div class="synergy-note"><b>系统定位：</b>让 AI 处理“规模与变化”，让测试工程师守住“语义与责任”，再用工程化门禁把两者连接成稳定交付。</div>
+        </div>
+      </div>
+      <div class="footer"><span>AI 不替代测试判断，而是把判断变成更大规模的质量证据</span><span>LLM-AutoTest · 2026</span></div>
+    </section>
+
+    <section class="slide s2" data-slide="2" aria-roledescription="slide" aria-label="系统架构介绍">
+      <div class="topbar"><div class="brand"><span class="brand-mark">AI</span> LLM-AutoTest / SYSTEM BRIEF</div><div class="eyebrow">02 · ARCHITECTURE</div></div>
+      <div class="section-head"><div><div class="eyebrow">Evidence-driven pipeline</div><h2>一条流水线，三道护栏</h2></div><p>模型输出不是最终事实。每个语义节点都经过结构化契约、代码回填和执行反馈，最终才进入报告与回归资产。</p></div>
+      <div class="architecture">
+        <div class="arch-column">
+          <div class="arch-label">输入与证据 · Inputs / Evidence</div>
+          <div class="arch-card input"><strong>需求文档</strong><span>原文、基线、差异与澄清项</span><i class="arrow"></i></div>
+          <div class="arch-card input"><strong>代码仓库</strong><span>版本、分支、源码与运行配置</span><i class="arrow"></i></div>
+          <div class="arch-card input"><strong>被测环境</strong><span>接口地址、鉴权、前端入口</span><i class="arrow"></i></div>
+        </div>
+        <div class="arch-middle">
+          <div class="arch-label">编排与 LLM 节点 · Orchestrator / LLM-assisted Nodes</div>
+          <div class="pipeline">
+            <div class="node"><b>01 需求解析</b><small>需求项 / 风险 / 测试点</small></div>
+            <div class="node"><b>02 源码扫描</b><small>代码证据 / 变更范围</small></div>
+            <div class="node"><b>03 接口还原</b><small>协议 / 参数 / 响应</small></div>
+            <div class="node"><b>04 Code Review</b><small>映射 / 缺口 / 风险</small></div>
+            <div class="node"><b>05 用例生成</b><small>normal · boundary · exception</small></div>
+            <div class="node optional"><b>06 E2E（可选）</b><small>页面、动作、断言</small></div>
+            <div class="node"><b>07 自动执行</b><small>接口 / 浏览器真实运行</small></div>
+            <div class="node"><b>08 报告与缺陷</b><small>预期、实际、证据分流</small></div>
+            <div class="node"><b>09 回归沉淀</b><small>稳定通过项进入资产库</small></div>
+          </div>
+          <div class="loop"><b>三道护栏：</b>Schema 结构门禁 → 代码事实回填 → 真实执行与复测；模型不合规时定向修复，无法证明时保留人工介入。</div>
+        </div>
+        <div class="arch-column">
+          <div class="arch-label">输出与质量资产 · Outputs / Quality Assets</div>
+          <div class="arch-card output"><strong>可追溯用例</strong><span>需求、接口、测试点与脚本关联</span><i class="arrow" style="left:-29px; right:auto; transform:rotate(180deg)"></i></div>
+          <div class="arch-card output"><strong>缺陷证据</strong><span>接口、用例、期望、实际与复现路径</span><i class="arrow" style="left:-29px; right:auto; transform:rotate(180deg)"></i></div>
+          <div class="arch-card output"><strong>回归资产</strong><span>通过门槛、版本与复测历史</span><i class="arrow" style="left:-29px; right:auto; transform:rotate(180deg)"></i></div>
+        </div>
+      </div>
+      <div class="legend"><span><i></i>语义生成</span><span><i class="orange"></i>输入 / 可选分支</span><span><i class="cyan"></i>可交付质量资产</span></div>
+      <div class="footer"><span>固定编排 · 分批生成 · 可恢复执行 · 全程留痕</span><span>LLM-AutoTest · 2026</span></div>
+    </section>
+
+    <section class="slide s3" data-slide="3" aria-roledescription="slide" aria-label="纯技术架构">
+      <div class="topbar"><div class="brand"><span class="brand-mark">AI</span> LLM-AutoTest / SYSTEM BRIEF</div><div class="eyebrow">03 · TECHNICAL ARCHITECTURE</div></div>
+      <div class="pure-head"><div><div class="eyebrow">技术栈 · 项目目录 · 运行职责 · Technology stack · Repository map · Responsibilities</div><h2>纯技术架构：从目录到运行时</h2></div><p>前后端分离、双产物卷、固定编排；LLM 只进入语义节点，执行、校验和证据留存由程序完成。</p></div>
+      <div class="stack-strip" aria-label="技术栈 Technology stack">
+        <div class="stack-chip"><b>Vue 3 + Vite</b><span>前端工作台</span></div>
+        <div class="stack-chip"><b>FastAPI</b><span>任务与 API 编排</span></div>
+        <div class="stack-chip"><b>Python 3.12</b><span>节点与执行器</span></div>
+        <div class="stack-chip"><b>MiniMax / OpenAI API</b><span>语义生成接口</span></div>
+        <div class="stack-chip"><b>Playwright</b><span>E2E 浏览器执行</span></div>
+        <div class="stack-chip"><b>JSON Schema</b><span>产物质量门禁</span></div>
+      </div>
+      <div class="pure-architecture">
+        <article class="pure-panel"><h3>项目目录 <span>项目结构 · REPOSITORY MAP</span></h3><ul class="tree">
+          <li><span class="folder">services/</span></li>
+          <li>frontend/ <span class="desc">工作台 UI</span></li>
+          <li>orchestrator/ <span class="desc">流水线核心</span></li>
+          <li>test-executor/ <span class="desc">执行与报告</span></li>
+          <li>java-parser/ <span class="desc">Java 代码扫描</span></li>
+          <li><span class="folder">prompts/</span> <span class="desc">Prompt / Skill / 记忆</span></li>
+          <li><span class="folder">schemas/</span> <span class="desc">产物契约</span></li>
+          <li><span class="folder">docs/</span> <span class="desc">设计与变更记录</span></li>
+        </ul></article>
+        <article class="pure-panel"><h3>运行时分层 <span>中文架构分层 · RUNTIME LAYERS</span></h3><div class="layers">
+          <div class="layer"><b>展示层<br><small>Presentation</small></b><span>Vue 页面、任务配置、节点进度、报告与缺陷视图</span></div>
+          <div class="layer"><b>编排层<br><small>Orchestration</small></b><span>FastAPI + PipelineRunner：固定顺序、断点续跑、停止 / 重跑</span></div>
+          <div class="layer"><b>语义层<br><small>Semantic</small></b><span>MiniMax LLM：需求、接口、Review、用例与 E2E 语义设计</span></div>
+          <div class="layer"><b>执行层<br><small>Execution</small></b><span>HTTP 客户端、Playwright、鉴权会话和复测执行</span></div>
+          <div class="layer"><b>证据层<br><small>Evidence</small></b><span>ArtifactStore、JSON Schema、LLM 调用留痕、回归资产</span></div>
+        </div><div class="boundary"><b>边界原则：</b>模型产出必须经过解析、Schema、参数一致性和真实执行；无法证明的内容进入人工介入，不静默猜测。</div></article>
+        <article class="pure-panel"><h3>目录职责 <span>功能归属 · OWNERSHIP</span></h3><div class="responsibility">
+          <div><b>frontend</b><span>面向用户的配置、过程、结果和导出体验</span></div>
+          <div><b>orchestrator</b><span>任务状态机、节点契约、LLM 调用与产物编排</span></div>
+          <div><b>test-executor</b><span>接口 / E2E 执行、失败分类、报告与回归沉淀</span></div>
+          <div><b>prompts + schemas</b><span>语义规则与结构规则的版本化质量基线</span></div>
+        </div></article>
+      </div>
+      <div class="footer"><span>架构目标：语义可迭代，事实可验证，产物可恢复</span><span>LLM-AutoTest · 2026</span></div>
+    </section>
+
+    <div class="controls" aria-label="幻灯片控制"><button id="prev" title="上一页" aria-label="上一页">‹</button><button id="next" title="下一页" aria-label="下一页">›</button><div class="progress"><span id="progress"></span></div><span class="page" id="page">1 / 3</span></div>
+  </main>
+  <script>
+    (() => {
+      const slides = [...document.querySelectorAll('.slide')];
+      const bar = document.getElementById('progress');
+      const page = document.getElementById('page');
+      let current = 0;
+      function show(index) {
+        current = (index + slides.length) % slides.length;
+        slides.forEach((slide, i) => slide.classList.toggle('active', i === current));
+        bar.style.width = `${((current + 1) / slides.length) * 100}%`;
+        page.textContent = `${current + 1} / ${slides.length}`;
+        history.replaceState(null, '', `#${current + 1}`);
+      }
+      document.getElementById('prev').addEventListener('click', () => show(current - 1));
+      document.getElementById('next').addEventListener('click', () => show(current + 1));
+      document.addEventListener('keydown', (event) => {
+        if (['ArrowRight', ' ', 'PageDown'].includes(event.key)) { event.preventDefault(); show(current + 1); }
+        if (['ArrowLeft', 'PageUp'].includes(event.key)) { event.preventDefault(); show(current - 1); }
+        if (event.key === 'Home') show(0);
+        if (event.key === 'End') show(slides.length - 1);
+      });
+      const hash = Number.parseInt(location.hash.slice(1), 10);
+      if (hash >= 1 && hash <= slides.length) show(hash - 1); else show(0);
+    })();
+  </script>
+</body>
+</html>

@@ -23,6 +23,16 @@
       "case_id": { "type": "string", "pattern": "^(TC|E2E)-\\d{3}$", "description": "R-DEF-02 双向关联（接口或前端 E2E）" },
       "interface_id": { "type": "string", "pattern": "^(IF-[A-Z]+-\\d{3}|UI-E2E-001)$" },
           "failure_reason": { "type": "string", "minLength": 1 },
+          "triage": {
+            "type": "object",
+            "description": "R-DEF-04：程序化失败归因，仅辅助分流，不替代人工确认",
+            "required": ["kind", "confidence", "reason"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["input_construction", "assertion_or_setup", "product_suspect", "needs_evidence"] },
+              "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          },
           "interface": {
             "type": "object",
             "description": "从 interfaces.json 回填的接口定位信息",

@@ -10,7 +10,7 @@ import type { ExecResult, ExecSummary } from '../api/types'
 const _jobId = ref('')
 
 // C-16：总览页节点卡跳转携带 jobId（App.vue 动态组件下发）
-const props = defineProps<{ initialJobId?: string }>()
+const props = defineProps<{ initialJobId?: string; viewKey?: string }>()
 
 const summary = ref<ExecSummary | null>(null)
 const results = ref<ExecResult[]>([])
@@ -19,7 +19,7 @@ const reportMd = ref('')
 const loading = ref(false)
 const error = ref('')
 
-const failedResults = computed(() => results.value.filter((result) => !result.passed))
+const failedResults = computed(() => visibleResults.value.filter((result) => !result.passed))
 const assertionFailures = computed(() =>
   failedResults.value.filter((result) => result.failure_kind === 'assertion'),
 )
@@ -27,9 +27,30 @@ const environmentFailures = computed(() =>
   failedResults.value.filter((result) => result.failure_kind === 'environment'),
 )
 const skippedResults = computed(() =>
-  results.value.filter((result) => result.skipped_reason != null),
+  visibleResults.value.filter((result) => result.skipped_reason != null),
 )
-const e2eResults = computed(() => results.value.filter((result) => result.case_type === 'e2e'))
+const reportType = computed<'api' | 'e2e' | null>(() => {
+  if (props.viewKey === 'e2e-execution') return 'e2e'
+  if (props.viewKey === 'interface-report') return 'api'
+  return null
+})
+const visibleResults = computed(() =>
+  reportType.value === null
+    ? results.value
+    : results.value.filter((result) =>
+        reportType.value === 'e2e' ? result.case_type === 'e2e' : result.case_type !== 'e2e',
+      ),
+)
+const e2eResults = computed(() =>
+  visibleResults.value.filter((result) => result.case_type === 'e2e'),
+)
+const displaySummary = computed<ExecSummary | null>(() => {
+  if (!summary.value) return null
+  if (reportType.value && summary.value.by_type?.[reportType.value]) {
+    return summary.value.by_type[reportType.value]
+  }
+  return summary.value
+})
 
 async function load(): Promise<void> {
   if (!_jobId.value) return
@@ -76,6 +97,12 @@ watch(_jobId, () => void load())
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
 
     <template v-else-if="summary">
+      <div class="view-title">
+        {{
+          reportType === 'e2e' ? 'E2E 测试报告' : reportType === 'api' ? '接口测试报告' : '测试报告'
+        }}
+        <span v-if="reportType" class="tag tag-accent">已按类型分开展示</span>
+      </div>
       <!-- 双产物徽标（R-RPT-02） -->
       <div class="artifact-row">
         <span class="tag tag-accent mono">execution.json</span>
@@ -86,19 +113,19 @@ watch(_jobId, () => void load())
       <!-- KPI：全部来自后端 summary，前端不计算比率 -->
       <div class="kpi-row">
         <div class="kpi-card">
-          <span class="kpi-value mono">{{ summary.total }}</span>
+          <span class="kpi-value mono">{{ displaySummary?.total ?? 0 }}</span>
           <span class="kpi-label">用例总数</span>
         </div>
         <div class="kpi-card kpi-pass">
-          <span class="kpi-value mono">{{ summary.passed }}</span>
+          <span class="kpi-value mono">{{ displaySummary?.passed ?? 0 }}</span>
           <span class="kpi-label">通过</span>
         </div>
         <div class="kpi-card kpi-assert">
-          <span class="kpi-value mono">{{ summary.failed_assertion }}</span>
+          <span class="kpi-value mono">{{ displaySummary?.failed_assertion ?? 0 }}</span>
           <span class="kpi-label">断言失败</span>
         </div>
         <div class="kpi-card kpi-env">
-          <span class="kpi-value mono">{{ summary.failed_environment }}</span>
+          <span class="kpi-value mono">{{ displaySummary?.failed_environment ?? 0 }}</span>
           <span class="kpi-label">环境失败</span>
         </div>
       </div>
@@ -111,18 +138,35 @@ watch(_jobId, () => void load())
           —— {{ item.reason }}</template
         >
       </div>
-      <div v-if="summary.skipped" class="hint hint-notice">
-        {{ summary.skipped }} 条用例跳过执行（脚本不可加载或前置缺失，如实分列）
+      <div v-if="displaySummary?.skipped" class="hint hint-notice">
+        {{ displaySummary.skipped }} 条用例跳过执行（脚本不可加载或前置缺失，如实分列）
       </div>
 
       <div v-if="e2eResults.length" class="card e2e-result-card">
         <header class="card-title">前端 E2E 执行结果</header>
         <table class="result-table">
-          <thead><tr><th scope="col">用例</th><th scope="col">结果</th><th scope="col">耗时</th><th scope="col">说明</th></tr></thead>
+          <thead>
+            <tr>
+              <th scope="col">用例</th>
+              <th scope="col">结果</th>
+              <th scope="col">耗时</th>
+              <th scope="col">说明</th>
+            </tr>
+          </thead>
           <tbody>
             <tr v-for="result in e2eResults" :key="result.case_id">
-              <td><span class="mono">{{ result.case_id }}</span></td>
-              <td><span class="tag" :class="result.passed ? 'tag-pass' : 'tag-fail'">{{ result.passed ? '通过' : result.failure_kind === 'environment' ? '环境失败' : '断言失败' }}</span></td>
+              <td>
+                <span class="mono">{{ result.case_id }}</span>
+              </td>
+              <td>
+                <span class="tag" :class="result.passed ? 'tag-pass' : 'tag-fail'">{{
+                  result.passed
+                    ? '通过'
+                    : result.failure_kind === 'environment'
+                      ? '环境失败'
+                      : '断言失败'
+                }}</span>
+              </td>
               <td class="mono">{{ result.duration_ms ?? '—' }} ms</td>
               <td class="detail-cell">{{ result.failure_reason ?? result.expected ?? '—' }}</td>
             </tr>
@@ -150,12 +194,21 @@ watch(_jobId, () => void load())
               <td>
                 <span class="mono">{{ result.case_id }}</span>
               </td>
-              <td><span class="tag" :class="result.case_type === 'e2e' ? 'tag-e2e' : ''">{{ result.case_type === 'e2e' ? '前端 E2E' : '接口' }}</span></td>
+              <td>
+                <span class="tag" :class="result.case_type === 'e2e' ? 'tag-e2e' : ''">{{
+                  result.case_type === 'e2e' ? '前端 E2E' : '接口'
+                }}</span>
+              </td>
               <td>
                 <span class="mono">{{ result.interface_id }}</span>
               </td>
               <td class="detail-cell">{{ result.expected ?? '—' }}</td>
-              <td class="detail-cell"><span class="mono">HTTP {{ result.actual_status ?? '—' }}</span><pre v-if="result.actual_body !== undefined" class="actual-body">{{ JSON.stringify(result.actual_body, null, 2) }}</pre></td>
+              <td class="detail-cell">
+                <span class="mono">HTTP {{ result.actual_status ?? '—' }}</span>
+                <pre v-if="result.actual_body !== undefined" class="actual-body">{{
+                  JSON.stringify(result.actual_body, null, 2)
+                }}</pre>
+              </td>
               <td>{{ result.failure_reason ?? '—' }}</td>
               <td>{{ result.timeout ? '是' : '否' }}</td>
             </tr>
@@ -184,12 +237,21 @@ watch(_jobId, () => void load())
               <td>
                 <span class="mono">{{ result.case_id }}</span>
               </td>
-              <td><span class="tag" :class="result.case_type === 'e2e' ? 'tag-e2e' : ''">{{ result.case_type === 'e2e' ? '前端 E2E' : '接口' }}</span></td>
+              <td>
+                <span class="tag" :class="result.case_type === 'e2e' ? 'tag-e2e' : ''">{{
+                  result.case_type === 'e2e' ? '前端 E2E' : '接口'
+                }}</span>
+              </td>
               <td>
                 <span class="mono">{{ result.interface_id }}</span>
               </td>
               <td class="detail-cell">{{ result.expected ?? '—' }}</td>
-              <td class="detail-cell"><span class="mono">HTTP {{ result.actual_status ?? '—' }}</span><pre v-if="result.actual_body !== undefined" class="actual-body">{{ JSON.stringify(result.actual_body, null, 2) }}</pre></td>
+              <td class="detail-cell">
+                <span class="mono">HTTP {{ result.actual_status ?? '—' }}</span>
+                <pre v-if="result.actual_body !== undefined" class="actual-body">{{
+                  JSON.stringify(result.actual_body, null, 2)
+                }}</pre>
+              </td>
               <td>{{ result.failure_reason ?? '—' }}</td>
               <td>{{ result.timeout ? '是' : '否' }}</td>
             </tr>
@@ -252,6 +314,16 @@ watch(_jobId, () => void load())
   color: var(--warning);
 }
 
+.view-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  color: var(--text-1);
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
 .artifact-row {
   display: flex;
   align-items: center;
@@ -287,8 +359,16 @@ watch(_jobId, () => void load())
   color: var(--warning);
 }
 
-.tag-pass { background: var(--accent-dim); color: var(--accent-strong); border-color: var(--accent-glow); }
-.tag-fail { background: var(--warning-dim); color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, var(--border)); }
+.tag-pass {
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  border-color: var(--accent-glow);
+}
+.tag-fail {
+  background: var(--warning-dim);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 35%, var(--border));
+}
 
 /* KPI（数值来自后端 summary；不展示前端计算的比率） */
 .kpi-row {
@@ -396,8 +476,19 @@ watch(_jobId, () => void load())
   vertical-align: top;
 }
 
-.detail-cell { min-width: 180px; white-space: pre-wrap; word-break: break-word; }
-.actual-body { margin: var(--space-1) 0 0; max-width: 360px; max-height: 150px; overflow: auto; font-size: var(--text-xs); white-space: pre-wrap; }
+.detail-cell {
+  min-width: 180px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.actual-body {
+  margin: var(--space-1) 0 0;
+  max-width: 360px;
+  max-height: 150px;
+  overflow: auto;
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+}
 
 /* 报告原文 */
 .report-md {

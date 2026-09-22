@@ -16,6 +16,34 @@ from orchestrator.prompts_loader import PromptSpec
 T = TypeVar("T")
 
 
+_REPAIR_CONTRACTS: dict[str, str] = {
+    "requirement_diff": (
+        '只输出 {"summary":"...","changes":[]}，顶层不得出现 body/data/result/content。'
+    ),
+    "requirement_review": (
+        '只输出一个需求评审对象，顶层必须含 score、quality_grade、summary、'
+        'dimension_scores、quality_assessment、issues 等主 Prompt 字段；不要输出 reason/weight。'
+    ),
+    "req_parse": '只输出 {"items":[...]}，items 必须是真正的数组，不能输出其它节点产物。',
+    "interface_reconstruct": (
+        '只输出 {"interfaces":[...]}，interfaces 必须覆盖当前批次候选；'
+        '不要输出 body/data/result/content 或 recon_date。'
+    ),
+    "code_review": (
+        '只输出 {"mappings":[...]}，mappings 必须覆盖当前批次全部需求；'
+        '不要输出 body/data/result/content 或 risks/missing_features。'
+    ),
+    "testcase_generate": (
+        '只输出 {"cases":[...]}，cases 必须是真正的数组；每个接口覆盖 normal、'
+        'boundary、exception，禁止输出 body/data/result/content 或跨节点字段。'
+    ),
+    "e2e_testcase_generate": (
+        '只输出 {"cases":[...]}，步骤只能使用探测到的动作、路径和 selector；'
+        'goto/expect_url 不需要 selector，不要输出解释。'
+    ),
+}
+
+
 class SupportsComplete(Protocol):
     """修复轮所需的最小 LLM 客户端接口。"""
 
@@ -48,6 +76,8 @@ async def complete_with_json_repair(
             f"{user_content}\n\n"
             "上一轮输出未通过机器校验。请仅基于上述原始输入修正 JSON 结构和引用，"
             "不要解释、不要 Markdown、不要遗漏本批条目。\n"
+            "本节点输出契约："
+            f"{_REPAIR_CONTRACTS.get(prompt.name, '严格遵守主 Prompt 和 Schema。')}\n"
             f"校验错误：{exc.message}"
         )
         second = await llm.complete(node, prompt, repair_content)

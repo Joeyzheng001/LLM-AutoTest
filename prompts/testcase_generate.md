@@ -1,11 +1,14 @@
 <!-- F-GEN-01~04 / R-GEN-01~04：接口 + 需求 → 测试用例（含断言语义）。参数一致性（R-GEN-02）与脚本可加载性（R-GEN-03）由程序校验，违规用例丢弃并重生成一次。 -->
 
 ---
-version: 1.6
+version: 1.9
 spec: F-GEN-01
 owner: 甲
 changelog:
   - 1.6 | 2026-09-18 | 未知 body/query 必须给出具体 JSON，禁止语义占位符进入执行
+  - 1.7 | 2026-09-18 | 增加跨节点字段隔离，禁止把接口还原产物（如 recon_date/interfaces）当作用例输出
+  - 1.8 | 2026-09-18 | 增加参数对象顶层化修复，禁止将 pk/close_type 等请求字段直接作为根对象
+  - 1.9 | 2026-09-18 | 增加空对象修复，禁止返回 {} 或空结果
   - 1.5 | 2026-09-16 | 引入程序化测试点（REQ/RISK 溯源），用例从功能场景展开，不只围绕接口参数
   - 1.4 | 2026-09-16 | 增加 auth_mode，避免全局有效会话覆盖未认证/伪 token 反例
   - 1.3 | 2026-09-16 | 预期结果改用 status/status_class 机器可判定语法，执行器兼容旧版 HTTP 自然语言
@@ -48,6 +51,9 @@ sampling:
 - `auth_mode` 仅用于需要认证的接口：正常已登录场景用 `inherit`；验证未带认证时用 `missing`；验证伪造/过期 token 时用 `invalid`。不涉及认证时省略该字段；
 - 输入可能含 `batch`；只为当前 `interfaces` 批次生成用例。溯源（F-GEN-04）：`interface_id` / `requirement_id` 只能引用输入中存在的 ID，**禁止虚构**；
 - 只输出 `cases` 数组——`id`（TC-###）/ `script_path` / `loadable` / `low_confidence` 由系统生成或回填，你**不得**输出这些字段；
+- 当前节点只负责测试用例生成，禁止输出接口还原或其它节点字段，例如 `recon_date`、`candidate_id`、`interfaces`、`signature`、`code_location`；这些字段即使出现在输入上下文，也不能放到输出顶层；
+- 任何请求参数（例如 `pk`、`close_type` 或接口定义中的其它字段）都必须放在具体用例的 `params` 对象内，不能直接作为根对象字段；根对象必须包含 `cases` 数组；
+- 不得返回空对象 `{}`、空数组或省略 `cases`；无法设计时也必须按输入接口返回可追溯的三类场景，否则交由程序修复或阻止提交；
 - 类型为 `unknown` 的参数无需回避：照常生成用例，系统会标注低置信度（X-GEN-03）；
 - 当参数位置为 `body` 或 `query` 且类型为 `unknown` 时，`params` 的该参数值也必须是
   **具体 JSON 对象**，例如 `{"body": {"fund_code": "...", "business_code": "24"}}` 或

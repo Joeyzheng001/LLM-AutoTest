@@ -12,6 +12,7 @@ import RequirementsView from './views/RequirementsView.vue'
 import TaskConfigView from './views/TaskConfigView.vue'
 import TestCasesView from './views/TestCasesView.vue'
 import TestReportView from './views/TestReportView.vue'
+import { clearAccessContext, getAccessContext, setAccessContext } from './api/client'
 import { navigation } from './api/navigation'
 
 interface NavView {
@@ -36,24 +37,75 @@ const coreViews: NavView[] = [
 const views = computed<NavView[]>(() => {
   const result = [...coreViews]
   const optional: NavView[] = []
-  optional.push({ key: 'interface-cases', label: '接口用例', component: TestCasesView, section: '分析与设计', child: true })
+  optional.push({
+    key: 'interface-cases',
+    label: '接口用例',
+    component: TestCasesView,
+    section: '分析与设计',
+    child: true,
+  })
   if (navigation.e2e?.generateCases) {
-    optional.push({ key: 'e2e-cases', label: 'E2E 用例', component: TestCasesView, section: '分析与设计', child: true })
-  }
-  // 执行必然依赖生成；不合法历史输入也不展示一个无法解释的独立入口。
-  if (navigation.e2e?.generateCases && navigation.e2e.executeCases) {
-    optional.push({ key: 'e2e-execution', label: 'E2E 测试报告', component: TestReportView, section: '验证与交付', child: true })
+    optional.push({
+      key: 'e2e-cases',
+      label: 'E2E 用例',
+      component: TestCasesView,
+      section: '分析与设计',
+      child: true,
+    })
   }
   const validation: NavView[] = [
     { key: 'report', label: '测试报告', component: TestReportView, section: '验证与交付' as const },
-    { key: 'interface-report', label: '接口测试报告', component: TestReportView, section: '验证与交付' as const, child: true },
+    {
+      key: 'interface-report',
+      label: '接口测试报告',
+      component: TestReportView,
+      section: '验证与交付' as const,
+      child: true,
+    },
     { key: 'defects', label: '缺陷', component: DefectLoopView, section: '验证与交付' as const },
-    { key: 'interface-defects', label: '接口缺陷', component: DefectLoopView, section: '验证与交付' as const, child: true },
-    { key: 'regression', label: '回归资产与度量', component: RegressionMetricsView, section: '验证与交付' as const },
+    {
+      key: 'interface-defects',
+      label: '接口缺陷',
+      component: DefectLoopView,
+      section: '验证与交付' as const,
+      child: true,
+    },
+    {
+      key: 'regression',
+      label: '回归资产与度量',
+      component: RegressionMetricsView,
+      section: '验证与交付' as const,
+    },
+    {
+      key: 'interface-regression',
+      label: '接口回归资产',
+      component: RegressionMetricsView,
+      section: '验证与交付' as const,
+      child: true,
+    },
   ]
-  if (navigation.e2e?.generateCases) {
-    validation.splice(2, 0, { key: 'e2e-execution', label: 'E2E 测试报告', component: TestReportView, section: '验证与交付', child: true })
-    validation.splice(5, 0, { key: 'e2e-defects', label: 'E2E 缺陷', component: DefectLoopView, section: '验证与交付', child: true })
+  if (navigation.e2e?.generateCases && navigation.e2e.executeCases) {
+    validation.splice(2, 0, {
+      key: 'e2e-execution',
+      label: 'E2E 测试报告',
+      component: TestReportView,
+      section: '验证与交付',
+      child: true,
+    })
+    validation.splice(5, 0, {
+      key: 'e2e-defects',
+      label: 'E2E 缺陷',
+      component: DefectLoopView,
+      section: '验证与交付',
+      child: true,
+    })
+    validation.push({
+      key: 'e2e-regression',
+      label: 'E2E 回归资产',
+      component: RegressionMetricsView,
+      section: '验证与交付',
+      child: true,
+    })
   }
   result.push(...optional.filter((v) => v.section === '分析与设计'))
   result.push(...validation)
@@ -68,6 +120,33 @@ const navSections = computed(() =>
 
 const activeKey = ref('overview')
 const active = computed(() => views.value.find((view) => view.key === activeKey.value))
+
+// 部门共享访问上下文：只存当前浏览器会话，不进入 localStorage、任务配置或导出产物。
+const initialAccess = getAccessContext()
+const accessToken = ref(initialAccess.token)
+const accessProjectId = ref(initialAccess.projectId)
+const accessMessage = ref('')
+const accessConfigured = ref(Boolean(initialAccess.token && initialAccess.projectId))
+
+function saveAccess(): void {
+  try {
+    setAccessContext({ token: accessToken.value, projectId: accessProjectId.value })
+    accessConfigured.value = true
+    accessMessage.value = '共享访问已连接'
+    window.dispatchEvent(new Event('llm-autotest-access-changed'))
+  } catch (error) {
+    accessMessage.value = error instanceof Error ? error.message : '共享访问配置失败'
+  }
+}
+
+function clearAccess(): void {
+  clearAccessContext()
+  accessToken.value = ''
+  accessProjectId.value = ''
+  accessConfigured.value = false
+  accessMessage.value = '已清除共享访问'
+  window.dispatchEvent(new Event('llm-autotest-access-changed'))
+}
 
 /** 左侧“任务配置”始终打开新建模式；只有总览的编辑按钮会携带任务进入编辑模式。 */
 function selectView(key: string): void {
@@ -99,17 +178,17 @@ watch(views, (next) => {
         <section v-for="section in navSections" :key="section.title" class="nav-section">
           <h2>{{ section.title }}</h2>
           <ul>
-        <li v-for="view in section.views" :key="view.key">
-          <button
-            type="button"
-            class="nav-item"
-            :class="{ active: view.key === activeKey, child: view.child }"
-            @click="selectView(view.key)"
-          >
-            <span class="nav-dot" aria-hidden="true" />
-            {{ view.label }}
-          </button>
-        </li>
+            <li v-for="view in section.views" :key="view.key">
+              <button
+                type="button"
+                class="nav-item"
+                :class="{ active: view.key === activeKey, child: view.child }"
+                @click="selectView(view.key)"
+              >
+                <span class="nav-dot" aria-hidden="true" />
+                {{ view.label }}
+              </button>
+            </li>
           </ul>
         </section>
       </div>
@@ -124,9 +203,44 @@ watch(views, (next) => {
       <header class="topbar">
         <span class="topbar-title">{{ active?.label }}</span>
         <span class="topbar-badge mono">实时数据 · orchestrator :8000</span>
+        <div
+          class="access-bar"
+          title="共享部署需要 Bearer Token 与项目标识；仅保存在当前浏览器会话"
+        >
+          <input
+            v-model="accessProjectId"
+            class="access-project"
+            type="text"
+            placeholder="项目"
+            aria-label="共享项目标识"
+          />
+          <input
+            v-model="accessToken"
+            class="access-token"
+            type="password"
+            placeholder="访问令牌（可选）"
+            aria-label="共享访问令牌"
+          />
+          <button type="button" class="access-btn" @click="saveAccess">
+            {{ accessConfigured ? '更新' : '连接' }}
+          </button>
+          <button
+            v-if="accessConfigured"
+            type="button"
+            class="access-btn muted"
+            @click="clearAccess"
+          >
+            断开
+          </button>
+          <span v-if="accessMessage" class="access-message">{{ accessMessage }}</span>
+        </div>
       </header>
       <main class="content">
-        <component :is="active?.component" :initial-job-id="navigation.jobId" :view-key="active?.key" />
+        <component
+          :is="active?.component"
+          :initial-job-id="navigation.jobId"
+          :view-key="active?.key"
+        />
       </main>
     </div>
   </div>
@@ -295,9 +409,76 @@ watch(views, (next) => {
   font-size: var(--text-xs);
 }
 
+.access-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.access-bar input {
+  height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-1);
+  font-size: var(--text-xs);
+}
+
+.access-project {
+  width: 92px;
+}
+
+.access-token {
+  width: 150px;
+}
+
+.access-btn {
+  height: 28px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.access-btn.muted {
+  border-color: var(--border);
+  background: transparent;
+  color: var(--text-3);
+}
+
+.access-message {
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .content {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-4);
+}
+
+@media (max-width: 980px) {
+  .topbar {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .access-bar {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .access-token {
+    flex: 1;
+  }
 }
 </style>

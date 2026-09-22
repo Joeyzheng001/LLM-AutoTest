@@ -1,0 +1,130 @@
+# 部门共享部署模板：PostgreSQL 为任务元数据权威源，orchestrator 可横向扩展。
+# 首次启动前：
+#   docker compose -f deploy/docker-compose.department.yml --env-file deploy/.env up -d postgres
+#   docker compose -f deploy/docker-compose.department.yml --env-file deploy/.env run --rm orchestrator \
+#     uv run python -m orchestrator migrate-db
+# 再启动全部服务；需要对象存储时追加 --profile object-store，并将 ARTIFACT_STORAGE_BACKEND=s3。
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-autotest}
+      POSTGRES_USER: ${POSTGRES_USER:-autotest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    profiles: ["object-store"]
+    # 禁止 latest 漂移；如部门镜像仓库已完成安全验证，可通过 MINIO_IMAGE 覆盖。
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2024-06-13T22-53-53Z}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9001:9001"
+    restart: unless-stopped
+
+  java-parser:
+    build: ../services/java-parser
+    image: llm-autotest/java-parser:0.1.0
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx192m -Xms64m"
+    volumes:
+      - artifacts:/data/llm-autotest
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: services/orchestrator/Dockerfile
+    image: llm-autotest/orchestrator:0.1.0
+    environment:
+      JAVA_PARSER_URL: http://java-parser:8080
+      # 使用完整 SQLAlchemy URL，密码中的 URL 保留字符必须先百分号编码。
+      # 不再在 Compose 内拼接密码，避免 @、:、# 等字符改变连接串解析。
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env (URL-encode the password)}
+      DATABASE_AUTO_CREATE: "false"
+      # 部门环境禁止回退到明文兼容模式；请由密钥管理系统注入 Fernet key。
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?set SECRETS_ENCRYPTION_KEY in deploy/.env}
+      # 共享部署禁止匿名兼容模式；令牌映射应由密钥管理系统注入。
+      AUTOTEST_ACCESS_TOKENS_JSON: ${AUTOTEST_ACCESS_TOKENS_JSON:?set AUTOTEST_ACCESS_TOKENS_JSON in deploy/.env}
+      ARTIFACT_STORAGE_BACKEND: ${ARTIFACT_STORAGE_BACKEND:-local}
+      ARTIFACT_STORAGE_BUCKET: ${ARTIFACT_STORAGE_BUCKET:-autotest-evidence}
+      ARTIFACT_STORAGE_ENDPOINT: ${ARTIFACT_STORAGE_ENDPOINT:-http://minio:9000}
+      ARTIFACT_STORAGE_ACCESS_KEY: ${ARTIFACT_STORAGE_ACCESS_KEY:-${MINIO_ROOT_USER}}
+      ARTIFACT_STORAGE_SECRET_KEY: ${ARTIFACT_STORAGE_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      ARTIFACT_STORAGE_VERIFY_TLS: ${ARTIFACT_STORAGE_VERIFY_TLS:-false}
+    env_file:
+      - .env
+    volumes:
+      - artifacts:/data/llm-autotest
+      # 宿主机路径可由 .env 的 REPOSITORIES_HOST_ROOT 覆盖；使用长语法兼容
+      # Windows Docker 主机的 C:/... 盘符，容器内保持统一路径。
+      - type: bind
+        source: ${REPOSITORIES_HOST_ROOT:-/opt/repos}
+        target: /opt/repos
+        read_only: true
+    healthcheck:
+      # 编排镜像基于 python:slim，不假设存在 curl/wget；/ready 同时校验数据库和迁移版本。
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+    depends_on:
+      postgres:
+        condition: service_healthy
+      java-parser:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: services/frontend/Dockerfile
+    image: llm-autotest/frontend:0.1.0
+    ports:
+      - "8080:80"
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  artifacts:
+  postgres-data:
+  minio-data:
+  prometheus-data:

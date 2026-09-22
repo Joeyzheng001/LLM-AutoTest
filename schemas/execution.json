@@ -27,7 +27,8 @@
           "actual_status": { "type": "integer", "minimum": 0, "description": "实际响应状态" },
           "actual_body": { "description": "实际响应体（已脱敏、截断）" },
           "timeout": { "type": "boolean", "description": "X-EXEC-02 执行超时" },
-          "skipped_reason": { "type": "string", "enum": ["前置缺失"], "description": "X-EXEC-05：前置数据无法准备时跳过并记录" },
+          "skipped": { "type": "boolean", "description": "用例未发起请求，因脚本或前置校验而跳过" },
+          "skipped_reason": { "type": "string", "enum": ["前置缺失"], "description": "X-EXEC-05：脚本或请求前置数据无法准备时跳过并记录" },
           "duration_ms": { "type": "integer", "minimum": 0 },
           "timestamp": { "type": "string", "format": "date-time", "description": "UTC ISO-8601" }
         }
@@ -44,6 +45,21 @@
         "failed_environment": { "type": "integer", "minimum": 0 },
         "interrupted": {"type": "integer", "minimum": 0, "description": "X-EXEC-04：服务崩溃后剩余用例标中断" },
         "skipped": {"type": "integer", "minimum": 0, "description": "v1.1 可选：跳过执行的用例计数（loadable=false 脚本不可加载，R-GEN-03 特例；前置缺失 X-EXEC-05）" }
+        ,"by_type": {
+          "type": "object",
+          "description": "可选 API/E2E 分项汇总；存在 E2E 结果时由执行节点程序化生成",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["total", "passed", "failed_assertion", "failed_environment"],
+            "properties": {
+              "total": {"type": "integer", "minimum": 0},
+              "passed": {"type": "integer", "minimum": 0},
+              "failed_assertion": {"type": "integer", "minimum": 0},
+              "failed_environment": {"type": "integer", "minimum": 0},
+              "skipped": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
       }
     },
     "degraded_protocols": {

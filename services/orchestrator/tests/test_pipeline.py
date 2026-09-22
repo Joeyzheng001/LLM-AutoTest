@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from orchestrator.api import create_app
 from orchestrator.config import Settings
+from orchestrator.persistence import Database
 from orchestrator.pipeline import NODE_ORDER, PipelineState
 
 
@@ -36,6 +40,79 @@ def test_health_endpoint() -> None:
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_readiness_and_prometheus_metrics_endpoints() -> None:
+    client = TestClient(create_app(_settings()))
+    ready = client.get("/ready")
+    assert ready.status_code == 200
+    assert ready.json()["status"] == "ready"
+    metrics = client.get("/metrics")
+    assert metrics.status_code == 200
+    assert "autotest_queue_active_jobs" in metrics.text
+    assert "autotest_database_up 1" in metrics.text
+    assert 'route="/health"' in client.get("/health").text or 'route="/ready"' in metrics.text
+
+
+def test_database_readiness_requires_schema_migration(tmp_path: Path) -> None:
+    """数据库能连接但未执行迁移时，服务不得误报 ready。"""
+    db_path = tmp_path / "unmigrated.db"
+    Database(f"sqlite:///{db_path}").create_schema()
+    settings = replace(
+        _settings(),
+        database_url=f"sqlite:///{db_path}",
+        database_auto_create=False,
+    )
+    client = TestClient(create_app(settings))
+    response = client.get("/ready")
+    assert response.status_code == 503
+    assert response.json()["database"] == "ok"
+    assert response.json()["schema"]["status"] == "migration_required"
+
+
+def test_database_readiness_accepts_migrated_schema(tmp_path: Path) -> None:
+    """显式迁移完成后，就绪检查允许接收任务。"""
+    db_path = tmp_path / "migrated.db"
+    Database(f"sqlite:///{db_path}").migrate_schema()
+    settings = replace(
+        _settings(),
+        database_url=f"sqlite:///{db_path}",
+        database_auto_create=False,
+    )
+    client = TestClient(create_app(settings))
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json()["schema"]["status"] == "ok"
+
+
+def test_unmigrated_database_does_not_abort_application_startup(tmp_path: Path) -> None:
+    """数据库尚未建表时，应用仍可启动并通过 /ready 暴露迁移状态。"""
+    settings = replace(
+        _settings(),
+        database_url=f"sqlite:///{tmp_path / 'missing-schema.db'}",
+        database_auto_create=False,
+    )
+    client = TestClient(create_app(settings))
+    response = client.get("/ready")
+    assert response.status_code == 503
+    assert response.json()["database"] == "unavailable"
+    assert response.json()["schema"]["status"] == "unavailable"
+
+
+def test_object_storage_readiness_requires_healthcheck() -> None:
+    """启用对象存储但探活失败时，服务不得接收任务。"""
+    settings = _settings()
+    app = create_app(settings)
+
+    class BrokenStorage:
+        def healthcheck(self) -> bool:
+            raise RuntimeError("object storage unavailable")
+
+    app.state.object_storage = BrokenStorage()
+    client = TestClient(app)
+    response = client.get("/ready")
+    assert response.status_code == 503
+    assert response.json()["object_storage"] == "unavailable"
 
 
 def test_nodes_endpoint_returns_nine() -> None:

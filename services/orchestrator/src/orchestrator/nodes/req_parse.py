@@ -688,7 +688,17 @@ def _extract_complete_json_object(text: str) -> str:
     """返回文本中的首个完整 JSON 对象；找不到时保留原文交由 json.loads 报错。
 
     仅接受花括号、字符串转义和嵌套结构都闭合的对象，不拼接或猜测残缺 JSON。
+    整体就是完整 JSON 数组时原样返回（裸数组是已登记容器形态，
+    截取首个元素会丢失其余条目）。
     """
+    stripped = text.strip()
+    if stripped.startswith("["):
+        try:
+            whole = json.loads(stripped)
+        except json.JSONDecodeError:
+            whole = None
+        if isinstance(whole, list):
+            return stripped
     for start, char in enumerate(text):
         if char != "{":
             continue

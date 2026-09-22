@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -19,6 +20,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from orchestrator.errors import X_ORCH_01, PipelineError
+from orchestrator.object_storage import ObjectStorage, ObjectStorageError
 
 # C-12 安全：job_id 完整正则（字符集不含路径分隔符与 ..；长度 ≤64+4）。
 # 单点下沉在 job_dir——CLI/API/内部调用统一兜底，防目录穿越参与 rmtree/写入。
@@ -41,6 +43,7 @@ ARTIFACT_FILES: tuple[str, ...] = (
     "metrics.json",
 )
 _MD_ARTIFACTS: tuple[str, ...] = ("test_report.md",)
+_INTERNAL_FILES: frozenset[str] = frozenset({".job-credentials.enc", "artifact_manifest.json"})
 
 _WRITE_OWNERS: dict[str, str] = {
     "requirement_diff.json": "orchestrator",
@@ -80,11 +83,27 @@ def ensure_job_id(job_id: str) -> str:
 class ArtifactStore:
     """产物卷访问器（每个服务实例持有自己的 service 名）。"""
 
-    def __init__(self, root: Path, schemas_dir: Path, service: str) -> None:
+    def __init__(
+        self,
+        root: Path,
+        schemas_dir: Path,
+        service: str,
+        object_storage: ObjectStorage | None = None,
+        database: Any | None = None,
+        deduplicate_artifact_index: bool = False,
+    ) -> None:
         """root 为产物卷根；service 用于写权校验（orchestrator / test-executor）。"""
         self._root = root.resolve()
         self._schemas_dir = schemas_dir
         self._service = service
+        self._object_storage = object_storage
+        self._database = database
+        self._deduplicate_artifact_index = deduplicate_artifact_index
+
+    @property
+    def database(self) -> Any | None:
+        """返回可选数据库门面，供任务配置在共享卷不可见时回退读取。"""
+        return self._database
 
     def create_job(self, job_id: str) -> Path:
         """创建 job 目录（幂等：已存在时仅补齐子目录）。"""
@@ -125,6 +144,10 @@ class ArtifactStore:
         tmp = target.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(target)
+        storage_uri = self._mirror_file(job_id, target)
+        self._register_artifact(
+            job_id, filename, target, storage_uri, payload.get("schema_version")
+        )
         return target
 
     def write_raw(self, job_id: str, relative_path: str, text: str) -> Path:
@@ -158,6 +181,8 @@ class ArtifactStore:
         tmp = target.with_suffix(".tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(target)
+        storage_uri = self._mirror_file(job_id, target)
+        self._register_artifact(job_id, relative_path, target, storage_uri, None)
         return target
 
     def validate(self, job_id: str, filename: str, payload: dict[str, Any]) -> list[str]:
@@ -178,22 +203,81 @@ class ArtifactStore:
 
     def read_json(self, job_id: str, filename: str) -> dict[str, Any]:
         """读取产物 JSON（只读操作，任何服务可调用）。"""
-        path = self.job_dir(job_id) / filename
+        path = self.ensure_local(job_id, filename)
         payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
         return payload
 
+    def ensure_local(self, job_id: str, relative_path: str) -> Path:
+        """确保产物在本地可读；本地缺失时按对象键从镜像恢复。"""
+        relative = Path(relative_path)
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise PipelineError(code=X_ORCH_01, message=f"非法读取路径：{relative_path}")
+        target = self.job_dir(job_id) / relative
+        if target.is_file():
+            return target
+        if self._object_storage is None:
+            raise FileNotFoundError(target)
+        getter = getattr(self._object_storage, "get_file", None)
+        if not callable(getter):
+            raise FileNotFoundError(target)
+        temporary = target.with_suffix(target.suffix + ".download")
+        try:
+            getter(f"{job_id}/{relative.as_posix()}", temporary)
+            if not temporary.is_file():
+                raise FileNotFoundError(target)
+            expected_sha256: str | None = None
+            if self._database is not None:
+                latest_artifact = getattr(self._database, "latest_artifact", None)
+                if callable(latest_artifact):
+                    record = latest_artifact(job_id, relative.as_posix())
+                    if record is not None:
+                        expected_sha256 = str(getattr(record, "sha256", "") or "") or None
+            if expected_sha256 is not None:
+                actual_sha256 = hashlib.sha256(temporary.read_bytes()).hexdigest()
+                if actual_sha256 != expected_sha256:
+                    raise PipelineError(
+                        code=X_ORCH_01,
+                        message=(
+                            f"对象存储恢复校验失败：{relative.as_posix()}（SHA-256 不匹配）"
+                        ),
+                    )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary.replace(target)
+        except ObjectStorageError:
+            temporary.unlink(missing_ok=True)
+            raise
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        return target
+
     def is_node_completed(self, job_id: str, filename: str) -> bool:
         """节点完成判据：产物存在且过校验（test_report.md 仅存在性）。"""
-        path = self.job_dir(job_id) / filename
-        if not path.is_file():
+        try:
+            path = self.ensure_local(job_id, filename)
+        except (FileNotFoundError, OSError, ObjectStorageError, PipelineError):
             return False
         if filename in _MD_ARTIFACTS:
-            return path.stat().st_size > 0
+            return path.stat().st_size > 0 and self._mirror_present(job_id, path)
         try:
             payload = self.read_json(job_id, filename)
         except (json.JSONDecodeError, OSError):
             return False
-        return not self.validate(job_id, filename, payload)
+        return not self.validate(job_id, filename, payload) and self._mirror_present(job_id, path)
+
+    def _mirror_present(self, job_id: str, path: Path) -> bool:
+        """对象存储模式下用 HEAD 防止本地产物先落盘导致误判完成。"""
+        if self._object_storage is None:
+            return True
+        exists = getattr(self._object_storage, "exists", None)
+        if not callable(exists):
+            # 兼容仅实现 put_file 的旧/测试后端；正式 S3 后端实现 exists。
+            return True
+        relative = path.relative_to(self.job_dir(job_id)).as_posix()
+        try:
+            return bool(exists(f"{job_id}/{relative}"))
+        except (ObjectStorageError, OSError):
+            return False
 
     def archive(self, job_id: str, filename: str) -> Path | None:
         """--force-node 重跑前归档旧产物（docs/12 §1.2：禁止原地覆盖）。"""
@@ -204,7 +288,141 @@ class ArtifactStore:
         target = self.job_dir(job_id) / "archive" / f"{stamp}_{filename}"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source), str(target))
+        storage_uri = self._mirror_file(job_id, target)
+        self._register_artifact(
+            job_id,
+            target.relative_to(self.job_dir(job_id)).as_posix(),
+            target,
+            storage_uri,
+            None,
+        )
         return target
+
+    def mirror_file(self, job_id: str, relative_path: str) -> str | None:
+        """镜像任务目录内的非 Schema 文件（如 input/需求文档）。"""
+        relative = Path(relative_path)
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise PipelineError(code=X_ORCH_01, message=f"非法镜像路径：{relative_path}")
+        target = self.job_dir(job_id) / relative
+        if not target.is_file():
+            raise PipelineError(code=X_ORCH_01, message=f"待镜像文件不存在：{relative_path}")
+        storage_uri = self._mirror_file(job_id, target)
+        self._register_artifact(job_id, relative_path, target, storage_uri, None)
+        return storage_uri
+
+    def write_manifest(self, job_id: str) -> Path:
+        """写入内部产物清单，供对象存储双写/迁移使用（不作为节点完成判据）。"""
+        root = self.job_dir(job_id)
+        files: list[dict[str, Any]] = []
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.name in _INTERNAL_FILES or path.suffix == ".tmp":
+                continue
+            try:
+                relative = path.relative_to(root)
+                content = path.read_bytes()
+                stat = path.stat()
+            except OSError:
+                continue
+            relative_name = relative.as_posix()
+            if relative.parts and relative.parts[0] == ".trash":
+                continue
+            if relative.parts and relative.parts[0] == "input":
+                kind = "document"
+            elif relative.parts and relative.parts[0] == "scripts":
+                kind = "script"
+            elif relative.parts and relative.parts[0] == "archive":
+                kind = "archive"
+            elif relative_name.endswith(".jsonl"):
+                kind = "log"
+            else:
+                kind = "artifact"
+            files.append(
+                {
+                    "path": relative_name,
+                    "object_key": f"{job_id}/{relative_name}",
+                    "storage_uri": self.storage_uri(job_id, relative_name),
+                    "kind": kind,
+                    "size_bytes": stat.st_size,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "schema_valid": (
+                        self.validate(job_id, path.name, json.loads(content)) == []
+                        if path.suffix == ".json" and path.name in ARTIFACT_FILES
+                        else None
+                    ),
+                }
+            )
+        payload = {
+            "schema_version": "1.0",
+            "job_id": job_id,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "files": files,
+            "total_files": len(files),
+            "total_bytes": sum(int(item["size_bytes"]) for item in files),
+        }
+        target = root / "artifact_manifest.json"
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(target)
+        self._mirror_file(job_id, target)
+        return target
+
+    def _mirror_file(self, job_id: str, path: Path) -> str | None:
+        """把本地成功落盘的文件镜像到对象存储；未配置时保持本地模式。"""
+        if self._object_storage is None:
+            return None
+        relative = path.relative_to(self.job_dir(job_id)).as_posix()
+        try:
+            return self._object_storage.put_file(path, f"{job_id}/{relative}")
+        except ObjectStorageError as exc:
+            raise PipelineError(
+                code=X_ORCH_01,
+                message=f"对象存储镜像失败：{path.name}（{exc}）",
+                node_id=None,
+            ) from exc
+        except Exception as exc:  # pragma: no cover - 防御性保护，不回显云端错误
+            raise PipelineError(
+                code=X_ORCH_01,
+                message=f"对象存储镜像失败：{path.name}",
+                node_id=None,
+            ) from exc
+
+    def _register_artifact(
+        self,
+        job_id: str,
+        filename: str,
+        path: Path,
+        storage_uri: str | None,
+        schema_version: str | None,
+    ) -> None:
+        """数据库启用时登记版本与校验和；登记失败阻止节点静默完成。"""
+        if self._database is None:
+            return
+        try:
+            self._database.register_artifact(
+                job_id,
+                filename,
+                path,
+                schema_version=schema_version,
+                storage_uri=storage_uri,
+                is_valid=True,
+                deduplicate=self._deduplicate_artifact_index,
+            )
+        except Exception as exc:  # pragma: no cover - 由数据库驱动具体异常决定
+            raise PipelineError(
+                code=X_ORCH_01,
+                message=f"产物索引登记失败：{filename}",
+                node_id=None,
+            ) from exc
+
+    def storage_uri(self, job_id: str, relative_path: str) -> str:
+        """返回 manifest 使用的地址；未配置对象存储时返回 file URI。"""
+        target = self.job_dir(job_id) / relative_path
+        object_key = f"{job_id}/{Path(relative_path).as_posix()}"
+        if self._object_storage is not None:
+            uri_for = getattr(self._object_storage, "uri_for", None)
+            if callable(uri_for):
+                return str(uri_for(object_key))
+        return target.as_uri()
 
     def _check_writable(self, filename: str) -> None:
         """写权排他校验：不属于本服务的产物禁止写入。"""

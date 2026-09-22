@@ -23,9 +23,14 @@ const retestError = ref('')
 const retestResult = ref<RetestResponse | null>(null)
 const expandedId = ref('')
 const e2eMode = computed(() => props.viewKey === 'e2e-defects')
-const visibleDefects = computed(() => defects.value.filter((defect) =>
-  e2eMode.value ? defect.case_id.startsWith('E2E-') : !defect.case_id.startsWith('E2E-')
-))
+const allModes = computed(() => props.viewKey === 'defects')
+const visibleDefects = computed(() =>
+  defects.value.filter(
+    (defect) =>
+      allModes.value ||
+      (e2eMode.value ? defect.case_id.startsWith('E2E-') : !defect.case_id.startsWith('E2E-')),
+  ),
+)
 
 async function load(): Promise<void> {
   if (!_jobId.value) return
@@ -69,6 +74,15 @@ function actualText(defect: DefectEntry): string {
   if (actual.body == null) return status
   const body = typeof actual.body === 'string' ? actual.body : JSON.stringify(actual.body, null, 2)
   return `${status}\n${body}`
+}
+
+function triageLabel(kind: NonNullable<DefectEntry['triage']>['kind']): string {
+  return {
+    input_construction: '参数构造待修复',
+    assertion_or_setup: '断言/前置待核对',
+    product_suspect: '高疑似服务端缺陷',
+    needs_evidence: '证据待补充',
+  }[kind]
 }
 
 function viewRetestProgress(): void {
@@ -136,7 +150,8 @@ async function retestAll(): Promise<void> {
         </template>
       </div>
       <div v-else class="hint hint-notice">
-        E2E 缺陷由浏览器执行产物生成；请从「流水线总览」选择“从自动执行起”重跑，避免把接口复测错误用于前端用例。
+        E2E
+        缺陷由浏览器执行产物生成；请从「流水线总览」选择“从自动执行起”重跑，避免把接口复测错误用于前端用例。
       </div>
       <p v-if="retestError" class="state-line state-error" role="alert">{{ retestError }}</p>
 
@@ -148,9 +163,12 @@ async function retestAll(): Promise<void> {
       <!-- 缺陷清单 -->
       <div class="card">
         <header class="card-title">
-          {{ e2eMode ? 'E2E 缺陷清单' : '接口缺陷清单' }}（{{ visibleDefects.length }} 条 · 仅断言失败进入 R-DEF-01）
+          {{ e2eMode ? 'E2E 缺陷清单' : '接口缺陷清单' }}（{{ visibleDefects.length }} 条 ·
+          仅断言失败进入 R-DEF-01）
         </header>
-        <p v-if="!visibleDefects.length" class="state-line">无{{ e2eMode ? ' E2E' : '接口' }}缺陷条目。</p>
+        <p v-if="!visibleDefects.length" class="state-line">
+          无{{ e2eMode ? ' E2E' : '接口' }}缺陷条目。
+        </p>
         <div
           v-for="defect in visibleDefects"
           :key="defect.id"
@@ -165,6 +183,9 @@ async function retestAll(): Promise<void> {
             </span>
             <span v-if="defect.is_fallback" class="tag tag-warning">兜底/演示缺陷</span>
             <span v-if="defect.based_on_new_version" class="tag tag-warning">基于新版本</span>
+            <span v-if="defect.triage" class="tag tag-warning">{{
+              triageLabel(defect.triage.kind)
+            }}</span>
             <span class="expand-hint">{{ expandedId === defect.id ? '收起' : '展开' }}</span>
           </button>
 
@@ -174,18 +195,28 @@ async function retestAll(): Promise<void> {
                 <span class="detail-label">接口</span>
                 <p class="detail-text mono">
                   {{ defect.interface?.protocol || '—' }}
-                  {{ defect.interface?.method || '' }} {{ defect.interface?.path || defect.interface_id }}
+                  {{ defect.interface?.method || '' }}
+                  {{ defect.interface?.path || defect.interface_id }}
                 </p>
-                <p v-if="defect.interface?.summary" class="detail-subtext">{{ defect.interface.summary }}</p>
+                <p v-if="defect.interface?.summary" class="detail-subtext">
+                  {{ defect.interface.summary }}
+                </p>
               </div>
               <div class="detail-block">
                 <span class="detail-label">测试用例</span>
-                <p class="detail-text"><span class="mono">{{ defect.case_id }}</span> {{ defect.testcase?.title || '历史任务未记录用例标题' }}</p>
-                <p v-if="defect.testcase?.category" class="detail-subtext">类型：{{ defect.testcase.category }}</p>
+                <p class="detail-text">
+                  <span class="mono">{{ defect.case_id }}</span>
+                  {{ defect.testcase?.title || '历史任务未记录用例标题' }}
+                </p>
+                <p v-if="defect.testcase?.category" class="detail-subtext">
+                  类型：{{ defect.testcase.category }}
+                </p>
               </div>
               <div class="detail-block">
                 <span class="detail-label">预期结果</span>
-                <p class="detail-text pre-wrap">{{ defect.testcase?.expected || '历史任务未记录预期结果' }}</p>
+                <p class="detail-text pre-wrap">
+                  {{ defect.testcase?.expected || '历史任务未记录预期结果' }}
+                </p>
               </div>
               <div class="detail-block">
                 <span class="detail-label">实际结果</span>
@@ -194,6 +225,12 @@ async function retestAll(): Promise<void> {
               <div class="detail-block">
                 <span class="detail-label">失败原因</span>
                 <p class="detail-text">{{ defect.failure_reason }}</p>
+              </div>
+              <div v-if="defect.triage" class="detail-block">
+                <span class="detail-label">自动分流（{{ defect.triage.confidence }}）</span>
+                <p class="detail-text">
+                  {{ triageLabel(defect.triage.kind) }}：{{ defect.triage.reason }}
+                </p>
               </div>
               <div class="detail-block">
                 <span class="detail-label">复现脚本（F-DEF-01 · 用例脚本引用）</span>
@@ -429,7 +466,9 @@ async function retestAll(): Promise<void> {
   font-size: var(--text-xs);
 }
 
-.pre-wrap { white-space: pre-wrap; }
+.pre-wrap {
+  white-space: pre-wrap;
+}
 
 .detail-code {
   max-height: 180px;
