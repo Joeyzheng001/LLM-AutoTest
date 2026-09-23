@@ -41,6 +41,7 @@ from orchestrator.engine import NODE_ARTIFACTS, Engine
 from orchestrator.errors import PipelineError
 from orchestrator.javaparser_client import JavaParserClient
 from orchestrator.job_queue import LocalJobQueue, QueueConflict
+from orchestrator.model_catalog import DEFAULT_RELAY_MODEL
 from orchestrator.metrics import MetricsRegistry
 from orchestrator.nodes.auto_execute import login_for_headers
 from orchestrator.nodes.retest_regression import retest_defects
@@ -133,9 +134,11 @@ class AuthVerificationRequest(AuthConfig):
 class LlmConfig(BaseModel):
     """本次任务的 LLM 中转站运行时配置；密钥只驻留后台任务内存。"""
 
-    api_key: str = Field(min_length=8, max_length=512)
-    model: str = Field(default="MiniMax-M3", min_length=1, max_length=128)
-    base_url: str = Field(default="https://api.minimaxi.com/v1", min_length=8, max_length=256)
+    # 留空时复用已有任务密钥或服务级中转站密钥；API 层会拒绝两者均不存在的覆盖请求。
+    api_key: str = Field(default="", max_length=512)
+    model: str = Field(default=DEFAULT_RELAY_MODEL, min_length=1, max_length=128)
+    base_url: str = Field(default="https://llm.htffund.com/v1", min_length=8, max_length=256)
+    protocol: Literal["openai-chat", "openai-responses", "anthropic-messages"] = "openai-chat"
     max_tokens: int = Field(default=16384, ge=1024, le=16384)
 
 
@@ -203,9 +206,10 @@ class EditableAuthConfig(BaseModel):
 class EditableLlmConfig(BaseModel):
     """编辑任务时的模型配置；API Key 可省略以复用 SecretStore 中的密钥。"""
 
-    api_key: str | None = Field(default=None, min_length=8, max_length=512)
-    model: str = Field(default="MiniMax-M3", min_length=1, max_length=128)
-    base_url: str = Field(default="https://api.minimaxi.com/v1", min_length=8, max_length=256)
+    api_key: str | None = Field(default=None, max_length=512)
+    model: str = Field(default=DEFAULT_RELAY_MODEL, min_length=1, max_length=128)
+    base_url: str = Field(default="https://llm.htffund.com/v1", min_length=8, max_length=256)
+    protocol: Literal["openai-chat", "openai-responses", "anthropic-messages"] = "openai-chat"
     max_tokens: int = Field(default=16384, ge=1024, le=16384)
 
 
@@ -838,6 +842,11 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             if not request.llm.base_url.startswith(("http://", "https://")):
                 raise HTTPException(status_code=400, detail="llm.base_url 须为 http(s) 地址")
             llm_payload = request.llm.model_dump()
+            if not llm_payload["api_key"] and not settings.llm_api_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="请填写 LLM 中转站 API Key，或先在服务级配置中注入密钥",
+                )
         auth_payload: dict[str, Any] | None = None
         if request.auth is not None:
             auth = request.auth
@@ -890,8 +899,9 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             job_input["llm"] = {
                 "model": llm_payload["model"],
                 "base_url": llm_payload["base_url"],
+                "protocol": llm_payload["protocol"],
                 "max_tokens": llm_payload["max_tokens"],
-                "api_key_configured": True,
+                "api_key_configured": bool(llm_payload["api_key"] or settings.llm_api_key),
             }
         if request.e2e is not None:
             job_input["e2e"] = request.e2e.model_dump()
@@ -1132,8 +1142,9 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             ),
             "llm": (
                 {
-                    "model": llm.get("model", "MiniMax-M3"),
-                    "base_url": llm.get("base_url", "https://api.minimaxi.com/v1"),
+                    "model": llm.get("model", DEFAULT_RELAY_MODEL),
+                    "base_url": llm.get("base_url", ""),
+                    "protocol": llm.get("protocol", "openai-chat"),
                     "max_tokens": llm.get("max_tokens", 16384),
                     "api_key_configured": bool(
                         job_id in app.state.job_llm_configs or stored_llm_key
@@ -1204,17 +1215,19 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             if not request.llm.base_url.startswith(("http://", "https://")):
                 raise HTTPException(status_code=400, detail="llm.base_url 须为 http(s) 地址")
             old_runtime = app.state.job_llm_configs.get(job_id, {})
-            api_key = (
+            task_api_key = (
                 request.llm.api_key
                 or old_runtime.get("api_key")
                 or previous_secrets.get("llm_api_key")
             )
-            if not api_key:
+            if not task_api_key and not settings.llm_api_key:
                 raise HTTPException(
                     status_code=400,
-                    detail="请填写 LLM 中转站 API Key（当前任务没有可复用的密钥）",
+                    detail="请填写 LLM 中转站 API Key，或先在服务级配置中注入密钥",
                 )
-            llm_payload = {**request.llm.model_dump(), "api_key": api_key}
+            llm_payload = request.llm.model_dump()
+            if task_api_key:
+                llm_payload["api_key"] = str(task_api_key)
 
         doc_paths = previous.get("doc_paths", [])
         document_pairs = previous.get("document_pairs")
@@ -1255,9 +1268,11 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 job_input["auth"] = auth_payload
         if llm_payload is not None:
             job_input["llm"] = {
-                key: llm_payload[key] for key in ("model", "base_url", "max_tokens")
+                key: llm_payload[key] for key in ("model", "base_url", "protocol", "max_tokens")
             }
-            job_input["llm"]["api_key_configured"] = True
+            job_input["llm"]["api_key_configured"] = bool(
+                llm_payload.get("api_key") or settings.llm_api_key
+            )
             app.state.job_llm_configs[job_id] = llm_payload
         elif request.llm_enabled is not False and isinstance(previous.get("llm"), dict):
             job_input["llm"] = previous["llm"]
@@ -1537,19 +1552,35 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 raise HTTPException(status_code=400, detail="e2e.base_url 须为 http(s) 地址")
             job_input["e2e"] = request.e2e.model_dump()
         if request.llm is not None:
-            app.state.job_llm_configs[job_id] = request.llm.model_dump()
+            previous_runtime = app.state.job_llm_configs.get(job_id, {})
+            previous_secrets = _load_job_secrets(app, job_id)
+            task_api_key = (
+                request.llm.api_key
+                or previous_runtime.get("api_key")
+                or previous_secrets.get("llm_api_key")
+            )
+            if not task_api_key and not settings.llm_api_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="请填写 LLM 中转站 API Key，或先在服务级配置中注入密钥",
+                )
+            llm_payload = request.llm.model_dump()
+            if task_api_key:
+                llm_payload["api_key"] = str(task_api_key)
+            app.state.job_llm_configs[job_id] = llm_payload
             job_input["llm"] = {
-                "model": request.llm.model,
-                "base_url": request.llm.base_url,
-                "max_tokens": request.llm.max_tokens,
-                "api_key_configured": True,
+                "model": llm_payload["model"],
+                "base_url": llm_payload["base_url"],
+                "protocol": llm_payload["protocol"],
+                "max_tokens": llm_payload["max_tokens"],
+                "api_key_configured": bool(task_api_key or settings.llm_api_key),
             }
             if app.state.secret_store.enabled:
                 _persist_job_secrets(
                     app,
                     job_id,
                     auth=_job_auth_config(app, job_id, job_input),
-                    llm_api_key=request.llm.api_key,
+                    llm_api_key=str(task_api_key) if task_api_key else None,
                 )
         if request.rest_url is not None or request.e2e is not None or request.llm is not None:
             # 仅更新执行目标和非敏感模型元数据，不读取/返回 API key。
@@ -2281,8 +2312,9 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
     if llm_config is None and isinstance(job_input.get("llm"), dict):
         secrets = _load_job_secrets(app, job_id)
         api_key = secrets.get("llm_api_key")
+        llm_config = dict(job_input["llm"])
         if isinstance(api_key, str) and api_key:
-            llm_config = {**job_input["llm"], "api_key": api_key}
+            llm_config["api_key"] = api_key
 
     async def _run() -> None:
         runner: PipelineRunner = app.state.runner

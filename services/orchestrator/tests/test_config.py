@@ -19,7 +19,7 @@ def test_settings_from_env_complete() -> None:
         }
     )
     assert settings.java_parser_url == "http://java-parser:8080"
-    assert settings.llm_model_name == "MiniMax-M3"
+    assert settings.llm_model_name == "deepseek-reasoner-code"
     assert settings.repositories_root == "/opt/repos"
     assert settings.llm_timeout_s == pytest.approx(300.0)
     assert settings.llm_temperature == pytest.approx(0.3)

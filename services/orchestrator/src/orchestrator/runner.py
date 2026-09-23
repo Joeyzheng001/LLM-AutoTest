@@ -207,7 +207,9 @@ class PipelineRunner:
             self._settings,
             llm_base_url=str(llm_config.get("base_url", self._settings.llm_base_url)).rstrip("/"),
             llm_model_name=str(llm_config.get("model", self._settings.llm_model_name)),
-            llm_api_key=str(llm_config.get("api_key", self._settings.llm_api_key)),
+            llm_protocol=str(llm_config.get("protocol", self._settings.llm_protocol)),
+            # 任务级模型覆盖可故意不携带 Key，改为复用服务级中转站凭据。
+            llm_api_key=str(llm_config.get("api_key") or self._settings.llm_api_key),
             llm_max_tokens=int(llm_config.get("max_tokens", self._settings.llm_max_tokens)),
         )
 

@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from orchestrator.model_catalog import DEFAULT_RELAY_MODEL
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -24,6 +26,8 @@ class Settings:
     llm_seed: int | None
     llm_timeout_s: float  # docs/12 §三：单次调用超时
     schemas_dir: str  # 产物 Schema 目录（校验用）
+    # 当前中转站同时支持 OpenAI Chat、Responses 与 Anthropic Messages 三种协议。
+    llm_protocol: str = "openai-chat"
     # 宿主机源码目录在容器内的统一挂载点；Compose 的宿主机路径单独由
     # REPOSITORIES_HOST_ROOT 注入，避免 Windows C:/... 路径传进容器。
     repositories_root: str = "/opt/repos"
@@ -73,6 +77,14 @@ class Settings:
             raise ValueError("LLM_BASE_URL 必须是 http(s) 地址")
         if not self.llm_model_name.strip():
             raise ValueError("LLM_MODEL_NAME 不能为空")
+        if self.llm_protocol not in {
+            "openai-chat",
+            "openai-responses",
+            "anthropic-messages",
+        }:
+            raise ValueError(
+                "LLM_PROTOCOL 须为 openai-chat、openai-responses 或 anthropic-messages"
+            )
         if not math.isfinite(self.llm_timeout_s) or self.llm_timeout_s <= 0:
             raise ValueError("LLM_TIMEOUT_S 必须是正数")
         if not math.isfinite(self.llm_temperature) or self.llm_temperature < 0:
@@ -96,6 +108,7 @@ class Settings:
         return (
             f"port={self.port} java_parser_url={self.java_parser_url} "
             f"artifacts_root={self.artifacts_root} model={self.llm_model_name} "
+            f"llm_protocol={self.llm_protocol} "
             f"temperature={self.llm_temperature} top_p={self.llm_top_p} seed={self.llm_seed} "
             f"job_max_concurrency={self.job_max_concurrency} "
             f"job_lease_seconds={self.job_lease_seconds}"
@@ -117,14 +130,15 @@ class Settings:
                 artifacts_root=source.get("ARTIFACTS_ROOT", "/data/llm-autotest"),
                 repositories_root=source.get("REPOSITORIES_ROOT", "/opt/repos"),
                 llm_base_url=source["LLM_BASE_URL"],
-                llm_model_name=source.get("LLM_MODEL_NAME", "MiniMax-M3"),
+                llm_model_name=source.get("LLM_MODEL_NAME", DEFAULT_RELAY_MODEL),
                 llm_api_key=source.get("LLM_API_KEY", ""),
                 llm_temperature=float(source.get("LLM_TEMPERATURE", "0.2")),
                 llm_top_p=float(source.get("LLM_TOP_P", "0.8")),
                 llm_seed=int(source["LLM_SEED"]) if source.get("LLM_SEED") else None,
-                # MiniMax 推理批次可能超过 120s；服务级默认与部署基线统一为 300s，
+                # 中转站推理批次可能超过 120s；服务级默认与部署基线统一为 300s，
                 # 仍允许按网关 SLA 通过环境变量调小或调大。
                 llm_timeout_s=float(source.get("LLM_TIMEOUT_S", "300")),
+                llm_protocol=source.get("LLM_PROTOCOL", "openai-chat"),
                 schemas_dir=source.get("SCHEMAS_DIR", "schemas"),
                 llm_max_tokens=int(source.get("LLM_MAX_TOKENS", "16384")),
                 database_url=source.get("DATABASE_URL") or None,

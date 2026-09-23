@@ -13,6 +13,13 @@ import {
   verifyAuthentication,
 } from '../api/client'
 import { navigateTo } from '../api/navigation'
+import {
+  DEFAULT_RELAY_MODEL,
+  LLM_MODEL_GROUPS,
+  LLM_PROTOCOL_OPTIONS,
+  isKnownLlmModel,
+  llmModelWarning,
+} from '../api/llmModels'
 import type { FixtureStep, JobConfigurationUpdatePayload, JobSubmitPayload } from '../api/types'
 
 const props = defineProps<{ initialJobId?: string }>()
@@ -65,10 +72,14 @@ const llmEnabled = ref(false)
 const rememberLlm = ref(true)
 const llm = reactive({
   apiKey: '',
-  model: 'MiniMax-M3',
-  baseUrl: 'https://api.minimaxi.com/v1',
+  model: DEFAULT_RELAY_MODEL,
+  protocol: 'openai-chat' as 'openai-chat' | 'openai-responses' | 'anthropic-messages',
+  // 任务级覆盖默认不猜测官方地址；未启用覆盖时自动复用服务端中转站配置。
+  baseUrl: '',
   maxTokens: 16384,
 })
+const selectedLlmModelWarning = computed(() => llmModelWarning(llm.model))
+const hasKnownLlmModel = computed(() => isKnownLlmModel(llm.model))
 const e2eEnabled = ref(false)
 const restInsecureTls = ref(true)
 const e2e = reactive({
@@ -91,6 +102,7 @@ onMounted(() => {
     const config = saved as Record<string, unknown>
     if (typeof config.model === 'string') llm.model = config.model
     if (typeof config.baseUrl === 'string') llm.baseUrl = config.baseUrl
+    if (config.protocol === 'openai-chat' || config.protocol === 'openai-responses' || config.protocol === 'anthropic-messages') llm.protocol = config.protocol
     if (typeof config.maxTokens === 'number') llm.maxTokens = config.maxTokens
     // 兼容并清理旧版本曾写入 localStorage 的 API Key；从此不再恢复或重新保存。
     if ('apiKey' in config) {
@@ -122,6 +134,7 @@ function saveLlmConfig(): void {
       JSON.stringify({
         model: llm.model,
         baseUrl: llm.baseUrl.trim(),
+        protocol: llm.protocol,
         maxTokens: llm.maxTokens,
       }),
     )
@@ -146,7 +159,7 @@ function saveDraft(): void {
         }),
         auth: { loginUrl: auth.loginUrl, username: auth.username, insecureTls: auth.insecureTls },
         authEnabled: authEnabled.value,
-        llm: { model: llm.model, baseUrl: llm.baseUrl, maxTokens: llm.maxTokens },
+        llm: { model: llm.model, baseUrl: llm.baseUrl, protocol: llm.protocol, maxTokens: llm.maxTokens },
         llmEnabled: llmEnabled.value,
         e2e: { ...e2e },
         e2eEnabled: e2eEnabled.value,
@@ -353,8 +366,7 @@ const authValid = computed(
 const llmValid = computed(
   () =>
     !llmEnabled.value ||
-    ((llm.apiKey.trim().length >= 8 || (editingJobId.value !== '' && existingLlmKey.value)) &&
-      llm.model.trim() !== '' &&
+    (llm.model.trim() !== '' &&
       llm.baseUrl.trim().startsWith('http') &&
       llm.maxTokens >= 1024 &&
       llm.maxTokens <= 16384),
@@ -535,6 +547,7 @@ async function loadConfiguration(jobId: string): Promise<void> {
       Object.assign(llm, {
         model: config.llm.model,
         baseUrl: config.llm.base_url,
+        protocol: config.llm.protocol,
         maxTokens: config.llm.max_tokens,
       })
     e2eEnabled.value = config.e2e !== null
@@ -647,6 +660,7 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
             api_key: llm.apiKey.trim(),
             model: llm.model,
             base_url: llm.baseUrl.trim(),
+            protocol: llm.protocol,
             max_tokens: llm.maxTokens,
           },
         }
@@ -1201,11 +1215,24 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           </label>
           <div class="two-col">
             <label class="field">
-              <span class="field-label">模型</span>
+              <span class="field-label">调用协议</span>
+              <select v-model="llm.protocol">
+                <option v-for="option in LLM_PROTOCOL_OPTIONS" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">模型别名</span>
               <select v-model="llm.model">
-                <option value="MiniMax-M3">MiniMax M3</option>
-                <option value="MiniMax-M2.7">MiniMax M2.7</option>
-                <option value="MiniMax-M2.5">MiniMax M2.5</option>
+                <option v-if="!hasKnownLlmModel" :value="llm.model">
+                  {{ llm.model }}（已有/自定义别名）
+                </option>
+                <optgroup v-for="group in LLM_MODEL_GROUPS" :key="group.label" :label="group.label">
+                  <option v-for="option in group.options" :key="option.value" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                </optgroup>
               </select>
             </label>
             <label class="field">
@@ -1220,11 +1247,19 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             </label>
           </div>
           <label class="field">
-            <span class="field-label">OpenAI 兼容地址</span>
-            <input v-model="llm.baseUrl" type="url" class="mono" />
+            <span class="field-label">中转站 Base URL</span>
+            <input
+              v-model="llm.baseUrl"
+              type="url"
+              class="mono"
+              placeholder="https://llm.htffund.com/v1"
+            />
           </label>
+          <p v-if="selectedLlmModelWarning" class="field-warning" role="status">
+            {{ selectedLlmModelWarning }}
+          </p>
           <p v-if="!llmValid" class="field-error">
-            请填写有效 API Key、模型、服务地址和 1024–16384 的 Token 上限。
+            请填写调用协议、模型别名、Base URL 和 1024–16384 的 Token 上限；API Key 留空时复用服务级或已有任务密钥。
           </p>
           <p v-if="editingJobId && !llm.apiKey && existingLlmKey" class="switch-note">
             未重新填写 API Key，将复用服务端安全存储中的密钥。
@@ -1233,7 +1268,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             当前默认复用部署服务器的 LLM 中转站配置；需要临时切换模型别名或 API Key 时再开启本次任务配置。
           </p>
           <p class="switch-note">
-            浏览器只保存模型、地址和 Token 上限；API Key 不进入浏览器持久化存储，提交后由服务端
+            浏览器只保存协议、模型、地址和 Token 上限；API Key 不进入浏览器持久化存储，提交后由服务端
             SecretStore 安全复用。重跑已有任务时留空即可复用服务端密钥。需求解析、接口还原、Code
             Review、 用例生成会按章节或实体分批调用，再由程序校验并合并。
           </p>
@@ -1562,6 +1597,12 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 }
 
 .field-error {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--warning);
+}
+
+.field-warning {
   margin: var(--space-1) 0 0;
   font-size: var(--text-sm);
   color: var(--warning);

@@ -170,6 +170,7 @@ export interface LlmConfig {
   api_key: string
   model: string
   base_url: string
+  protocol: 'openai-chat' | 'openai-responses' | 'anthropic-messages'
   max_tokens: number
 }
 export interface E2eConfig {

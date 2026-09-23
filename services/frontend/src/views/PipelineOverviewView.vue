@@ -5,6 +5,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import {
   exportJobResults,
+  getJobConfiguration,
   getJobStatus,
   getLlmCallLogs,
   getMetrics,
@@ -14,6 +15,13 @@ import {
 } from '../api/client'
 import type { JobListItem, JobStatus, LlmCallLog, MetricsPayload, NodeState } from '../api/types'
 import { NODE_LABELS, STATUS_LABELS } from '../api/labels'
+import {
+  DEFAULT_RELAY_MODEL,
+  LLM_MODEL_GROUPS,
+  LLM_PROTOCOL_OPTIONS,
+  isKnownLlmModel,
+  llmModelWarning,
+} from '../api/llmModels'
 import { navigateTo, navigation } from '../api/navigation'
 
 const POLL_INTERVAL_MS = 3000
@@ -37,7 +45,10 @@ const stopping = ref(false)
 const rerunError = ref('')
 const rerunFromNode = ref('req_parse')
 const rerunApiKey = ref('')
-const rerunModel = ref('MiniMax-M3')
+const rerunLlmEnabled = ref(false)
+const rerunModel = ref(DEFAULT_RELAY_MODEL)
+const rerunProtocol = ref<'openai-chat' | 'openai-responses' | 'anthropic-messages'>('openai-chat')
+const rerunBaseUrl = ref('')
 const rerunRestUrl = ref('')
 const rerunE2eUrl = ref('')
 const rerunE2eInsecureTls = ref(true)
@@ -51,6 +62,10 @@ const rerunOptions = Object.entries(NODE_LABELS).map(([name, label]) => ({
 
 async function handleRerun(): Promise<void> {
   if (!selectedId.value || rerunning.value || status.value?.running) return
+  if (rerunLlmEnabled.value && !rerunBaseUrl.value.trim().startsWith('http')) {
+    rerunError.value = '覆盖中转站模型时，请填写中转站 Base URL'
+    return
+  }
   rerunning.value = true
   rerunError.value = ''
   try {
@@ -68,12 +83,13 @@ async function handleRerun(): Promise<void> {
             },
           }
         : {}),
-      ...(rerunApiKey.value
+      ...(rerunLlmEnabled.value
         ? {
             llm: {
-              api_key: rerunApiKey.value,
+              api_key: rerunApiKey.value.trim(),
               model: rerunModel.value,
-              base_url: 'https://api.minimaxi.com/v1',
+              base_url: rerunBaseUrl.value.trim(),
+              protocol: rerunProtocol.value,
               max_tokens: 16384,
             },
           }
@@ -130,6 +146,16 @@ async function refreshDetail(): Promise<void> {
       rerunRestUrl.value = status.value.rest_url ?? ''
       rerunE2eUrl.value = status.value.e2e?.base_url ?? ''
       rerunE2eInsecureTls.value = status.value.e2e?.insecure_tls ?? true
+      try {
+        const config = await getJobConfiguration(selectedId.value)
+        if (config.llm) {
+          rerunModel.value = config.llm.model
+          rerunBaseUrl.value = config.llm.base_url
+          rerunProtocol.value = config.llm.protocol
+        }
+      } catch {
+        // 旧任务或权限受限时保留用户当前输入；后端重跑仍按既有配置处理。
+      }
     }
     navigation.e2e = status.value.e2e
       ? {
@@ -240,6 +266,8 @@ const nodesInOrder = computed<OrderedNode[]>(() => {
 })
 
 const activeStage = computed(() => status.value?.nodes.find((node) => node.status === 'running'))
+const rerunLlmWarning = computed(() => llmModelWarning(rerunModel.value))
+const hasKnownRerunLlmModel = computed(() => isKnownLlmModel(rerunModel.value))
 const completedStages = computed(
   () => status.value?.nodes.filter((node) => node.status === 'completed').length ?? 0,
 )
@@ -448,20 +476,45 @@ function runtimeErrorMessage(value: JobStatus['runtime_error']): string {
           </button>
         </div>
         <div class="model-control">
-          <input
-            v-model="rerunApiKey"
-            class="rerun-key"
-            type="password"
-            autocomplete="off"
-            placeholder="可选：临时覆盖 API Key（留空复用已保存配置）"
-            aria-label="重跑 LLM API Key"
-          />
-          <select v-model="rerunModel" class="mono rerun-select" aria-label="重跑语言模型">
-            <option>MiniMax-M3</option>
-            <option>MiniMax-M2.7</option>
-            <option>MiniMax-M2.5</option>
-          </select>
+          <label class="rerun-check">
+            <input v-model="rerunLlmEnabled" type="checkbox" /> 本次重跑覆盖中转站模型
+          </label>
+          <template v-if="rerunLlmEnabled">
+            <input
+              v-model="rerunApiKey"
+              class="rerun-key"
+              type="password"
+              autocomplete="off"
+              placeholder="可选：留空复用服务级或任务密钥"
+              aria-label="重跑 LLM 中转站 API Key"
+            />
+            <select v-model="rerunModel" class="mono rerun-select" aria-label="重跑语言模型">
+              <option v-if="!hasKnownRerunLlmModel" :value="rerunModel">
+                {{ rerunModel }}（已有/自定义别名）
+              </option>
+              <optgroup v-for="group in LLM_MODEL_GROUPS" :key="group.label" :label="group.label">
+                <option v-for="option in group.options" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </optgroup>
+            </select>
+            <select v-model="rerunProtocol" class="rerun-select" aria-label="重跑模型调用协议">
+              <option v-for="option in LLM_PROTOCOL_OPTIONS" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+            <input
+              v-model="rerunBaseUrl"
+              class="rerun-url mono"
+              type="url"
+              placeholder="https://llm.htffund.com/v1"
+              aria-label="重跑 LLM 中转站地址"
+            />
+          </template>
         </div>
+        <p v-if="rerunLlmEnabled && rerunLlmWarning" class="rerun-model-warning" role="status">
+          {{ rerunLlmWarning }}
+        </p>
         <div class="rerun-targets">
           <label title="填写服务根地址，不要填写具体接口（例如 /api/auth/login）"
             >接口目标
@@ -786,8 +839,16 @@ function runtimeErrorMessage(value: JobStatus['runtime_error']): string {
 .model-control {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
   min-width: 0;
+}
+
+.rerun-model-warning {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--warning);
+  font-size: var(--text-xs);
 }
 
 .rerun-targets {

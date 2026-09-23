@@ -24,13 +24,15 @@ _PROMPT = PromptSpec(
 )
 
 
-def _settings() -> Settings:
+def _settings(protocol: str = "openai-chat") -> Settings:
     """测试用配置（Mock 场景无鉴权）。"""
     return Settings.from_env(
         {
             "JAVA_PARSER_URL": "http://java-parser:8080",
             "LLM_BASE_URL": "http://llm-mock",
             "LLM_TIMEOUT_S": "5",
+            "LLM_PROTOCOL": protocol,
+            "LLM_API_KEY": "sk-test",
         }
     )
 
@@ -65,7 +67,8 @@ async def test_complete_success_writes_trace(tmp_path: Path) -> None:
     assert record["prompt_file"] == "req_parse@1.0"
     assert record["knowledge_refs"] == []
     assert record["prompt_version"] == "1.0"
-    assert record["sampling"]["model"] == "MiniMax-M3"
+    assert record["sampling"]["model"] == "deepseek-reasoner-code"
+    assert record["sampling"]["protocol"] == "openai-chat"
     assert record["tokens"] == 128
     assert record["ok"] is True
     assert record["input_digest"] and record["output_digest"]
@@ -199,6 +202,60 @@ async def test_think_blocks_stripped(tmp_path: Path) -> None:
     expected = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
     record = json.loads(trace.read_text(encoding="utf-8").strip())
     assert record["output_digest"] == expected
+
+
+async def test_openai_responses_protocol_extracts_output_text_and_usage(tmp_path: Path) -> None:
+    """OpenAI Responses：使用 Bearer、/responses，并读取 output_text 与输入/输出 token。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/responses"
+        assert request.headers["authorization"] == "Bearer sk-test"
+        payload = json.loads(request.content)
+        assert payload["model"] == "deepseek-reasoner-code"
+        assert isinstance(payload["input"], str)
+        return httpx.Response(
+            200,
+            json={"output_text": "Responses 结果", "usage": {"input_tokens": 7, "output_tokens": 11}},
+        )
+
+    client = LlmClient(
+        _settings("openai-responses"),
+        "job-abc12345-def-6",
+        tmp_path / "trace.jsonl",
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.complete("req_parse", _PROMPT, "需求")
+    assert result.text == "Responses 结果"
+    assert result.tokens == 18
+
+
+async def test_anthropic_messages_protocol_extracts_content_and_usage(tmp_path: Path) -> None:
+    """Anthropic Messages：使用 x-api-key、/messages，并读取 content[].text。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/messages"
+        assert request.headers["x-api-key"] == "sk-test"
+        assert "authorization" not in request.headers
+        payload = json.loads(request.content)
+        assert payload["system"] == _PROMPT.body
+        assert payload["messages"] == [{"role": "user", "content": "需求"}]
+        return httpx.Response(
+            200,
+            json={
+                "content": [{"type": "text", "text": "Anthropic 结果"}],
+                "usage": {"input_tokens": 13, "output_tokens": 17},
+            },
+        )
+
+    client = LlmClient(
+        _settings("anthropic-messages"),
+        "job-abc12345-def-6",
+        tmp_path / "trace.jsonl",
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.complete("req_parse", _PROMPT, "需求")
+    assert result.text == "Anthropic 结果"
+    assert result.tokens == 30
 
 
 def test_strip_think_blocks_variants() -> None:

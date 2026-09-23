@@ -1218,12 +1218,39 @@ async def test_submit_job_llm_key_is_runtime_only(
     assert saved["llm"] == {
         "model": "MiniMax-M2",
         "base_url": "https://api.minimaxi.com/v1",
+        "protocol": "openai-chat",
         "max_tokens": 8192,
         "api_key_configured": True,
     }
     assert "api_key" not in saved["llm"]
     assert fake.calls[-1]["llm_config"]["api_key"] == "sk-test-key-123456"
     assert "job-api-llm1" not in app.state.job_llm_configs
+
+
+async def test_submit_job_persists_selected_llm_protocol(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """任务级协议是非敏感运行配置，保存、重跑与 Runner 均须保持一致。"""
+    app, fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-llm-protocol")
+    body["llm"] = {
+        "api_key": "sk-test-key-123456",
+        "model": "deepseek-chat",
+        "base_url": "https://llm.htffund.com/v1",
+        "protocol": "anthropic-messages",
+        "max_tokens": 4096,
+    }
+    assert (await client.post("/api/v1/jobs", json=body)).status_code == 202
+    await _await_task(app, "job-api-llm-protocol")
+    saved = json.loads(
+        (
+            Path(str(app.state.settings.artifacts_root))
+            / "job-api-llm-protocol"
+            / "job_input.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert saved["llm"]["protocol"] == "anthropic-messages"
+    assert fake.calls[-1]["llm_config"]["protocol"] == "anthropic-messages"
 
 
 async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
@@ -1282,6 +1309,7 @@ async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
     )
     assert saved["auth"]["password"] == body["auth"]["password"]
     assert saved["llm"]["model"] == "MiniMax-M2.5"
+    assert saved["llm"]["protocol"] == "openai-chat"
     assert "api_key" not in saved["llm"]
     assert saved["doc_paths"][-1].endswith("input/requirements.md")
 

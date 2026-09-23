@@ -1,4 +1,4 @@
-"""内部 LLM 中转站客户端：OpenAI 兼容 chat/completions 调用 + 留痕 + 超时/重试治理。
+"""内部 LLM 中转站客户端：三种兼容协议调用 + 留痕 + 超时/重试治理。
 
 口径全部来自 docs/12 第三章：
 - 每次调用向 llm_calls.jsonl 追加一行留痕（call_id 格式 LLM-<job 短码>-<序号>）；
@@ -29,7 +29,7 @@ from orchestrator.prompts_loader import PromptSpec
 DEFAULT_RETRY_BACKOFF: tuple[float, float] = (5.0, 20.0)
 _MAX_ATTEMPTS = 3  # 1 次首发 + 2 次重试
 
-# C-17：推理模型思考块（如 MiniMax-M2 的 `??…??`）不属回答正文，
+# C-17：推理模型思考块不属回答正文，
 # 不剥离则下游 JSON 解析节点全部 X-LLM-02。留痕 output_digest 仍取原始输出（诚实红线）。
 _THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>")
 
@@ -83,6 +83,7 @@ class LlmClient:
         system = prompt.body
         sampling: dict[str, Any] = {
             "model": self._settings.llm_model_name,
+            "protocol": self._settings.llm_protocol,
             "temperature": self._settings.llm_temperature,
             "top_p": self._settings.llm_top_p,
             "seed": self._settings.llm_seed,
@@ -139,29 +140,14 @@ class LlmClient:
 
     async def _request_once(self, system: str, user_content: str) -> tuple[str, int | None]:
         """单次 HTTP 调用；网络/超时异常转可重试错误，其余按状态码分类。"""
-        payload: dict[str, Any] = {
-            "model": self._settings.llm_model_name,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ],
-            "temperature": self._settings.llm_temperature,
-            "top_p": self._settings.llm_top_p,
-            "max_tokens": self._settings.llm_max_tokens,
-            **({"seed": self._settings.llm_seed} if self._settings.llm_seed is not None else {}),
-        }
-        headers = (
-            {"Authorization": f"Bearer {self._settings.llm_api_key}"}
-            if self._settings.llm_api_key
-            else {}
-        )
+        endpoint, payload, headers = self._request_spec(system, user_content)
         async with httpx.AsyncClient(
             base_url=self._settings.llm_base_url,
             timeout=self._settings.llm_timeout_s,
             transport=self._transport,
         ) as client:
             try:
-                response = await client.post("/chat/completions", json=payload, headers=headers)
+                response = await client.post(endpoint, json=payload, headers=headers)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 # 网络类：可重试（X-LLM-01）。httpx 异常的 str 可能为空（如
                 # ReadTimeout），须带异常类型名否则报错无法排障（P-16）。
@@ -180,15 +166,60 @@ class LlmClient:
             )
         data = response.json()
         try:
-            text = str(data["choices"][0]["message"]["content"])
-        except (KeyError, IndexError, TypeError) as exc:
+            text = _extract_response_text(self._settings.llm_protocol, data)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise PipelineError(
                 code=X_LLM_01,
-                message=f"LLM 响应结构异常：{exc}",
+                message=f"LLM 响应结构异常（{self._settings.llm_protocol}）：{exc}",
             ) from exc
-        usage = data.get("usage") or {}
-        tokens = usage.get("total_tokens")
-        return text, int(tokens) if isinstance(tokens, int) else None
+        return text, _extract_total_tokens(data)
+
+    def _request_spec(
+        self, system: str, user_content: str
+    ) -> tuple[str, dict[str, Any], dict[str, str]]:
+        """按配置协议构造端点、请求体与鉴权头。
+
+        OpenAI Responses 的最小兼容格式只要求 ``input`` 字符串，故将系统提示与
+        用户输入明确拼接，避免不同中转实现对 role/content 数组支持不一致。
+        """
+        api_key = self._settings.llm_api_key
+        protocol = self._settings.llm_protocol
+        if protocol == "openai-responses":
+            payload: dict[str, Any] = {
+                "model": self._settings.llm_model_name,
+                "input": f"{system}\n\n--- 用户输入 ---\n{user_content}",
+                "max_output_tokens": self._settings.llm_max_tokens,
+            }
+            return (
+                "/responses",
+                payload,
+                {"Authorization": f"Bearer {api_key}"} if api_key else {},
+            )
+        if protocol == "anthropic-messages":
+            payload = {
+                "model": self._settings.llm_model_name,
+                "max_tokens": self._settings.llm_max_tokens,
+                "system": system,
+                "messages": [{"role": "user", "content": user_content}],
+            }
+            return "/messages", payload, {"x-api-key": api_key} if api_key else {}
+
+        payload = {
+            "model": self._settings.llm_model_name,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": self._settings.llm_temperature,
+            "top_p": self._settings.llm_top_p,
+            "max_tokens": self._settings.llm_max_tokens,
+            **({"seed": self._settings.llm_seed} if self._settings.llm_seed is not None else {}),
+        }
+        return (
+            "/chat/completions",
+            payload,
+            {"Authorization": f"Bearer {api_key}"} if api_key else {},
+        )
 
     def _append_trace(self, record: dict[str, Any]) -> None:
         """追加一行 JSONL 留痕（禁止覆盖历史——文件以追加模式打开）。"""
@@ -215,6 +246,62 @@ class _RetryableError(Exception):
     def to_pipeline_error(self) -> PipelineError:
         """重试耗尽后对外抛出的 X-LLM-01。"""
         return PipelineError(code=X_LLM_01, message=str(self))
+
+
+def _extract_response_text(protocol: str, data: Any) -> str:
+    """从三种协议的成功响应中提取非空文本，拒绝静默吞掉结构变化。"""
+    if not isinstance(data, dict):
+        raise ValueError("响应根节点不是对象")
+    if protocol == "openai-chat":
+        text = data["choices"][0]["message"]["content"]
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("choices[0].message.content 为空")
+        return text
+    if protocol == "openai-responses":
+        output_text = data.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
+        fragments: list[str] = []
+        for output in data.get("output", []):
+            if not isinstance(output, dict):
+                continue
+            for content in output.get("content", []):
+                if not isinstance(content, dict):
+                    continue
+                text = content.get("text")
+                if isinstance(text, str) and text:
+                    fragments.append(text)
+        if fragments:
+            return "".join(fragments)
+        raise ValueError("缺少 output_text 或 output[].content[].text")
+    if protocol == "anthropic-messages":
+        fragments = [
+            item["text"]
+            for item in data.get("content", [])
+            if isinstance(item, dict)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+            and item["text"]
+        ]
+        if fragments:
+            return "".join(fragments)
+        raise ValueError("缺少 content[].text")
+    raise ValueError(f"不支持的协议：{protocol}")
+
+
+def _extract_total_tokens(data: Any) -> int | None:
+    """各网关 usage 命名不同，只使用原始计数，不推估。"""
+    if not isinstance(data, dict) or not isinstance(data.get("usage"), dict):
+        return None
+    usage = data["usage"]
+    total = usage.get("total_tokens") or usage.get("total")
+    if isinstance(total, int):
+        return total
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        return input_tokens + output_tokens
+    return None
 
 
 def _digest(text: str) -> str:
