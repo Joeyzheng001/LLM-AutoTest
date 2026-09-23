@@ -15,7 +15,7 @@ class Settings:
     port: int
     java_parser_url: str
     artifacts_root: str
-    # MiniMax 调用参数（OpenAI 兼容协议；页面候选模型为 M3/M2.7/M2.5）
+    # 内部 LLM 中转站调用参数（当前使用 OpenAI 兼容协议；模型名可为网关别名）
     llm_base_url: str
     llm_model_name: str
     llm_api_key: str  # 可为空（本地 Mock/内网网关免鉴权场景），入参不进日志

@@ -1,4 +1,4 @@
-"""MiniMax/OpenAI 兼容客户端：chat/completions 调用 + 留痕 + 超时/重试治理。
+"""内部 LLM 中转站客户端：OpenAI 兼容 chat/completions 调用 + 留痕 + 超时/重试治理。
 
 口径全部来自 docs/12 第三章：
 - 每次调用向 llm_calls.jsonl 追加一行留痕（call_id 格式 LLM-<job 短码>-<序号>）；
@@ -50,7 +50,7 @@ class LlmResult:
 
 
 class LlmClient:
-    """MiniMax 调用客户端（每 job 一个实例，trace 追加到该 job 目录）。"""
+    """中转站调用客户端（每 job 一个实例，trace 追加到该 job 目录）。"""
 
     def __init__(
         self,

@@ -131,7 +131,7 @@ class AuthVerificationRequest(AuthConfig):
 
 
 class LlmConfig(BaseModel):
-    """本次任务的 MiniMax 运行时配置；密钥只驻留后台任务内存。"""
+    """本次任务的 LLM 中转站运行时配置；密钥只驻留后台任务内存。"""
 
     api_key: str = Field(min_length=8, max_length=512)
     model: str = Field(default="MiniMax-M3", min_length=1, max_length=128)
@@ -773,7 +773,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             checks.append({"name": "auth", "status": "skipped", "message": "未配置鉴权"})
 
         if request.llm is not None and request.llm.base_url.startswith(("http://", "https://")):
-            checks.append({"name": "llm", "status": "ok", "message": "MiniMax 配置格式正确"})
+            checks.append({"name": "llm", "status": "ok", "message": "LLM 中转站配置格式正确"})
         elif request.llm is not None:
             checks.append({"name": "llm", "status": "error", "message": "模型地址须为 http(s)"})
         else:
@@ -1212,7 +1212,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             if not api_key:
                 raise HTTPException(
                     status_code=400,
-                    detail="请填写 MiniMax API Key（当前任务没有可复用的密钥）",
+                    detail="请填写 LLM 中转站 API Key（当前任务没有可复用的密钥）",
                 )
             llm_payload = {**request.llm.model_dump(), "api_key": api_key}
 

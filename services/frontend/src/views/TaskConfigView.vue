@@ -250,7 +250,7 @@ const activeStep = ref('documents')
 const configSteps = [
   { id: 'documents', label: '需求与仓库', hint: '文档版本、源码来源' },
   { id: 'environment', label: '被测系统', hint: 'REST 地址、登录、E2E 页面' },
-  { id: 'credentials', label: '模型配置', hint: 'MiniMax 与输出设置' },
+  { id: 'credentials', label: '模型配置', hint: '中转站与输出设置' },
   { id: 'confirm', label: '确认提交', hint: '校验并启动' },
 ] as const
 
@@ -438,7 +438,7 @@ const formInvalidReasons = computed(() => {
   if (!restValid.value) reasons.push('填写合法的 REST 服务地址')
   if (!authValid.value) reasons.push('补全鉴权地址、用户名和密码')
   if (!llmValid.value) {
-    reasons.push('填写合法的 MiniMax API Key、模型和 Base URL，或关闭本次模型配置')
+    reasons.push('填写合法的 LLM 中转站 API Key、模型别名和 Base URL，或关闭本次模型配置')
   }
   if (!e2eValid.value) reasons.push('E2E 地址须为 http(s)，执行 E2E 前需开启用例生成')
   if (!fixturesValid.value)
@@ -1183,7 +1183,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         <header class="group-title">大模型配置</header>
         <label class="switch-row">
           <input v-model="llmEnabled" type="checkbox" />
-          <span>使用本次填写的 MiniMax 配置（关闭则复用服务级配置）</span>
+          <span>使用本次填写的 LLM 中转站配置（关闭则复用服务级配置）</span>
         </label>
         <template v-if="llmEnabled">
           <label class="switch-row">
@@ -1191,7 +1191,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             <span>在此浏览器记住非敏感模型配置（不保存 API Key）</span>
           </label>
           <label class="field">
-            <span class="field-label">MiniMax API Key</span>
+            <span class="field-label">LLM 中转站 API Key</span>
             <input
               v-model="llm.apiKey"
               type="password"
@@ -1230,7 +1230,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             未重新填写 API Key，将复用服务端安全存储中的密钥。
           </p>
           <p class="switch-note">
-            当前默认复用部署服务器的 MiniMax 配置；需要临时切换模型或 API Key 时再开启本次任务配置。
+            当前默认复用部署服务器的 LLM 中转站配置；需要临时切换模型别名或 API Key 时再开启本次任务配置。
           </p>
           <p class="switch-note">
             浏览器只保存模型、地址和 Token 上限；API Key 不进入浏览器持久化存储，提交后由服务端
