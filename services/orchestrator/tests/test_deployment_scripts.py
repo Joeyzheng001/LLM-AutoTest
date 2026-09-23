@@ -214,6 +214,11 @@ def test_department_compose_keeps_container_repository_path_stable() -> None:
     assert "apt-get" not in overlay
     assert "uv sync" not in overlay
 
+    load_smoke = (ROOT / "deploy/load_smoke.py").read_text(encoding="utf-8")
+    assert "from urllib.request import Request, urlopen" in load_smoke
+    assert "import httpx" not in load_smoke
+    assert "--url 必须是完整的 http(s) 地址" in load_smoke
+
 
 def test_department_bootstrap_dry_run_has_safe_startup_order(tmp_path: Path) -> None:
     """一键部署先预检/迁移，再启动双实例并验收，且 dry-run 不打印密钥。"""
