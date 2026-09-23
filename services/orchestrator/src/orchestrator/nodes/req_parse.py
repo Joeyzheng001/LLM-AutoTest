@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -23,7 +24,7 @@ from orchestrator.doc_loader import load_document_text
 from orchestrator.engine import Engine, JobState
 from orchestrator.errors import X_LLM_02, X_ORCH_01, PipelineError
 from orchestrator.llm import LlmResult
-from orchestrator.llm_batch import chunk_text
+from orchestrator.llm_batch import chunk_json_items, chunk_text
 from orchestrator.llm_repair import complete_with_json_repair
 from orchestrator.prompts_loader import PromptSpec, load_prompt
 
@@ -123,7 +124,12 @@ async def run_req_parse(
                 NODE_NAME,
                 items_prompt,
                 batch_input,
-                _extract_items,
+                partial(
+                    _parse_item_batch,
+                    allowed_refs=set(allowed_refs),
+                    source_catalog=source_catalog,
+                    diff_mode=diff_payload is not None,
+                ),
                 lambda items, refs=set(allowed_refs): _validate_item_batch(items, refs),
             )
             item_batches.append((batch_items, allowed_refs))
@@ -140,12 +146,22 @@ async def run_req_parse(
         items_path = _write_llm_artifact(store, state.job_id, "requirement_items.json", payload)
 
         # 需求质量评审基于稳定编号后的原子声明分批执行，模型只提交问题发现。
-        review_findings = await _review_requirement_batches(
+        review_findings, legacy_review = await _review_requirement_batches(
             llm, prompts_dir, items, source_catalog
         )
-        review_payload = _build_review_payload(
-            review_findings, items, state.job_id, doc_paths
-        )
+        if legacy_review is not None:
+            # 旧版任务仍可能返回完整评审对象；先经过归一化，再由最终 Schema
+            # 闸门裁决。新 Prompt 始终走 findings → 程序计算评分的稳定路径。
+            review_payload = {
+                "schema_version": "2.0",
+                "job_id": state.job_id,
+                "source_files": [str(path) for path in doc_paths],
+                **legacy_review,
+            }
+        else:
+            review_payload = _build_review_payload(
+                review_findings, items, state.job_id, doc_paths
+            )
         _write_llm_artifact(store, state.job_id, "requirement_review.json", review_payload)
         engine.mark_completed(state, NODE_NAME)
         return items_path
@@ -386,7 +402,7 @@ async def _build_requirement_diff(
             NODE_NAME,
             prompt,
             content,
-            _extract_diff,
+            partial(_parse_diff_batch, allowed_refs=allowed_refs),
             lambda payload, refs=allowed_refs: _validate_diff_shape(payload, refs),
         )
         summaries.append(str(raw["summary"]))
@@ -446,6 +462,27 @@ def _extract_diff(text: str) -> dict[str, Any]:
         )
     payload.pop("schema_version", None)
     payload.pop("job_id", None)
+    return payload
+
+
+def _parse_diff_batch(text: str, allowed_refs: set[str]) -> dict[str, Any]:
+    """对旧版单文档差异输出做可证明的字段补全。
+
+    旧模型通常已经给出两侧描述和差异摘要，只遗漏新增的来源数组。仅在
+    当前文档对各侧恰好各有一个 SRC 时自动回链；否则保留严格错误交给修复轮，
+    避免把一个变化错误归到多个段落。
+    """
+    payload = _extract_diff(text)
+    baseline_refs = sorted(ref for ref in allowed_refs if "-B-" in ref)
+    target_refs = sorted(ref for ref in allowed_refs if "-T-" in ref)
+    if len(baseline_refs) != 1 or len(target_refs) != 1:
+        return payload
+    for change in payload.get("changes", []):
+        if not isinstance(change, dict):
+            continue
+        change.setdefault("change_summary", str(change.get("title", "需求版本发生变化")))
+        change.setdefault("target_source_refs", target_refs)
+        change.setdefault("baseline_source_refs", baseline_refs)
     return payload
 
 
@@ -635,8 +672,12 @@ def _catalog_document_sources(
 def _annotate_source_text(source_catalog: list[dict[str, Any]]) -> str:
     """把来源 ID 与准确原文一起送入模型，便于逐条引用。"""
     blocks = []
+    document_indexes: dict[str, int] = {}
     for source in source_catalog:
-        locator = f"{source['document']}"
+        document = str(source["document"])
+        if document not in document_indexes:
+            document_indexes[document] = len(document_indexes) + 1
+        locator = f"需求文档 {document_indexes[document]}：{document}"
         if source.get("section"):
             locator += f" · {source['section']}"
         locator += f" · 文本片段 {source['paragraph_index']}.{source['fragment_index']}"
@@ -683,6 +724,105 @@ def _validate_item_batch(items: list[dict[str, Any]], allowed_refs: set[str]) ->
                 raise PipelineError(code=X_LLM_02, message=f"需求条目 {index} 的 claim 引用了非法 source_id", node_id=NODE_NAME)
             if not set(claim_refs) <= set(refs):
                 raise PipelineError(code=X_LLM_02, message=f"需求条目 {index} 的 claim 来源不在 item.source_refs 内", node_id=NODE_NAME)
+
+
+def _parse_item_batch(
+    text: str,
+    allowed_refs: set[str],
+    source_catalog: list[dict[str, Any]] | None = None,
+    diff_mode: bool = False,
+) -> list[dict[str, Any]]:
+    """解析条目并处理可证明等价的旧模型输出。
+
+    历史任务的模型只返回 ``id/title/description``，没有来源字段。优先使用
+    单来源批次或差异模式下唯一的被测版本来源；普通多来源批次只在条目文本
+    与来源片段存在唯一最高词项重合时回链，否则保留严格错误，避免把需求
+    错挂到整份文档。
+    """
+    items = _extract_items(text)
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        copied = dict(item)
+        refs = copied.get("source_refs")
+        if not isinstance(refs, list) or not refs:
+            inferred = _infer_legacy_source_refs(
+                copied,
+                allowed_refs=allowed_refs,
+                source_catalog=source_catalog or [],
+                diff_mode=diff_mode,
+            )
+            if inferred:
+                copied["source_refs"] = inferred
+        claims = copied.get("claims")
+        if isinstance(claims, list):
+            copied_claims: list[dict[str, Any]] = []
+            for claim in claims:
+                if not isinstance(claim, dict):
+                    copied_claims.append(claim)
+                    continue
+                copied_claim = dict(claim)
+                if not isinstance(copied_claim.get("source_refs"), list) or not copied_claim.get("source_refs"):
+                    copied_claim["source_refs"] = list(copied["source_refs"])
+                copied_claims.append(copied_claim)
+            copied["claims"] = copied_claims
+        normalized.append(copied)
+    return normalized
+
+
+def _infer_legacy_source_refs(
+    item: dict[str, Any],
+    allowed_refs: set[str],
+    source_catalog: list[dict[str, Any]],
+    diff_mode: bool,
+) -> list[str]:
+    """为旧版无来源条目做一次保守、可解释的来源推断。"""
+    if len(allowed_refs) == 1:
+        return [next(iter(allowed_refs))]
+    if diff_mode:
+        target_refs = sorted(ref for ref in allowed_refs if "-T-" in ref)
+        if len(target_refs) == 1:
+            return target_refs
+    candidates = [
+        source
+        for source in source_catalog
+        if str(source.get("source_id", "")) in allowed_refs
+    ]
+    if not candidates:
+        return []
+    item_text = " ".join(
+        str(item.get(key, ""))
+        for key in ("title", "description", "summary", "acceptance_criteria")
+    )
+    item_tokens = _legacy_text_tokens(item_text)
+    if not item_tokens:
+        return []
+    ranked = sorted(
+        [
+            (
+                len(item_tokens & _legacy_text_tokens(str(source.get("excerpt", "")))),
+                str(source.get("source_id", "")),
+            )
+            for source in candidates
+        ],
+        reverse=True,
+    )
+    if not ranked or ranked[0][0] <= 0:
+        return []
+    if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
+        return []
+    return [ranked[0][1]]
+
+
+def _legacy_text_tokens(value: str) -> set[str]:
+    """轻量中英文词项切分，仅用于旧输出的唯一来源匹配。"""
+    tokens: set[str] = set()
+    for match in re.finditer(r"[A-Za-z][A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", value.lower()):
+        token = match.group(0)
+        tokens.add(token)
+        if re.fullmatch(r"[\u4e00-\u9fff]+", token):
+            tokens.update(token[index : index + 2] for index in range(len(token) - 1))
+            tokens.update(token[index : index + 3] for index in range(len(token) - 2))
+    return tokens
 
 
 def _renumber_items(
@@ -871,12 +1011,13 @@ async def _review_requirement_batches(
     prompts_dir: Path,
     items: list[dict[str, Any]],
     source_catalog: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """对已编号需求分批评审；跨批结果只合并发现，不重新生成大对象。"""
     prompt = load_prompt(prompts_dir, "requirement_review")
     sources_by_id = {str(source["source_id"]): source for source in source_catalog}
     batches = chunk_json_items(items, max_chars=6_000)
     findings: list[dict[str, Any]] = []
+    legacy_review: dict[str, Any] | None = None
     for index, batch in enumerate(batches, start=1):
         claim_ids = {
             str(claim["claim_id"])
@@ -897,19 +1038,50 @@ async def _review_requirement_batches(
                 "batch": {"index": index, "total": len(batches)},
                 "requirements": batch,
                 "source_catalog": batch_sources,
+                # 兼容旧 Prompt 的可读上下文；正式引用仍只认上面的 source_catalog。
+                "source_context": _annotate_source_text(batch_sources),
             },
             ensure_ascii=False,
         )
-        batch_findings = await complete_with_json_repair(
+        parsed = await complete_with_json_repair(
             llm,
             "requirement_review",
             prompt,
             user_content,
-            _extract_review_findings,
-            lambda values, ids=claim_ids, refs=source_ids: _validate_review_findings(values, ids, refs),
+            _extract_review_result,
+            lambda value, ids=claim_ids, refs=source_ids: _validate_review_result(value, ids, refs),
         )
-        findings.extend(batch_findings)
-    return findings
+        if parsed["mode"] == "legacy":
+            legacy_review = parsed["review"]
+        else:
+            findings.extend(parsed["findings"])
+    return findings, legacy_review
+
+
+def _extract_review_result(text: str) -> dict[str, Any]:
+    """解析 findings；旧版完整评审对象仅走明确兼容分支。"""
+    cleaned = _strip_code_fence(text)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise PipelineError(
+            code=X_LLM_02,
+            message=f"需求评审 LLM 输出不是合法 JSON：{exc}",
+            node_id="requirement_review",
+        ) from exc
+    if isinstance(data, dict) and (
+        "dimension_scores" in data or "quality_grade" in data or "quality_assessment" in data
+    ):
+        return {"mode": "legacy", "review": _extract_review(text)}
+    return {"mode": "findings", "findings": _extract_review_findings(text)}
+
+
+def _validate_review_result(
+    value: dict[str, Any], claim_ids: set[str], source_ids: set[str]
+) -> None:
+    if value.get("mode") == "legacy":
+        return
+    _validate_review_findings(value.get("findings", []), claim_ids, source_ids)
 
 
 def _extract_review_findings(text: str) -> list[dict[str, Any]]:

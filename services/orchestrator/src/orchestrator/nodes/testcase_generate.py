@@ -235,7 +235,12 @@ async def run_testcase_generate(
             )
             if surface["routes"]:
                 e2e_cases = await _generate_e2e_cases(
-                    llm, prompts_dir, requirements, testpoints, surface
+                    llm,
+                    prompts_dir,
+                    requirements,
+                    testpoints,
+                    surface,
+                    auth_mode=str(e2e.get("auth_mode", "browser")),
                 )
             else:
                 warnings.append("X-E2E-01: 未探测到可操作的前端页面，跳过 E2E 用例生成")
@@ -670,6 +675,7 @@ async def _generate_e2e_cases(
     requirements: list[dict[str, Any]],
     testpoints: list[dict[str, Any]],
     surface: dict[str, Any],
+    auth_mode: str = "browser",
 ) -> list[dict[str, Any]]:
     """基于真实页面探测结果生成，禁止模型杜撰路由或 selector。"""
     prompt = load_prompt(prompts_dir, "e2e_testcase_generate")
@@ -681,6 +687,7 @@ async def _generate_e2e_cases(
             "requirements": requirements,
             "testpoints": testpoints,
             "max_cases": 12,
+            "auth_mode": auth_mode if auth_mode in {"reuse", "browser"} else "browser",
         },
         ensure_ascii=False,
     )

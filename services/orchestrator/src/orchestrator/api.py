@@ -146,6 +146,7 @@ class E2eConfig(BaseModel):
     generate_cases: bool = False
     execute_cases: bool = False
     insecure_tls: bool = True  # 测试环境常用自签名证书，默认跳过浏览器证书校验
+    auth_mode: Literal["reuse", "browser"] = "browser"
 
 
 class FixtureStep(BaseModel):
@@ -2251,6 +2252,8 @@ def _job_e2e_config(orch_store: ArtifactStore, job_id: str) -> dict[str, Any] | 
         "generate_cases": bool(payload.get("generate_cases")),
         "execute_cases": bool(payload.get("execute_cases")),
         "insecure_tls": bool(payload.get("insecure_tls", True)),
+        # 历史任务维持原浏览器登录行为；新任务可以选择复用验证过的同源会话。
+        "auth_mode": str(payload.get("auth_mode") or "browser"),
     }
 
 

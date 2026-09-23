@@ -22,7 +22,12 @@ def load_document_text(path: Path) -> str:
         )
     suffix = path.suffix.lower()
     if suffix in (".md", ".txt"):
-        return path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        # 某些 Windows/脚本上传会把换行序列作为字面量 ``\\n`` 写入文件。
+        # 仅在文件完全没有真实换行时恢复它，避免改写正常正文中的反斜杠。
+        if "\\n" in text and "\n" not in text:
+            text = text.replace("\\r\\n", "\n").replace("\\n", "\n")
+        return text
     if suffix == ".docx":
         return _load_docx(path)
     if suffix == ".xlsx":

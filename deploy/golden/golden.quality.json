@@ -1,0 +1,16 @@
+{
+  "description": "需求解析与 Code Review 语义质量 golden 阈值；没有人工记录的指标保持 unavailable，不伪造通过率",
+  "expected_requirement_ids": [
+    "REQ-001",
+    "REQ-002",
+    "REQ-003",
+    "REQ-004",
+    "REQ-005"
+  ],
+  "thresholds": {
+    "requirement_coverage": 1.0,
+    "source_traceability": 1.0,
+    "no_evidence_false_positive_rate": 0.0,
+    "duplicate_rate": 0.0
+  }
+}

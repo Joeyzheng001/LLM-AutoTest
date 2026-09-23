@@ -41,6 +41,7 @@ sampling:
 - 仅允许动作：`goto`、`click`、`fill`、`check`、`select`、`expect_text`、`expect_url`。不得输出 JavaScript、shell、下载、上传、等待或任意代码。
 - selector 优先按可访问语义写：`role=button[name=保存]`、`label=用户名`、`placeholder=用户名`、`text=提交成功`、`testid=save-button`。页面结构不确定时，不要猜测 CSS class、XPath、路由或控件。
 - 登录用户名和密码一律使用 `{{AUTH_USERNAME}}`、`{{AUTH_PASSWORD}}`；运行时才替换，禁止在产物中写真实或猜测凭据。
+- 输入中的 `auth_mode` 决定登录前置：`reuse` 表示执行端会为目标页面同源请求复用已验证会话，用例从登录后的页面状态开始，不要生成登录页填写/提交步骤；`browser` 表示用例需要验证登录流程时，才使用上述占位符生成浏览器登录步骤。
 - `expect_text` 使用 selector 指向可见文本；`expect_url` 的 value 写预期站内路径，selector 置空字符串。
 - 最多生成输入 `max_cases` 条。不能确认选择器、页面路径或用户可见结果时宁可少产或输出空数组，不能杜撰页面元素。
 

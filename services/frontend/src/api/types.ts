@@ -110,7 +110,7 @@ export interface LlmCallLog {
     | 'node_finished'
     | 'node_error'
     | 'node_skipped'
-  batch?: { index: number; total: number; requirements: number }
+  batch?: { index: number; total: number; requirements?: number; claims?: number }
   index?: number
   total?: number
   case_id?: string
@@ -177,6 +177,7 @@ export interface E2eConfig {
   generate_cases: boolean
   execute_cases: boolean
   insecure_tls?: boolean
+  auth_mode?: 'reuse' | 'browser'
 }
 
 /** 接口测试前置夹具；仅用于任务配置和执行前造数，不送入 LLM。 */

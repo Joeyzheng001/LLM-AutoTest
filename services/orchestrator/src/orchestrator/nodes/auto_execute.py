@@ -753,7 +753,15 @@ async def run_auto_execute(
                     message=f"正在执行 {case_id}",
                 )
                 result = await _execute_e2e_case(
-                    dict(case), base_url, ignore_https_errors, _e2e_runtime_values(auth)
+                    dict(case),
+                    base_url,
+                    ignore_https_errors,
+                    _e2e_runtime_values(auth),
+                    auth_headers=(
+                        auth_headers
+                        if str(e2e.get("auth_mode", "browser")) == "reuse"
+                        else None
+                    ),
                 )
                 results.append(result)
                 _append_runtime_log(
@@ -805,6 +813,7 @@ async def run_auto_execute(
 async def _execute_e2e_case(
     case: dict[str, Any], base_url: str, ignore_https_errors: bool = True,
     runtime_values: dict[str, str] | None = None,
+    auth_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """执行受限的 Playwright 动作；浏览器缺失、页面不可达归环境失败。"""
     base: dict[str, Any] = {
@@ -820,6 +829,29 @@ async def _execute_e2e_case(
             browser = await playwright.chromium.launch()
             context = await browser.new_context(ignore_https_errors=ignore_https_errors)
             page = await context.new_page()
+            if auth_headers:
+                # Token/Cookie 只附加到 E2E 页面同源请求，避免凭据泄露到第三方资源或跳转地址。
+                target = urlparse(base_url)
+                target_origin = (target.scheme.lower(), target.netloc.lower())
+
+                async def attach_same_origin_auth(route: Any) -> None:
+                    request_url = urlparse(route.request.url)
+                    request_origin = (request_url.scheme.lower(), request_url.netloc.lower())
+                    if request_origin != target_origin:
+                        await route.continue_()
+                        return
+                    headers = dict(await route.request.all_headers())
+                    for name, value in auth_headers.items():
+                        existing_name = next(
+                            (key for key in headers if key.lower() == name.lower()), name
+                        )
+                        if name.lower() == "cookie" and existing_name in headers:
+                            headers[existing_name] = f"{headers[existing_name]}; {value}"
+                        else:
+                            headers[existing_name] = value
+                    await route.continue_(headers=headers)
+
+                await page.route("**/*", attach_same_origin_auth)
             # E2E 单步骤不能默认等待 30 秒，否则错误定位器会令整个批次长时间无进度。
             page.set_default_timeout(10_000)
             try:

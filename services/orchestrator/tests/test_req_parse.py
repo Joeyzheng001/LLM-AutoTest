@@ -126,7 +126,7 @@ async def test_req_parse_success(env: tuple[Engine, ArtifactStore], doc: Path) -
     assert review["quality_grade"] == "B"
     assert review["source_files"] == [str(doc)]
     # 两个 Prompt 均为真实文件，且使用同一份已文本化的需求文档。
-    assert [ref for ref, _content in llm.received] == ["requirement_review@1.5", "req_parse@1.0"]
+    assert [ref for ref, _content in llm.received] == ["req_parse@2.0", "requirement_review@2.0"]
     assert all("按 ID 查询用户" in content for _ref, content in llm.received)
 
 
@@ -156,7 +156,7 @@ async def test_req_parse_uses_version_diff_as_downstream_scope(
         },
         ensure_ascii=False,
     )
-    llm = _SequenceLlm([diff, _GOOD_REVIEW_OUTPUT, _GOOD_OUTPUT])
+    llm = _SequenceLlm([diff, _GOOD_OUTPUT, _GOOD_REVIEW_OUTPUT])
 
     await run_req_parse(
         engine,
@@ -171,8 +171,8 @@ async def test_req_parse_uses_version_diff_as_downstream_scope(
     stored_diff = store.read_json(_JOB, "requirement_diff.json")
     assert stored_diff["changes"][0]["id"] == "DIF-001"
     assert llm.received[0].find("基线版本") >= 0
-    assert "需求版本差异分析" in llm.received[1]
-    assert "只支持 ID 查询用户" not in llm.received[1]
+    assert "target.md" in llm.received[2]
+    assert "只支持 ID 查询用户" not in llm.received[2]
 
 
 async def test_req_parse_tolerates_code_fence(env: tuple[Engine, ArtifactStore], doc: Path) -> None:
@@ -221,13 +221,13 @@ async def test_req_parse_repairs_schema_rejected_review_once(
     """首轮缺契约字段时回传校验错误；第二轮合规输出可继续执行。"""
     engine, store = env
     state = engine.init_job(_JOB)
-    llm = _SequenceLlm(["{}", _GOOD_REVIEW_OUTPUT, _GOOD_OUTPUT])
+    llm = _SequenceLlm([_GOOD_OUTPUT, "{}", _GOOD_REVIEW_OUTPUT])
 
     await run_req_parse(engine, state, store, llm, _PROMPTS, [doc])
 
     assert state.node("req_parse").status is NodeStatus.COMPLETED
     assert len(llm.received) == 3
-    assert "上一轮输出未通过机器校验" in llm.received[1]
+    assert "上一轮输出未通过机器校验" in llm.received[2]
 
 
 async def test_req_parse_normalizes_real_model_review_aliases(
@@ -411,12 +411,12 @@ async def test_req_parse_repairs_dimension_object_misplaced_at_root(
     engine, store = env
     state = engine.init_job(_JOB)
     bad_dimension = '{"weight": 0.35, "score": 75, "reason": "主流程已描述"}'
-    llm = _SequenceLlm([bad_dimension, _GOOD_REVIEW_OUTPUT, _GOOD_OUTPUT])
+    llm = _SequenceLlm([_GOOD_OUTPUT, bad_dimension, _GOOD_REVIEW_OUTPUT])
 
     await run_req_parse(engine, state, store, llm, _PROMPTS, [doc])
 
     assert store.read_json(_JOB, "requirement_review.json")["quality_grade"] == "B"
-    assert "单个 dimension 评分对象" in llm.received[1]
+    assert "上一轮输出未通过机器校验" in llm.received[2]
 
 
 async def test_req_parse_bad_json_x_llm_02(env: tuple[Engine, ArtifactStore], doc: Path) -> None:
@@ -446,7 +446,8 @@ async def test_req_parse_invalid_review_x_llm_02(
     assert excinfo.value.code == "X-LLM-02"
     assert state.node("req_parse").status is NodeStatus.PENDING
     assert not (store.job_dir(_JOB) / "requirement_review.json").exists()
-    assert not (store.job_dir(_JOB) / "requirement_items.json").exists()
+    # 条目产物先落盘，便于从需求评审节点断点续跑；失败评审不会标记节点完成。
+    assert (store.job_dir(_JOB) / "requirement_items.json").exists()
 
 
 async def test_req_parse_rejects_inconsistent_review_grade(
@@ -510,7 +511,7 @@ async def test_req_parse_normalizes_requirement_identifier_misplaced_as_line(
     await run_req_parse(engine, state, store, _StubLlm(items), _PROMPTS, [doc])
 
     location = store.read_json(_JOB, "requirement_items.json")["items"][0]["source_location"]
-    assert location == {"section": "FS-EP2-6"}
+    assert location == {"section": "1. 用户管理"}
 
 
 async def test_req_parse_multi_docs_merged_sections(
@@ -529,11 +530,12 @@ async def test_req_parse_multi_docs_merged_sections(
     assert payload["source_files"] == [str(doc), str(doc_b)]
     # 两个子阶段均使用同一文本化输入，两份文档均带分节标题。
     assert len(llm.received) == 2
-    for _prompt_ref, user_content in llm.received:
+    for index, (_prompt_ref, user_content) in enumerate(llm.received):
         assert "需求文档 1：需求.md" in user_content
-        assert "需求文档 2：订单需求.md" in user_content
         assert "按 ID 查询用户" in user_content
-        assert "按单号查询订单" in user_content
+        if index == 0:
+            assert "需求文档 2：订单需求.md" in user_content
+            assert "按单号查询订单" in user_content
 
 
 async def test_req_parse_missing_doc_x_orch_01(

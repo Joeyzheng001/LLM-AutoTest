@@ -39,7 +39,7 @@ def _prompt(name: str) -> PromptSpec:
     ("prompt_name", "expected_hint"),
     [
         ("testcase_generate", '只输出 {"cases":[...]}'),
-        ("code_review", '只输出 {"mappings":[...]}'),
+        ("code_review", '只输出 {"assessments":[...]}'),
         ("req_parse", '只输出 {"items":[...]}'),
     ],
 )

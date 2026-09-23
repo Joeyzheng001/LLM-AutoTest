@@ -51,8 +51,8 @@ def test_load_prompt_injects_node_skill_and_memory() -> None:
         # 与 prompts/skills/requirement-output-stability.md frontmatter 同步
             "skills/requirement-output-stability@2.0",
             "skills/structured-output-compatibility@1.0",
-            "memory/model-output-drift@2.1",
-            "skills/requirement-review-output-contract@1.0",
+            "memory/model-output-drift@2.2",
+            "skills/requirement-review-output-contract@2.0",
         )
 
 
@@ -116,10 +116,10 @@ def test_node_knowledge_mapping_has_no_duplicate_entries() -> None:
     ("node", "contract_ref"),
     [
         ("requirement_diff", "skills/requirement-diff-output-contract@1.0"),
-        ("requirement_review", "skills/requirement-review-output-contract@1.0"),
+        ("requirement_review", "skills/requirement-review-output-contract@2.0"),
         ("req_parse", "skills/requirement-items-output-contract@1.0"),
         ("interface_reconstruct", "skills/interface-output-contract@1.0"),
-        ("code_review", "skills/code-review-output-contract@1.0"),
+        ("code_review", "skills/code-review-output-contract@2.1"),
         ("e2e_testcase_generate", "skills/e2e-output-contract@1.0"),
     ],
 )

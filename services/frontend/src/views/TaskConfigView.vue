@@ -77,6 +77,7 @@ const e2e = reactive({
   generateCases: false,
   executeCases: false,
   insecureTls: true,
+  authMode: 'reuse' as 'reuse' | 'browser',
 })
 const fixturesJson = ref('')
 const fixturePlaceholder =
@@ -248,8 +249,8 @@ const activeStep = ref('documents')
 
 const configSteps = [
   { id: 'documents', label: '需求与仓库', hint: '文档版本、源码来源' },
-  { id: 'environment', label: '执行环境', hint: '接口地址、E2E 开关' },
-  { id: 'credentials', label: '模型与鉴权', hint: 'MiniMax、登录会话' },
+  { id: 'environment', label: '被测系统', hint: 'REST 地址、登录、E2E 页面' },
+  { id: 'credentials', label: '模型配置', hint: 'MiniMax 与输出设置' },
   { id: 'confirm', label: '确认提交', hint: '校验并启动' },
 ] as const
 
@@ -542,6 +543,7 @@ async function loadConfiguration(jobId: string): Promise<void> {
       generateCases: config.e2e?.generate_cases ?? false,
       executeCases: config.e2e?.execute_cases ?? false,
       insecureTls: config.e2e?.insecure_tls ?? true,
+      authMode: config.e2e?.auth_mode ?? 'browser',
     })
     fixturesJson.value = config.fixtures?.length ? JSON.stringify(config.fixtures, null, 2) : ''
   } catch (err) {
@@ -656,6 +658,7 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
             generate_cases: e2e.generateCases,
             execute_cases: e2e.executeCases,
             insecure_tls: e2e.insecureTls,
+            auth_mode: e2e.authMode,
           },
         }
       : {}),
@@ -798,49 +801,181 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
       </section>
 
       <section id="config-step-environment" class="field-group">
-        <header class="group-title">接口测试环境</header>
-        <label class="switch-row"
-          ><input v-model="restInsecureTls" type="checkbox" /><span
-            >跳过 REST HTTPS 证书校验（测试环境自签名证书）</span
-          ></label
-        >
-        <p class="switch-note">
-          此设置同时用于接口连通性探测、接口用例执行和缺陷复测；与登录和 E2E 的证书设置互不影响。
-        </p>
-      </section>
-
-      <section class="field-group">
-        <header class="group-title">前端 E2E 功能测试（可选）</header>
-        <label class="switch-row"
-          ><input v-model="e2eEnabled" type="checkbox" /><span>启用前端功能测试配置</span></label
-        >
-        <template v-if="e2eEnabled">
-          <label class="field"
-            ><span class="field-label">前端访问地址</span
-            ><input v-model="e2e.baseUrl" type="url" placeholder="http(s)://内部被测前端地址"
-          /></label>
-          <label class="switch-row"
-            ><input v-model="e2e.generateCases" type="checkbox" /><span
-              >生成 E2E 测试用例</span
-            ></label
-          >
-          <label class="switch-row"
-            ><input
-              v-model="e2e.executeCases"
-              type="checkbox"
-              :disabled="!e2e.generateCases"
-            /><span>执行 E2E 用例（Playwright）</span></label
-          >
-          <label class="switch-row"
-            ><input v-model="e2e.insecureTls" type="checkbox" /><span
-              >跳过 HTTPS 证书校验（测试环境自签名证书）</span
-            ></label
-          >
-          <p class="switch-note">默认关闭，不影响接口用例；执行前会使用真实浏览器访问上述地址。</p>
-          <p v-if="!e2eValid" class="field-error" role="status">
-            E2E 地址须为 http(s)；若要执行 E2E，请先开启用例生成。
+        <header class="group-title">被测系统访问与登录</header>
+        <div class="access-panel">
+          <h3 class="subsection-title">接口测试地址</h3>
+          <label class="field">
+            <span class="field-label">被测服务地址（REST）</span>
+            <input
+              v-model="form.restUrl"
+              type="text"
+              class="mono"
+              placeholder="http://127.0.0.1:9000"
+            />
+          </label>
+          <p class="field-help">
+            接口用例会将接口路径拼到此地址后发送请求。例如基础地址为
+            <code>https://test.example.com</code>、接口路径为 <code>/api/orders/</code>，完整请求地址就是
+            <code>https://test.example.com/api/orders/</code>。这不是浏览器页面地址，也不是登录接口地址。
           </p>
-        </template>
+          <p v-if="!restValid" class="field-error" role="status">
+            请输入以 http:// 或 https:// 开头的被测服务地址。
+          </p>
+          <label class="switch-row">
+            <input v-model="restInsecureTls" type="checkbox" />
+            <span>跳过接口 HTTPS 证书校验（测试环境自签名证书）</span>
+          </label>
+          <p class="switch-note">
+            此设置用于接口连通性探测、接口用例执行和缺陷复测；登录验证与 E2E 浏览器各自使用独立的证书设置。
+          </p>
+        </div>
+
+        <div class="access-panel">
+          <h3 class="subsection-title">访问与登录</h3>
+          <label class="switch-row">
+            <input v-model="authEnabled" type="checkbox" />
+            <span>被测服务需要登录</span>
+          </label>
+          <template v-if="authEnabled">
+            <p class="field-help">
+              配置一次账号。接口测试通过登录接口取得 Token 或 Cookie；E2E 可复用同源会话，也可让浏览器按用例步骤登录。
+            </p>
+            <label class="field">
+              <span class="field-label">登录接口地址（POST，JSON {username, password}）</span>
+              <input
+                v-model="auth.loginUrl"
+                type="text"
+                class="mono"
+                placeholder="https://10.50.16.19:8443/api/auth/login/"
+              />
+            </label>
+            <div class="two-col">
+              <label class="field">
+                <span class="field-label">用户名</span>
+                <input v-model="auth.username" type="text" autocomplete="off" placeholder="admin" />
+              </label>
+              <label class="field">
+                <span class="field-label">密码</span>
+                <input
+                  v-model="auth.password"
+                  type="password"
+                  autocomplete="new-password"
+                  :placeholder="
+                    editingJobId && existingAuthPassword ? '留空则保留原密码' : '••••••••'
+                  "
+                />
+              </label>
+            </div>
+            <label class="switch-row">
+              <input v-model="auth.insecureTls" type="checkbox" />
+              <span>跳过登录接口 HTTPS 证书校验（测试环境自签名证书）</span>
+            </label>
+            <div class="inline-action-row">
+              <button
+                class="ghost-btn"
+                type="button"
+                :disabled="!authValid || verifyingAuth"
+                @click="verifyAuthBeforeSave"
+              >
+                {{ verifyingAuth ? '正在验证登录…' : '测试登录并保存会话' }}
+              </button>
+              <span
+                v-if="authVerificationMessage"
+                :class="
+                  authVerificationMessage.startsWith('鉴权成功') ? 'inline-success' : 'field-error'
+                "
+              >
+                {{ authVerificationMessage }}
+              </span>
+            </div>
+            <p v-if="!authValid" class="field-error">
+              开启登录后，登录接口地址须为 http(s)，用户名和密码必填。
+            </p>
+            <p v-if="editingJobId && !auth.password && existingAuthPassword" class="switch-note">
+              密码不会回传；留空会保留当前任务中已加密保存的密码。
+            </p>
+            <p class="switch-note">
+              登录会话由服务端暂存并用于后续执行；密码不会显示或回传到浏览器。接口测试使用登录接口返回的会话；E2E 是否复用该会话由下方登录方式决定。
+            </p>
+          </template>
+          <p v-else class="field-help">关闭后，接口用例和 E2E 用例都按未登录状态访问。</p>
+        </div>
+
+        <div class="access-panel e2e-panel">
+          <div class="subsection-heading">
+            <div>
+              <h3 class="subsection-title">前端 E2E 功能测试</h3>
+              <p class="field-help">E2E 使用浏览器页面地址，与 REST 接口基础地址分开配置。</p>
+            </div>
+            <label class="switch-row">
+              <input v-model="e2eEnabled" type="checkbox" />
+              <span>启用（可选）</span>
+            </label>
+          </div>
+          <template v-if="e2eEnabled">
+            <label class="field">
+              <span class="field-label">前端站点基础地址</span>
+              <input
+                v-model="e2e.baseUrl"
+                type="url"
+                class="mono"
+                placeholder="https://10.50.16.19:8443"
+              />
+            </label>
+            <p class="field-help">
+              填写站点根地址，不要加 <code>/login/</code> 等页面路径；浏览器会按探测到的页面路由（如
+              <code>/login</code>）访问。
+            </p>
+            <div class="e2e-options">
+              <label class="switch-row">
+                <input v-model="e2e.generateCases" type="checkbox" />
+                <span>生成 E2E 测试用例</span>
+              </label>
+              <label class="switch-row">
+                <input
+                  v-model="e2e.executeCases"
+                  type="checkbox"
+                  :disabled="!e2e.generateCases"
+                />
+                <span>执行 E2E 用例（Playwright）</span>
+              </label>
+              <label class="switch-row">
+                <input v-model="e2e.insecureTls" type="checkbox" />
+                <span>跳过浏览器 HTTPS 证书校验（测试环境自签名证书）</span>
+              </label>
+            </div>
+            <fieldset v-if="authEnabled" class="e2e-auth-mode">
+              <legend class="field-label">E2E 登录方式</legend>
+              <label class="switch-row">
+                <input v-model="e2e.authMode" type="radio" value="reuse" />
+                <span>
+                  复用已验证的 Token / Cookie（推荐）
+                  <small>认证信息只附加到与 E2E 页面同源的请求。</small>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="e2e.authMode" type="radio" value="browser" />
+                <span>
+                  浏览器执行登录步骤
+                  <small>适合页面域名和接口域名不同，或要验证登录流程本身的场景。</small>
+                </span>
+              </label>
+            </fieldset>
+            <p v-if="authEnabled" class="switch-note">
+              {{
+                e2e.authMode === 'reuse'
+                  ? 'E2E 会复用刚才验证的会话；浏览器测试不会重复执行登录表单步骤。'
+                  : 'E2E 会在浏览器内按用例步骤登录；接口会话不会传入浏览器。'
+              }}
+            </p>
+            <p v-else class="switch-note">
+              E2E 用例会按页面当前状态执行；需要登录的场景请同时启用上方访问与登录配置。
+            </p>
+            <p v-if="!e2eValid" class="field-error" role="status">
+              E2E 页面地址须为 http(s)；若要执行 E2E，请先开启用例生成。
+            </p>
+          </template>
+        </div>
       </section>
 
       <!-- 被测仓库（本地目录或内部 Git；远程检出后进入版本化缓存） -->
@@ -984,21 +1119,9 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         </p>
       </section>
 
-      <!-- 被测服务 + 断点续跑 -->
+      <!-- 任务运行选项 -->
       <section class="field-group">
-        <header class="group-title">执行配置</header>
-        <label class="field">
-          <span class="field-label">被测服务地址（REST）</span>
-          <input
-            v-model="form.restUrl"
-            type="text"
-            class="mono"
-            placeholder="http://127.0.0.1:9000"
-          />
-        </label>
-        <p v-if="!restValid" class="field-error" role="status">
-          请输入以 http:// 或 https:// 开头的被测服务地址。
-        </p>
+        <header class="group-title">任务运行选项</header>
         <label class="field">
           <span class="field-label">任务 ID（可选，留空自动生成；须以 job- 开头）</span>
           <input v-model="form.jobId" type="text" class="mono" placeholder="job-web-…" />
@@ -1010,8 +1133,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           </span>
         </label>
         <p class="switch-note">
-          协议范围由源码扫描自动识别（R-CODE-01，非表单参数）；鉴权可由下方「鉴权配置」提供（C-15，D8
-          升版：fixtures 优先、表单兜底）；如需固定造数，可在下方「接口前置夹具」编辑。
+          协议范围由源码扫描自动识别（R-CODE-01，非表单参数）；如需固定造数，可在下方「接口前置夹具」编辑。
         </p>
       </section>
 
@@ -1114,76 +1236,6 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             浏览器只保存模型、地址和 Token 上限；API Key 不进入浏览器持久化存储，提交后由服务端
             SecretStore 安全复用。重跑已有任务时留空即可复用服务端密钥。需求解析、接口还原、Code
             Review、 用例生成会按章节或实体分批调用，再由程序校验并合并。
-          </p>
-        </template>
-      </section>
-
-      <!-- C-15：鉴权配置（可选；执行前登录被测服务注入凭据头，数值/凭据不经 LLM） -->
-      <section class="field-group">
-        <header class="group-title">鉴权配置（可选，C-15）</header>
-        <label class="switch-row">
-          <input v-model="authEnabled" type="checkbox" />
-          <span>被测服务需要登录（执行/复测前自动登录并注入凭据头）</span>
-        </label>
-        <template v-if="authEnabled">
-          <label class="field">
-            <span class="field-label">登录接口地址（POST，JSON {username, password}）</span>
-            <input
-              v-model="auth.loginUrl"
-              type="text"
-              class="mono"
-              placeholder="https://10.50.16.19:8443/api/auth/login/"
-            />
-          </label>
-          <div class="two-col">
-            <label class="field">
-              <span class="field-label">用户名</span>
-              <input v-model="auth.username" type="text" autocomplete="off" placeholder="admin" />
-            </label>
-            <label class="field">
-              <span class="field-label">密码</span>
-              <input
-                v-model="auth.password"
-                type="password"
-                autocomplete="new-password"
-                :placeholder="
-                  editingJobId && existingAuthPassword ? '留空则保留原密码' : '••••••••'
-                "
-              />
-            </label>
-          </div>
-          <label class="switch-row">
-            <input v-model="auth.insecureTls" type="checkbox" />
-            <span>跳过证书校验（https 自签证书场景；被测环境常为自签）</span>
-          </label>
-          <div class="inline-action-row">
-            <button
-              class="ghost-btn"
-              type="button"
-              :disabled="!authValid || verifyingAuth"
-              @click="verifyAuthBeforeSave"
-            >
-              {{ verifyingAuth ? '正在验证登录…' : '测试鉴权并保存会话' }}
-            </button>
-            <span
-              v-if="authVerificationMessage"
-              :class="
-                authVerificationMessage.startsWith('鉴权成功') ? 'inline-success' : 'field-error'
-              "
-            >
-              {{ authVerificationMessage }}
-            </span>
-          </div>
-          <p v-if="!authValid" class="field-error">
-            开启鉴权后：登录地址须为 http(s)、用户名与密码必填
-          </p>
-          <p v-if="editingJobId && !auth.password && existingAuthPassword" class="switch-note">
-            密码未展示也不会回传；留空会安全地保留当前任务的密码。
-          </p>
-          <p class="switch-note">
-            登录响应含 token 字段 → Authorization: Token 注入；无 token 则回带 Set-Cookie
-            会话。点击“测试鉴权”可在启动前验证，并将凭据头仅存于后端内存；Token
-            不会返回浏览器、不写入任务文件或 LLM。
           </p>
         </template>
       </section>
@@ -1396,6 +1448,88 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   font-size: var(--text-xs);
   font-weight: 400;
   color: var(--text-3);
+}
+
+.access-panel {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.access-panel:last-child {
+  margin-bottom: 0;
+}
+
+.subsection-title {
+  margin: 0 0 var(--space-3);
+  color: var(--text-1);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.field-help {
+  margin: 0 0 var(--space-3);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.field-help code {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.subsection-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.subsection-heading .subsection-title {
+  margin-bottom: var(--space-1);
+}
+
+.subsection-heading .field-help {
+  margin-bottom: 0;
+}
+
+.e2e-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-4);
+  margin-top: var(--space-2);
+}
+
+.e2e-options .switch-row:last-child {
+  grid-column: 1 / -1;
+}
+
+.e2e-auth-mode {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.e2e-auth-mode legend {
+  padding: 0 var(--space-1);
+}
+
+.e2e-auth-mode .switch-row {
+  align-items: flex-start;
+}
+
+.e2e-auth-mode small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
 }
 
 .field {
@@ -1710,6 +1844,18 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 
   .repo-row {
     grid-template-columns: 1fr;
+  }
+
+  .subsection-heading {
+    flex-direction: column;
+  }
+
+  .e2e-options {
+    grid-template-columns: 1fr;
+  }
+
+  .e2e-options .switch-row:last-child {
+    grid-column: auto;
   }
 }
 

@@ -158,9 +158,15 @@ async def run_code_review(
         scan_coverage = _scan_coverage(inventory, code_evidence)
 
         prompt = load_prompt(prompts_dir, NODE_NAME)
-        # 以原子 claim 为审查单元分批；旧任务没有 claims 时从描述构造兼容的单 claim。
+        # 历史 1.0 需求产物没有 claims。保留一条受控兼容路径读取旧版
+        # REQ→interface mappings；新产物仍只接受 claim assessments，不降低新任务闸门。
+        legacy_mode = not any(
+            isinstance(item.get("claims"), list) and item.get("claims")
+            for item in requirements
+        )
         claim_assessments: list[dict[str, Any]] = []
-        claim_batches = review_batches
+        claim_batches = [all_claims] if legacy_mode else review_batches
+        mappings: list[dict[str, Any]] = []
         for index, batch in enumerate(claim_batches, start=1):
             batch_claim_ids = {str(claim["claim_id"]) for claim in batch}
             batch_interfaces = _select_interfaces_for_claims(batch, interface_index)
@@ -208,6 +214,11 @@ async def run_code_review(
                 ensure_ascii=False,
             )
 
+            if legacy_mode:
+                response = await llm.complete(NODE_NAME, prompt, user_content)
+                mappings = _merge_legacy_mappings(response.text, requirements, interfaces)
+                deterministic_checks = []
+                break
             claim_assessments.extend(
                 await complete_with_json_repair(
                     llm,
@@ -215,7 +226,7 @@ async def run_code_review(
                     prompt,
                     user_content,
                     partial(
-                        _merge_llm_mappings,
+                        _merge_claim_assessments_compat,
                         claims=batch,
                         interfaces=batch_interfaces,
                         code_evidence=selected_evidence,
@@ -223,10 +234,11 @@ async def run_code_review(
                 )
             )
 
-        claim_assessments = _apply_claim_deterministic_gates(
-            claim_assessments, deterministic_checks, bool(scan_coverage["complete"])
-        )
-        mappings = _aggregate_claim_assessments(requirements, claim_assessments)
+        if not legacy_mode:
+            claim_assessments = _apply_claim_deterministic_gates(
+                claim_assessments, deterministic_checks, bool(scan_coverage["complete"])
+            )
+            mappings = _aggregate_claim_assessments(requirements, claim_assessments)
         _annotate_evidence_quality(mappings, deterministic_checks, call_chains)
 
         change_scope, removed_files, unmatched = _derive_change_scope(
@@ -1258,6 +1270,176 @@ def _merge_llm_mappings(
             node_id=NODE_NAME,
         )
     return assessments
+
+
+def _merge_claim_assessments_compat(
+    text: str,
+    claims: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+    code_evidence: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """优先解析 claim 契约，必要时把旧 REQ 映射无损展开到 claim。"""
+    try:
+        return _merge_llm_mappings(text, claims, interfaces, code_evidence)
+    except PipelineError as exc:
+        if exc.code != X_LLM_02 or "缺少 assessments" not in exc.message:
+            raise
+    try:
+        data = _parse_review_json(text)
+    except json.JSONDecodeError as exc:
+        raise PipelineError(code=X_LLM_02, message=f"LLM 输出不是合法 JSON：{exc}", node_id=NODE_NAME) from exc
+    raw_mappings = _extract_mapping_items(data)
+    if raw_mappings is None:
+        raise PipelineError(
+            code=X_LLM_02,
+            message='LLM 输出缺少 assessments 数组（兼容映射也未找到 mappings）',
+            node_id=NODE_NAME,
+        )
+    by_requirement = {
+        str(item.get("requirement_id", "")): item
+        for item in raw_mappings
+        if isinstance(item, dict)
+    }
+    valid_interfaces = {str(item.get("id")) for item in interfaces if item.get("id")}
+    assessments: list[dict[str, Any]] = []
+    for claim in claims:
+        mapping = by_requirement.get(str(claim["requirement_id"]))
+        if mapping is None:
+            raise PipelineError(
+                code=X_LLM_02,
+                message=f"Code Review claim 覆盖率不足 100%，缺：{claim['claim_id']}",
+                node_id=NODE_NAME,
+            )
+        status = str(mapping.get("status", "undetermined"))
+        if status not in _VALID_STATUSES:
+            raise PipelineError(code=X_LLM_02, message=f"LLM 输出了非法 status：{status}", node_id=NODE_NAME)
+        ids = mapping.get("interface_ids")
+        if ids is None:
+            ids = [mapping.get("interface_id")] if mapping.get("interface_id") else []
+        if not isinstance(ids, list) or any(str(value) not in valid_interfaces for value in ids):
+            raise PipelineError(
+                code=X_LLM_02,
+                message=f"LLM 引用了不存在的接口（claim {claim['claim_id']}）",
+                node_id=NODE_NAME,
+            )
+        try:
+            confidence = float(mapping.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        assessments.append(
+            {
+                "claim_id": str(claim["claim_id"]),
+                "status": status,
+                "confidence": max(0.0, min(1.0, confidence)),
+                "interface_ids": list(dict.fromkeys(str(value) for value in ids)),
+                "evidence_refs": [],
+                "met_conditions": [],
+                "unmet_conditions": [],
+                "verification_needed": [
+                    "历史映射未提供 claim 级代码证据，建议结合当前源码证据复核。"
+                ],
+            }
+        )
+    return assessments
+
+
+def _merge_legacy_mappings(
+    text: str,
+    requirements: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """读取 schema 1.0 任务的旧 mappings，作为一次性兼容入口。
+
+    该路径仅对没有原子 claims 的历史需求产物开放。它不参与新任务的 claim
+    证据门槛，因此不会让新模型绕过声明级审查；输出仍会经过需求覆盖、接口
+    存在性和状态枚举校验，并由程序回填接口代码位置。
+    """
+    try:
+        data = _parse_review_json(text)
+    except json.JSONDecodeError as exc:
+        raise PipelineError(
+            code=X_LLM_02,
+            message=f"LLM 输出不是合法 JSON：{exc}",
+            node_id=NODE_NAME,
+        ) from exc
+    raw_mappings = _extract_mapping_items(data)
+    if raw_mappings is None:
+        raise PipelineError(
+            code=X_LLM_02,
+            message='LLM 输出缺少 mappings 数组（历史任务兼容路径）',
+            node_id=NODE_NAME,
+        )
+    req_ids = {str(item.get("id", "")) for item in requirements}
+    if_by_id = {str(item["id"]): item for item in interfaces if item.get("id")}
+    covered: set[str] = set()
+    mappings: list[dict[str, Any]] = []
+    for raw in raw_mappings:
+        if not isinstance(raw, dict):
+            raise PipelineError(code=X_LLM_02, message="旧 mappings 含非对象条目", node_id=NODE_NAME)
+        req_id = str(raw.get("requirement_id", ""))
+        if req_id not in req_ids:
+            raise PipelineError(
+                code=X_LLM_02,
+                message=f"LLM 引用了不存在的需求条目：{req_id}（禁止虚构）",
+                node_id=NODE_NAME,
+            )
+        if req_id in covered:
+            raise PipelineError(
+                code=X_LLM_02,
+                message=f"LLM 对同一需求输出多个映射条目：{req_id}",
+                node_id=NODE_NAME,
+            )
+        covered.add(req_id)
+        status = str(raw.get("status", ""))
+        if status not in _VALID_STATUSES:
+            raise PipelineError(
+                code=X_LLM_02,
+                message=f"LLM 输出了非法 status：{status}（四态之外）",
+                node_id=NODE_NAME,
+            )
+        interface_id = raw.get("interface_id")
+        interface = None
+        if interface_id is not None:
+            interface_id = str(interface_id)
+            interface = if_by_id.get(interface_id)
+            if interface is None:
+                raise PipelineError(
+                    code=X_LLM_02,
+                    message=f"LLM 引用了不存在的接口：{interface_id}（禁止虚构）",
+                    node_id=NODE_NAME,
+                )
+        entry: dict[str, Any] = {
+            "requirement_id": req_id,
+            "status": status,
+            "confidence": float(raw.get("confidence", 0.0)),
+            # 旧版产物没有 claim 级字段；仍补齐 2.0 Schema 的稳定形状，
+            # 让历史任务可以继续查看，而不会把旧模型输出当成新契约。
+            "interface_ids": [str(interface_id)] if interface_id is not None else [],
+            "claim_assessments": [],
+            "evidence": {},
+        }
+        if interface is not None:
+            entry["interface_id"] = interface_id
+            evidence: dict[str, Any] = {}
+            if isinstance(interface.get("code_location"), dict):
+                evidence["code_location"] = interface["code_location"]
+            note = raw.get("evidence")
+            if isinstance(note, dict) and note.get("note"):
+                evidence["note"] = str(note["note"])
+            entry["evidence"] = evidence
+        elif isinstance(raw.get("evidence"), dict) and raw["evidence"].get("note"):
+            entry["evidence"] = {"note": str(raw["evidence"]["note"])}
+        mappings.append(entry)
+    missing = sorted(req_ids - covered)
+    if missing:
+        raise PipelineError(
+            code=X_LLM_02,
+            message=f"映射覆盖率不足 100%（R-REVW-01），缺：{missing}",
+            node_id=NODE_NAME,
+        )
+    if not mappings:
+        raise PipelineError(code=X_LLM_02, message="旧 mappings 为空", node_id=NODE_NAME)
+    return mappings
 
 
 def _parse_review_json(text: str) -> Any:
