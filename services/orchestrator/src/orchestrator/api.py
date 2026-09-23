@@ -23,9 +23,11 @@ import logging
 import os
 import shutil
 import socket
+import tempfile
 import time
 import uuid
 import zipfile
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -41,13 +43,15 @@ from orchestrator.engine import NODE_ARTIFACTS, Engine
 from orchestrator.errors import PipelineError
 from orchestrator.javaparser_client import JavaParserClient
 from orchestrator.job_queue import LocalJobQueue, QueueConflict
-from orchestrator.model_catalog import DEFAULT_RELAY_MODEL
+from orchestrator.llm import LlmClient
 from orchestrator.metrics import MetricsRegistry
+from orchestrator.model_catalog import DEFAULT_RELAY_MODEL
 from orchestrator.nodes.auto_execute import login_for_headers
 from orchestrator.nodes.retest_regression import retest_defects
 from orchestrator.object_storage import ObjectStorageError, build_object_storage
 from orchestrator.persistence import Database
 from orchestrator.pipeline import NODE_ORDER, PipelineState
+from orchestrator.prompts_loader import PromptSpec
 from orchestrator.repository_resolver import resolve_repository_inputs
 from orchestrator.runner import PipelineOutcome, PipelineRunner
 from orchestrator.security import (
@@ -75,6 +79,16 @@ MAX_REQUEST_BYTES = 64 * 1024 * 1024
 AUTH_SESSION_TTL_SECONDS = 10 * 60
 MAX_PENDING_AUTH_SESSIONS = 256
 MAX_IN_MEMORY_OUTCOMES = 512
+LLM_PROBE_TIMEOUT_SECONDS = 30.0
+_LLM_PROBE_PROMPT = PromptSpec(
+    name="llm_connection_probe",
+    version="1.0",
+    spec="C-104",
+    owner="system",
+    changelog=("1.0 | 2026-09-23 | 中转站协议连通性探针",),
+    sampling={},
+    body="你是连接测试助手。请仅返回 OK，不要包含解释、代码或业务数据。",
+)
 
 
 class RepoConfig(BaseModel):
@@ -140,6 +154,12 @@ class LlmConfig(BaseModel):
     base_url: str = Field(default="https://llm.htffund.com/v1", min_length=8, max_length=256)
     protocol: Literal["openai-chat", "openai-responses", "anthropic-messages"] = "openai-chat"
     max_tokens: int = Field(default=16384, ge=1024, le=16384)
+
+
+class LlmVerificationRequest(BaseModel):
+    """配置阶段的无业务中转站连通性探针；未传 llm 时测试服务级配置。"""
+
+    llm: LlmConfig | None = None
 
 
 class E2eConfig(BaseModel):
@@ -721,6 +741,62 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "authenticated": True,
             "session_id": session_id,
             "credential_type": "token" if "Authorization" in headers else "cookie",
+        }
+
+    @app.post("/api/v1/llm/verify")
+    async def verify_llm_connection(
+        request: LlmVerificationRequest, http_request: Request
+    ) -> dict[str, Any]:
+        """以单次、30 秒上限的无业务提示验证所选中转站协议和模型。
+
+        此探针不创建 job，不写产物，也不返回模型正文或任何凭据。它刻意禁用重试，避免
+        用户在配置页一次点击就产生流水线级的等待与额度消耗。
+        """
+        _request_scope(app, http_request)
+        supplied = request.llm
+        source = "task" if supplied is not None else "service"
+        api_key = (supplied.api_key if supplied is not None else "") or settings.llm_api_key
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="未配置 LLM 中转站 API Key：请填写任务级 Key 或在服务级配置中注入密钥",
+            )
+        runtime_settings = replace(
+            settings,
+            llm_base_url=(
+                supplied.base_url if supplied is not None else settings.llm_base_url
+            ).rstrip("/"),
+            llm_model_name=supplied.model if supplied is not None else settings.llm_model_name,
+            llm_protocol=supplied.protocol if supplied is not None else settings.llm_protocol,
+            llm_api_key=api_key,
+            # 探针无需完整结构化输出；1024 是全局合法下限，实际提示极短且只调用一次。
+            # 正式流水线仍使用任务配置上限与有限重试。
+            llm_max_tokens=min(
+                supplied.max_tokens if supplied is not None else settings.llm_max_tokens,
+                1024,
+            ),
+            llm_timeout_s=min(settings.llm_timeout_s, LLM_PROBE_TIMEOUT_SECONDS),
+        )
+        with tempfile.TemporaryDirectory(prefix="llm-autotest-probe-") as probe_dir:
+            client = LlmClient(
+                runtime_settings,
+                "job-llm-probe",
+                Path(probe_dir) / "llm_calls.jsonl",
+                retry_backoff=(0.0, 0.0),
+                max_attempts=1,
+            )
+            started = time.monotonic()
+            try:
+                result = await client.complete("llm_probe", _LLM_PROBE_PROMPT, "Return exactly OK.")
+            except PipelineError as exc:
+                raise HTTPException(status_code=400, detail=exc.message) from exc
+        return {
+            "reachable": True,
+            "source": source,
+            "protocol": runtime_settings.llm_protocol,
+            "model": runtime_settings.llm_model_name,
+            "tokens": result.tokens,
+            "duration_ms": int((time.monotonic() - started) * 1000),
         }
 
     @app.post("/api/v1/preflight")

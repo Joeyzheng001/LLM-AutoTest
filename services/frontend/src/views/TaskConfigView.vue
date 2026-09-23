@@ -11,6 +11,7 @@ import {
   submitJob,
   updateJobConfiguration,
   verifyAuthentication,
+  verifyLlmConnection,
 } from '../api/client'
 import { navigateTo } from '../api/navigation'
 import {
@@ -61,6 +62,9 @@ const auth = reactive({
 })
 const verifyingAuth = ref(false)
 const authVerificationMessage = ref('')
+const verifyingLlm = ref(false)
+const llmVerificationMessage = ref('')
+const llmVerificationOk = ref(false)
 const authSessionId = ref('')
 const savedOnly = ref(false)
 
@@ -329,6 +333,32 @@ async function verifyAuthBeforeSave(): Promise<void> {
     authVerificationMessage.value = err instanceof Error ? `鉴权失败：${err.message}` : '鉴权失败'
   } finally {
     verifyingAuth.value = false
+  }
+}
+
+async function verifyLlmBeforeSave(): Promise<void> {
+  if (verifyingLlm.value || (llmEnabled.value && !llmValid.value)) return
+  verifyingLlm.value = true
+  llmVerificationMessage.value = ''
+  llmVerificationOk.value = false
+  try {
+    const result = await verifyLlmConnection(
+      llmEnabled.value
+        ? {
+            api_key: llm.apiKey.trim(),
+            model: llm.model,
+            base_url: llm.baseUrl.trim(),
+            protocol: llm.protocol,
+            max_tokens: llm.maxTokens,
+          }
+        : undefined,
+    )
+    llmVerificationOk.value = true
+    llmVerificationMessage.value = `中转站可用 · ${result.protocol} · ${result.model} · ${result.duration_ms}ms${result.tokens == null ? '' : ` · ${result.tokens} tokens`}`
+  } catch (err) {
+    llmVerificationMessage.value = err instanceof Error ? `中转站不可用：${err.message}` : '中转站不可用'
+  } finally {
+    verifyingLlm.value = false
   }
 }
 
@@ -1273,6 +1303,22 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             Review、 用例生成会按章节或实体分批调用，再由程序校验并合并。
           </p>
         </template>
+        <div class="inline-action-row">
+          <button
+            class="ghost-btn"
+            type="button"
+            :disabled="verifyingLlm || (llmEnabled && !llmValid)"
+            @click="verifyLlmBeforeSave"
+          >
+            {{ verifyingLlm ? '正在测试中转站…' : llmEnabled ? '测试本次中转站配置' : '测试服务级中转站' }}
+          </button>
+          <span v-if="llmVerificationMessage" :class="llmVerificationOk ? 'inline-success' : 'field-error'">
+            {{ llmVerificationMessage }}
+          </span>
+        </div>
+        <p class="switch-note">
+          测试只发送固定的无业务提示，单次最多等待 30 秒、无自动重试；不会创建任务、保存模型正文或暴露 API Key。
+        </p>
       </section>
 
       <!-- 提交 -->

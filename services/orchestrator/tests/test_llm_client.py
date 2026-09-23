@@ -215,7 +215,10 @@ async def test_openai_responses_protocol_extracts_output_text_and_usage(tmp_path
         assert isinstance(payload["input"], str)
         return httpx.Response(
             200,
-            json={"output_text": "Responses 结果", "usage": {"input_tokens": 7, "output_tokens": 11}},
+            json={
+                "output_text": "Responses 结果",
+                "usage": {"input_tokens": 7, "output_tokens": 11},
+            },
         )
 
     client = LlmClient(

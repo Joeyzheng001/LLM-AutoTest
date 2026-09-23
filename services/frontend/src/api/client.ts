@@ -35,6 +35,8 @@ import type {
   DerivedRisk,
   AuthConfig,
   AuthVerificationResponse,
+  LlmConfig,
+  LlmVerificationResponse,
 } from './types'
 
 const ACCESS_TOKEN_KEY = 'llm-autotest.access-token.session'
@@ -139,6 +141,16 @@ export function verifyAuthentication(
   return request('/api/v1/auth/verify', {
     method: 'POST',
     body: JSON.stringify({ ...auth, ...(jobId ? { job_id: jobId } : {}) }),
+  })
+}
+
+/** 以极小无业务提示验证中转站协议、模型和凭据；不创建任务或保存模型正文。 */
+export function verifyLlmConnection(
+  llm?: LlmConfig,
+): Promise<LlmVerificationResponse> {
+  return request('/api/v1/llm/verify', {
+    method: 'POST',
+    body: JSON.stringify(llm ? { llm } : {}),
   })
 }
 

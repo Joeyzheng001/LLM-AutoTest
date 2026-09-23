@@ -1195,6 +1195,48 @@ async def test_verify_authentication_returns_opaque_session_only(
     assert "created_at" in app.state.pending_auth_sessions[payload["session_id"]]
 
 
+async def test_verify_llm_connection_uses_selected_protocol_without_persisting_output(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """配置页 LLM 探针只验证连接：单次、低 token、无任务/产物副作用。"""
+    _app, _fake, client, _repo_dir = env
+    captured: dict[str, Any] = {}
+
+    class FakeLlmClient:
+        def __init__(self, settings: Settings, *_args: Any, **kwargs: Any) -> None:
+            captured["settings"] = settings
+            captured["max_attempts"] = kwargs["max_attempts"]
+
+        async def complete(self, *_args: Any, **_kwargs: Any) -> Any:
+            return type("ProbeResult", (), {"tokens": 9})()
+
+    monkeypatch.setattr("orchestrator.api.LlmClient", FakeLlmClient)
+    response = await client.post(
+        "/api/v1/llm/verify",
+        json={
+            "llm": {
+                "api_key": "sk-probe-key",
+                "model": "deepseek-chat",
+                "base_url": "https://llm.htffund.com/v1",
+                "protocol": "anthropic-messages",
+                "max_tokens": 16384,
+            }
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["reachable"] is True
+    assert payload["source"] == "task"
+    assert payload["protocol"] == "anthropic-messages"
+    assert payload["model"] == "deepseek-chat"
+    assert payload["tokens"] == 9
+    assert payload["duration_ms"] >= 0
+    assert captured["settings"].llm_max_tokens == 1024
+    assert captured["settings"].llm_timeout_s == 5.0
+    assert captured["settings"].llm_protocol == "anthropic-messages"
+    assert captured["max_attempts"] == 1
+
+
 async def test_submit_job_llm_key_is_runtime_only(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:

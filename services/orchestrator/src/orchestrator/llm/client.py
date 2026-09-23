@@ -60,6 +60,7 @@ class LlmClient:
         transport: httpx.AsyncBaseTransport | None = None,
         retry_backoff: tuple[float, float] = DEFAULT_RETRY_BACKOFF,
         run_id: str | None = None,
+        max_attempts: int = _MAX_ATTEMPTS,
     ) -> None:
         """transport 仅测试注入用（httpx.MockTransport），生产留 None。"""
         self._settings = settings
@@ -67,6 +68,9 @@ class LlmClient:
         self._trace_path = trace_path
         self._transport = transport
         self._retry_backoff = retry_backoff
+        if max_attempts < 1:
+            raise ValueError("max_attempts 必须大于 0")
+        self._max_attempts = max_attempts
         # 同一 job 可以多次断点/重跑；run_id 让前端和审计日志能区分每一轮。
         self._run_id = run_id
         self._seq = self._count_trace_lines() + 1
@@ -126,15 +130,16 @@ class LlmClient:
     async def _request(self, system: str, user_content: str) -> tuple[str, int | None]:
         """带重试的 HTTP 调用；仅网络/超时类失败重试（docs/12 §三）。"""
         last_error: PipelineError | None = None
-        for attempt in range(_MAX_ATTEMPTS):
+        for attempt in range(self._max_attempts):
             if attempt > 0:
-                await asyncio.sleep(self._retry_backoff[attempt - 1])
+                backoff_index = min(attempt - 1, len(self._retry_backoff) - 1)
+                await asyncio.sleep(self._retry_backoff[backoff_index])
             try:
                 return await self._request_once(system, user_content)
             except _RetryableError as exc:
                 last_error = exc.to_pipeline_error()
         if last_error is None:  # pragma: no cover —— 循环至少执行一次且必赋值
-            msg = "unreachable: _MAX_ATTEMPTS >= 1"
+            msg = "unreachable: max_attempts >= 1"
             raise RuntimeError(msg)
         raise last_error
 

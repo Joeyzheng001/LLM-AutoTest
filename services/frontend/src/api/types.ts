@@ -173,6 +173,15 @@ export interface LlmConfig {
   protocol: 'openai-chat' | 'openai-responses' | 'anthropic-messages'
   max_tokens: number
 }
+
+export interface LlmVerificationResponse {
+  reachable: true
+  source: 'service' | 'task'
+  protocol: LlmConfig['protocol']
+  model: string
+  tokens: number | null
+  duration_ms: number
+}
 export interface E2eConfig {
   base_url: string
   generate_cases: boolean
