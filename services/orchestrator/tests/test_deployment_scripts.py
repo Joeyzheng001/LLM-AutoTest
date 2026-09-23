@@ -202,10 +202,17 @@ def test_department_compose_keeps_container_repository_path_stable() -> None:
     assert "read_only: true" in compose
     assert "minio/minio:latest" not in compose
     assert "MINIO_IMAGE:-minio/minio:RELEASE.2024-06-13T22-53-53Z" in compose
+    assert "${ORCHESTRATOR_IMAGE:-llm-autotest/orchestrator:0.1.0}" in compose
 
     dockerfile = (ROOT / "services/orchestrator/Dockerfile").read_text(encoding="utf-8")
     assert "ghcr.io/astral-sh/uv:latest" not in dockerfile
     assert "ARG UV_VERSION=0.12.9" in dockerfile
+
+    overlay = (ROOT / "deploy/Dockerfile.orchestrator.overlay").read_text(encoding="utf-8")
+    assert "ARG BASE_IMAGE=llm-autotest/orchestrator:0.1.0" in overlay
+    assert "FROM ${BASE_IMAGE}" in overlay
+    assert "apt-get" not in overlay
+    assert "uv sync" not in overlay
 
 
 def test_department_bootstrap_dry_run_has_safe_startup_order(tmp_path: Path) -> None:
@@ -238,3 +245,24 @@ def test_department_bootstrap_dry_run_has_safe_startup_order(tmp_path: Path) -> 
     assert insecure.returncode == 0, insecure.stderr
     assert "acceptance_smoke.py" in insecure.stdout
     assert "--insecure-tls" in insecure.stdout
+
+
+def test_department_bootstrap_overlay_dry_run_uses_local_overlay_image(tmp_path: Path) -> None:
+    """离线源码发布不能触发 orchestrator 的 apt/uv 完整构建。"""
+    env_file = tmp_path / "department.env"
+    env_file.write_text("POSTGRES_PASSWORD=do-not-print\n", encoding="utf-8")
+    result = _run_script(
+        ROOT / "deploy/department_bootstrap.sh",
+        env={
+            **os.environ,
+            "DRY_RUN": "1",
+            "COMPOSE_ENV_FILE": str(env_file),
+            "ORCHESTRATOR_BUILD_MODE": "overlay",
+            "ORCHESTRATOR_IMAGE": "llm-autotest/orchestrator:release-test",
+        },
+        args=[],
+    )
+    assert result.returncode == 0, result.stderr
+    assert "offline_overlay_build.sh" in result.stdout
+    assert "build orchestrator" not in result.stdout
+    assert "do-not-print" not in result.stdout

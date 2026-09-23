@@ -20,6 +20,7 @@ postgres_wait_s=${POSTGRES_WAIT_S:-120}
 acceptance_timeout=${ACCEPTANCE_TIMEOUT_S:-5}
 acceptance_retries=${ACCEPTANCE_RETRIES:-2}
 acceptance_insecure_tls=${ACCEPTANCE_INSECURE_TLS:-0}
+orchestrator_build_mode=${ORCHESTRATOR_BUILD_MODE:-full}
 dry_run=${DRY_RUN:-0}
 
 case "$compose_env_file" in
@@ -41,6 +42,14 @@ esac
 case "$postgres_wait_s" in
   ''|*[!0-9]*) echo "POSTGRES_WAIT_S 必须是非负整数" >&2; exit 2 ;;
 esac
+case "$orchestrator_build_mode" in
+  full|overlay) ;;
+  *) echo "ORCHESTRATOR_BUILD_MODE 仅支持 full 或 overlay" >&2; exit 2 ;;
+esac
+if [ "$orchestrator_build_mode" = "overlay" ] && [ -z "${ORCHESTRATOR_IMAGE:-}" ]; then
+  echo "ORCHESTRATOR_BUILD_MODE=overlay 时必须显式设置 ORCHESTRATOR_IMAGE" >&2
+  exit 2
+fi
 
 if [ ! -f "$compose_env_path" ]; then
   echo "找不到 Compose 环境文件：$compose_env_path" >&2
@@ -80,7 +89,18 @@ cd "$repo_root"
 
 # config 会触发 Compose 的 required 变量检查，但不启动容器、不输出 .env 内容。
 compose config --quiet
-compose build orchestrator java-parser frontend
+if [ "$orchestrator_build_mode" = "overlay" ]; then
+  if [ "$dry_run" = "1" ]; then
+    printf '+ ORCHESTRATOR_IMAGE=%s sh deploy/offline_overlay_build.sh\n' "$ORCHESTRATOR_IMAGE"
+  else
+    ORCHESTRATOR_IMAGE="$ORCHESTRATOR_IMAGE" \
+      ORCHESTRATOR_BASE_IMAGE="${ORCHESTRATOR_BASE_IMAGE:-llm-autotest/orchestrator:0.1.0}" \
+      sh deploy/offline_overlay_build.sh
+  fi
+  compose build java-parser frontend
+else
+  compose build orchestrator java-parser frontend
+fi
 compose run --rm --no-deps orchestrator \
   .venv/bin/python -m orchestrator validate-deployment
 

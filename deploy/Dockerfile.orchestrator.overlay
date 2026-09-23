@@ -1,0 +1,15 @@
+# 仅用于“依赖未变”的内网离线发布：以已经验收过的 orchestrator 镜像为基础，覆盖
+# Python 源码、Prompt 与 Schema。它绝不执行 apt/uv/playwright 下载，因而不需要构建机访问公网。
+#
+# 不可用于 pyproject.toml、uv.lock、Dockerfile 或系统依赖有变的版本；这类升级必须先由
+# 受控镜像仓库/导入流程准备完整构建镜像，再走常规部署。
+ARG BASE_IMAGE=llm-autotest/orchestrator:0.1.0
+FROM ${BASE_IMAGE}
+
+WORKDIR /app/services/orchestrator
+
+COPY services/orchestrator/src ./src
+COPY prompts /app/prompts
+COPY schemas /app/schemas
+
+ENV SCHEMAS_DIR=/app/schemas

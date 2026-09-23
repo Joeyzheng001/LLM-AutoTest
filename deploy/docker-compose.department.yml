@@ -52,7 +52,8 @@ services:
     build:
       context: ..
       dockerfile: services/orchestrator/Dockerfile
-    image: llm-autotest/orchestrator:0.1.0
+    # 常规发布使用固定基础镜像；离线覆盖发布可由 ORCHESTRATOR_IMAGE 指向带 release tag 的镜像。
+    image: ${ORCHESTRATOR_IMAGE:-llm-autotest/orchestrator:0.1.0}
     # 镜像构建期已同步依赖；运行期直接使用 venv，避免内网环境下 `uv run`
     # 为构建项目元数据再次访问 PyPI。
     command: [".venv/bin/python", "-m", "orchestrator", "serve"]
