@@ -867,6 +867,23 @@ async def test_login_for_headers_auto_recognizes_body_wrapped_json_token() -> No
     assert headers == {"Authorization": "Token wrapped-token"}
 
 
+async def test_login_for_headers_applies_configured_password_transform() -> None:
+    """C-15：兼容 Base64 后逐字符偏移的历史 Web 登录协议。"""
+    seen: dict[str, Any] = {}
+
+    def login_service(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"body": {"token": "transformed-token"}})
+
+    headers = await login_for_headers(
+        {**_AUTH, "password_transform": "base64_shift_2"},
+        httpx.MockTransport(login_service),
+    )
+    # admin123456 的 UTF-8 Base64 结果逐字符码 +2；原始密码不应出现在请求体。
+    assert seen == {"username": "admin", "password": "[YTvcY6zOlO2PV[?"}
+    assert headers == {"Authorization": "Token transformed-token"}
+
+
 async def test_login_for_headers_cookie_fallback() -> None:
     """无 token 字段 → Set-Cookie 回带（session 会话口径，属性剔除）。"""
     def login_service(request: httpx.Request) -> httpx.Response:

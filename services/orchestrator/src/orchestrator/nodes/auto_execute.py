@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -97,6 +98,24 @@ def _value_at_path(payload: dict[str, Any], path: str) -> str | None:
 def _authorization_value(token: str, scheme: str) -> str:
     """按配置构造注入值；raw 适配已有网关/自定义鉴权头。"""
     return token if scheme == "raw" else f"{scheme} {token}"
+
+
+def _transform_login_password(password: str, transform: str) -> str:
+    """按显式登录契约转换密码，不记录明文或转换结果。
+
+    base64_shift_2 用于部分历史 Web 登录页的轻量传输混淆：
+    UTF-8 Base64 后每个 ASCII 字符码加 2。它不是加密，仅为兼容被测系统协议。
+    """
+    if transform == "plain":
+        return password
+    if transform == "base64_shift_2":
+        encoded = base64.b64encode(password.encode("utf-8")).decode("ascii")
+        return "".join(chr(ord(char) + 2) for char in encoded)
+    raise PipelineError(
+        code="X-EXEC-01",
+        message=f"鉴权配置无效（C-15）：不支持的密码转换方式 {transform}",
+        node_id=NODE_NAME,
+    )
 
 
 def _safe_response_shape(payload: Any) -> str:
@@ -577,6 +596,7 @@ async def login_for_headers(
     password = str(auth.get("password", ""))
     username_field = str(auth.get("username_field") or "username")
     password_field = str(auth.get("password_field") or "password")
+    password_transform = str(auth.get("password_transform") or "plain")
     token_path = str(auth.get("token_path") or "auto")
     authorization_scheme = str(auth.get("authorization_scheme") or "Token")
     if username_field == password_field:
@@ -589,7 +609,11 @@ async def login_for_headers(
     try:
         async with httpx.AsyncClient(timeout=10.0, transport=transport, verify=verify) as client:
             response = await client.post(
-                login_url, json={username_field: username, password_field: password}
+                login_url,
+                json={
+                    username_field: username,
+                    password_field: _transform_login_password(password, password_transform),
+                },
             )
     except (httpx.TimeoutException, httpx.TransportError) as exc:
         raise PipelineError(

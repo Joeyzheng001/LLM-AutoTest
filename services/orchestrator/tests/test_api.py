@@ -943,6 +943,7 @@ async def test_submit_job_auth_persisted_and_passed(
         "insecure_tls": True,
         "username_field": "username",
         "password_field": "password",
+        "password_transform": "plain",
         "token_path": "auto",
         "authorization_scheme": "Token",
     }
@@ -961,6 +962,7 @@ async def test_submit_job_auth_persisted_and_passed(
         "insecure_tls": True,
         "username_field": "username",
         "password_field": "password",
+        "password_transform": "plain",
         "token_path": "auto",
         "authorization_scheme": "Token",
     }

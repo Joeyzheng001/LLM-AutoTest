@@ -144,6 +144,7 @@ class AuthConfig(BaseModel):
     password_field: str = Field(
         default="password", pattern=r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
     )
+    password_transform: Literal["plain", "base64_shift_2"] = "plain"
     # auto 仅识别 C-15 列明的有限路径；自定义值为 dotted path，如 data.accessToken。
     token_path: str = Field(
         default="auto", pattern=r"^(auto|[A-Za-z_][A-Za-z0-9_.-]{0,127})$"
@@ -245,6 +246,7 @@ class EditableAuthConfig(BaseModel):
     password_field: str = Field(
         default="password", pattern=r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
     )
+    password_transform: Literal["plain", "base64_shift_2"] = "plain"
     token_path: str = Field(
         default="auto", pattern=r"^(auto|[A-Za-z_][A-Za-z0-9_.-]{0,127})$"
     )
@@ -1002,6 +1004,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     "insecure_tls": auth_payload["insecure_tls"],
                     "username_field": auth_payload["username_field"],
                     "password_field": auth_payload["password_field"],
+                    "password_transform": auth_payload["password_transform"],
                     "token_path": auth_payload["token_path"],
                     "authorization_scheme": auth_payload["authorization_scheme"],
                     "password_configured": True,
@@ -1249,6 +1252,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     "insecure_tls": bool(auth.get("insecure_tls", True)),
                     "username_field": auth.get("username_field", "username"),
                     "password_field": auth.get("password_field", "password"),
+                    "password_transform": auth.get("password_transform", "plain"),
                     "token_path": auth.get("token_path", "auto"),
                     "authorization_scheme": auth.get("authorization_scheme", "Token"),
                     "password_configured": bool(
@@ -1384,6 +1388,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     "insecure_tls": auth_payload["insecure_tls"],
                     "username_field": auth_payload["username_field"],
                     "password_field": auth_payload["password_field"],
+                    "password_transform": auth_payload["password_transform"],
                     "token_path": auth_payload["token_path"],
                     "authorization_scheme": auth_payload["authorization_scheme"],
                     "password_configured": True,
@@ -2519,6 +2524,7 @@ def _auth_fingerprint(auth: dict[str, Any]) -> str:
             "insecure_tls": bool(auth.get("insecure_tls", True)),
             "username_field": auth.get("username_field", "username"),
             "password_field": auth.get("password_field", "password"),
+            "password_transform": auth.get("password_transform", "plain"),
             "token_path": auth.get("token_path", "auto"),
             "authorization_scheme": auth.get("authorization_scheme", "Token"),
         },

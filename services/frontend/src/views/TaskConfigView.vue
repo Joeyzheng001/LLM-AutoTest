@@ -61,6 +61,7 @@ const auth = reactive({
   insecureTls: true,
   usernameField: 'username',
   passwordField: 'password',
+  passwordTransform: 'plain' as 'plain' | 'base64_shift_2',
   tokenPath: 'auto',
   authorizationScheme: 'Token' as 'Token' | 'Bearer' | 'raw',
 })
@@ -171,6 +172,7 @@ function saveDraft(): void {
           insecureTls: auth.insecureTls,
           usernameField: auth.usernameField,
           passwordField: auth.passwordField,
+          passwordTransform: auth.passwordTransform,
           tokenPath: auth.tokenPath,
           authorizationScheme: auth.authorizationScheme,
         },
@@ -337,6 +339,7 @@ async function verifyAuthBeforeSave(): Promise<void> {
         insecure_tls: auth.insecureTls,
         username_field: auth.usernameField.trim() || 'username',
         password_field: auth.passwordField.trim() || 'password',
+        password_transform: auth.passwordTransform,
         token_path: auth.tokenPath.trim() || 'auto',
         authorization_scheme: auth.authorizationScheme,
       },
@@ -600,6 +603,7 @@ async function loadConfiguration(jobId: string): Promise<void> {
       insecureTls: config.auth?.insecure_tls ?? true,
       usernameField: config.auth?.username_field ?? 'username',
       passwordField: config.auth?.password_field ?? 'password',
+      passwordTransform: config.auth?.password_transform ?? 'plain',
       tokenPath: config.auth?.token_path ?? 'auto',
       authorizationScheme: config.auth?.authorization_scheme ?? 'Token',
     })
@@ -714,6 +718,7 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
             insecure_tls: auth.insecureTls,
             username_field: auth.usernameField.trim() || 'username',
             password_field: auth.passwordField.trim() || 'password',
+            password_transform: auth.passwordTransform,
             token_path: auth.tokenPath.trim() || 'auto',
             authorization_scheme: auth.authorizationScheme,
           },
@@ -962,6 +967,13 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                   <input v-model="auth.passwordField" class="mono" placeholder="password" />
                 </label>
                 <label class="field">
+                  <span class="field-label">密码提交方式</span>
+                  <select v-model="auth.passwordTransform">
+                    <option value="plain">原样提交（默认）</option>
+                    <option value="base64_shift_2">Base64 编码后字符偏移 2（兼容历史登录页）</option>
+                  </select>
+                </label>
+                <label class="field">
                   <span class="field-label">Token 路径</span>
                   <input v-model="auth.tokenPath" class="mono" placeholder="auto 或 data.accessToken" />
                 </label>
@@ -976,7 +988,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               </div>
               <p class="switch-note">
                 当前接口如请求体为 <code>{ userName, password }</code>，请将“用户名字段”改为 <code>userName</code>。
-                若仍无法自动识别，请根据登录响应填写如 <code>data.accessToken</code> 的路径。
+                若登录页抓包中的密码与输入值不同，请选择对应的密码提交方式；若仍无法自动识别，请根据登录响应填写如 <code>body.token</code> 的路径。
               </p>
             </details>
             <label class="switch-row">

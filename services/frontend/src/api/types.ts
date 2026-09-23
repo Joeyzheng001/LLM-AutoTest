@@ -162,6 +162,8 @@ export interface AuthConfig {
   username_field?: string
   /** 登录请求 JSON 中的密码字段；默认 password。 */
   password_field?: string
+  /** plain 为原样提交；base64_shift_2 兼容部分历史 Web 登录页的密码传输转换。 */
+  password_transform?: 'plain' | 'base64_shift_2'
   /** auto 自动识别常见 Token 路径；也可填写 data.accessToken 等 dotted path。 */
   token_path?: string
   /** 提取到 Token 后的 Authorization 注入格式；raw 表示不添加前缀。 */
