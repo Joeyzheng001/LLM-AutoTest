@@ -825,6 +825,36 @@ async def test_login_for_headers_token() -> None:
     ]
 
 
+async def test_login_for_headers_supports_custom_fields_nested_token_and_bearer() -> None:
+    """C-15：兼容前端常见 userName 入参及 data.accessToken 嵌套返回。"""
+    seen: list[dict[str, Any]] = []
+
+    def login_service(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"code": 0, "data": {"accessToken": "nested-token"}})
+
+    headers = await login_for_headers(
+        {
+            **_AUTH,
+            "username_field": "userName",
+            "token_path": "data.accessToken",
+            "authorization_scheme": "Bearer",
+        },
+        httpx.MockTransport(login_service),
+    )
+    assert headers == {"Authorization": "Bearer nested-token"}
+    assert seen == [{"userName": "admin", "password": "admin123456"}]
+
+
+async def test_login_for_headers_auto_recognizes_nested_token() -> None:
+    """默认 auto 模式也覆盖主流 data.token 结构，避免每次手工适配。"""
+    def login_service(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"token": "nested-token"}})
+
+    headers = await login_for_headers(_AUTH, httpx.MockTransport(login_service))
+    assert headers == {"Authorization": "Token nested-token"}
+
+
 async def test_login_for_headers_cookie_fallback() -> None:
     """无 token 字段 → Set-Cookie 回带（session 会话口径，属性剔除）。"""
     def login_service(request: httpx.Request) -> httpx.Response:
@@ -871,6 +901,7 @@ async def test_login_for_headers_no_credentials_in_response() -> None:
         await login_for_headers(_AUTH, httpx.MockTransport(login_service))
     assert exc_info.value.code == "X-EXEC-01"
     assert "无凭据" in exc_info.value.message
+    assert "响应顶层字段：ok" in exc_info.value.message
 
 
 async def test_auto_execute_with_auth_injects_credentials(

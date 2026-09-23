@@ -59,6 +59,10 @@ const auth = reactive({
   username: '',
   password: '',
   insecureTls: true,
+  usernameField: 'username',
+  passwordField: 'password',
+  tokenPath: 'auto',
+  authorizationScheme: 'Token' as 'Token' | 'Bearer' | 'raw',
 })
 const verifyingAuth = ref(false)
 const authVerificationMessage = ref('')
@@ -161,7 +165,15 @@ function saveDraft(): void {
           void accessTokenConfigured
           return safeRepo
         }),
-        auth: { loginUrl: auth.loginUrl, username: auth.username, insecureTls: auth.insecureTls },
+        auth: {
+          loginUrl: auth.loginUrl,
+          username: auth.username,
+          insecureTls: auth.insecureTls,
+          usernameField: auth.usernameField,
+          passwordField: auth.passwordField,
+          tokenPath: auth.tokenPath,
+          authorizationScheme: auth.authorizationScheme,
+        },
         authEnabled: authEnabled.value,
         llm: { model: llm.model, baseUrl: llm.baseUrl, protocol: llm.protocol, maxTokens: llm.maxTokens },
         llmEnabled: llmEnabled.value,
@@ -323,6 +335,10 @@ async function verifyAuthBeforeSave(): Promise<void> {
         username: auth.username.trim(),
         password: auth.password,
         insecure_tls: auth.insecureTls,
+        username_field: auth.usernameField.trim() || 'username',
+        password_field: auth.passwordField.trim() || 'password',
+        token_path: auth.tokenPath.trim() || 'auto',
+        authorization_scheme: auth.authorizationScheme,
       },
       editingJobId.value || undefined,
     )
@@ -384,13 +400,25 @@ const documentsValid = computed(
 
 const restValid = computed(() => form.restUrl.trim().startsWith('http'))
 
-// C-15：开启鉴权时三项必填 + login_url 须为 http(s)
+const authContractValid = computed(() => {
+  const fieldName = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/
+  const tokenPath = /^(auto|[A-Za-z_][A-Za-z0-9_.-]{0,127})$/
+  return (
+    fieldName.test(auth.usernameField.trim()) &&
+    fieldName.test(auth.passwordField.trim()) &&
+    auth.usernameField.trim() !== auth.passwordField.trim() &&
+    tokenPath.test(auth.tokenPath.trim() || 'auto')
+  )
+})
+
+// C-15：开启鉴权时三项必填 + login_url 须为 http(s) + 登录契约字段合法。
 const authValid = computed(
   () =>
     !authEnabled.value ||
     (auth.loginUrl.trim().startsWith('http') &&
       auth.username.trim() !== '' &&
-      (auth.password !== '' || (editingJobId.value !== '' && existingAuthPassword.value))),
+      (auth.password !== '' || (editingJobId.value !== '' && existingAuthPassword.value)) &&
+      authContractValid.value),
 )
 
 const llmValid = computed(
@@ -570,6 +598,10 @@ async function loadConfiguration(jobId: string): Promise<void> {
       username: config.auth?.username ?? '',
       password: '',
       insecureTls: config.auth?.insecure_tls ?? true,
+      usernameField: config.auth?.username_field ?? 'username',
+      passwordField: config.auth?.password_field ?? 'password',
+      tokenPath: config.auth?.token_path ?? 'auto',
+      authorizationScheme: config.auth?.authorization_scheme ?? 'Token',
     })
     llmEnabled.value = config.llm !== null
     existingLlmKey.value = config.llm?.api_key_configured ?? false
@@ -680,6 +712,10 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
             username: auth.username.trim(),
             password: auth.password,
             insecure_tls: auth.insecureTls,
+            username_field: auth.usernameField.trim() || 'username',
+            password_field: auth.passwordField.trim() || 'password',
+            token_path: auth.tokenPath.trim() || 'auto',
+            authorization_scheme: auth.authorizationScheme,
           },
           ...(authSessionId.value ? { auth_session_id: authSessionId.value } : {}),
         }
@@ -885,7 +921,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               配置一次账号。接口测试通过登录接口取得 Token 或 Cookie；E2E 可复用同源会话，也可让浏览器按用例步骤登录。
             </p>
             <label class="field">
-              <span class="field-label">登录接口地址（POST，JSON {username, password}）</span>
+              <span class="field-label">登录接口地址（POST）</span>
               <input
                 v-model="auth.loginUrl"
                 type="text"
@@ -910,6 +946,39 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                 />
               </label>
             </div>
+            <details class="auth-contract">
+              <summary>登录接口兼容设置</summary>
+              <p class="field-help">
+                默认请求体为 <code>{ username, password }</code>，并自动识别常见 Token 位置。
+                若从浏览器网络请求看到字段或返回结构不同，请在这里调整。
+              </p>
+              <div class="two-col">
+                <label class="field">
+                  <span class="field-label">用户名字段</span>
+                  <input v-model="auth.usernameField" class="mono" placeholder="username" />
+                </label>
+                <label class="field">
+                  <span class="field-label">密码字段</span>
+                  <input v-model="auth.passwordField" class="mono" placeholder="password" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Token 路径</span>
+                  <input v-model="auth.tokenPath" class="mono" placeholder="auto 或 data.accessToken" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Token 注入格式</span>
+                  <select v-model="auth.authorizationScheme">
+                    <option value="Token">Authorization: Token &lt;token&gt;</option>
+                    <option value="Bearer">Authorization: Bearer &lt;token&gt;</option>
+                    <option value="raw">Authorization: &lt;token&gt;</option>
+                  </select>
+                </label>
+              </div>
+              <p class="switch-note">
+                当前接口如请求体为 <code>{ userName, password }</code>，请将“用户名字段”改为 <code>userName</code>。
+                若仍无法自动识别，请根据登录响应填写如 <code>data.accessToken</code> 的路径。
+              </p>
+            </details>
             <label class="switch-row">
               <input v-model="auth.insecureTls" type="checkbox" />
               <span>跳过登录接口 HTTPS 证书校验（测试环境自签名证书）</span>
@@ -933,7 +1002,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               </span>
             </div>
             <p v-if="!authValid" class="field-error">
-              开启登录后，登录接口地址须为 http(s)，用户名和密码必填。
+              开启登录后，登录接口地址须为 http(s)，用户名和密码必填；字段名只能包含字母、数字、下划线、点或短横线，且用户名字段与密码字段不能相同。
             </p>
             <p v-if="editingJobId && !auth.password && existingAuthPassword" class="switch-note">
               密码不会回传；留空会保留当前任务中已加密保存的密码。
@@ -1625,6 +1694,29 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--space-3);
+}
+
+.auth-contract {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+}
+
+.auth-contract summary {
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.auth-contract[open] summary {
+  margin-bottom: var(--space-3);
+}
+
+.auth-contract .field:last-of-type {
+  margin-bottom: 0;
 }
 
 .field-label {

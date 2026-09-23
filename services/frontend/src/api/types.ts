@@ -158,6 +158,14 @@ export interface AuthConfig {
   username: string
   password: string
   insecure_tls?: boolean // https 自签场景默认跳过证书校验
+  /** 登录请求 JSON 中的用户名字段；默认 username，例如部分系统使用 userName。 */
+  username_field?: string
+  /** 登录请求 JSON 中的密码字段；默认 password。 */
+  password_field?: string
+  /** auto 自动识别常见 Token 路径；也可填写 data.accessToken 等 dotted path。 */
+  token_path?: string
+  /** 提取到 Token 后的 Authorization 注入格式；raw 表示不添加前缀。 */
+  authorization_scheme?: 'Token' | 'Bearer' | 'raw'
 }
 
 export interface AuthVerificationResponse {

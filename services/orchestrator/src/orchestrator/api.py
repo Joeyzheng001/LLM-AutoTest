@@ -34,7 +34,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from orchestrator.artifact_lifecycle import find_expired_jobs, purge_quarantine, quarantine_jobs
 from orchestrator.artifacts import ArtifactStore, ensure_job_id
@@ -125,10 +125,11 @@ class RequirementDocumentPair(BaseModel):
 
 
 class AuthConfig(BaseModel):
-    """鉴权配置（C-15：D8 升版——fixtures 优先、表单为兜底）。
+    """鉴权配置（C-15：登录请求/凭据响应契约可配置）。
 
     auto_execute/retest_regression 执行前 POST login_url 登录，
-    token → Authorization: Token；无 token 则回带 Set-Cookie。
+    默认请求 JSON 为 {username, password}；可按被测系统调整字段名。
+    默认自动识别常见 token 路径并以 Authorization: Token 注入；无 token 则回带 Set-Cookie。
     数值/凭据不经 LLM（红线）；insecure_tls 用于 https 自签场景
     （被测环境常为自签证书，默认跳过校验，表单可关）。
     """
@@ -137,6 +138,23 @@ class AuthConfig(BaseModel):
     username: str
     password: str
     insecure_tls: bool = True
+    username_field: str = Field(
+        default="username", pattern=r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
+    )
+    password_field: str = Field(
+        default="password", pattern=r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
+    )
+    # auto 仅识别 C-15 列明的有限路径；自定义值为 dotted path，如 data.accessToken。
+    token_path: str = Field(
+        default="auto", pattern=r"^(auto|[A-Za-z_][A-Za-z0-9_.-]{0,127})$"
+    )
+    authorization_scheme: Literal["Token", "Bearer", "raw"] = "Token"
+
+    @model_validator(mode="after")
+    def _check_distinct_login_fields(self) -> AuthConfig:
+        if self.username_field == self.password_field:
+            raise ValueError("auth.username_field 与 password_field 不能相同")
+        return self
 
 
 class AuthVerificationRequest(AuthConfig):
@@ -221,6 +239,22 @@ class EditableAuthConfig(BaseModel):
     username: str
     password: str | None = Field(default=None, max_length=256)
     insecure_tls: bool = True
+    username_field: str = Field(
+        default="username", pattern=r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
+    )
+    password_field: str = Field(
+        default="password", pattern=r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
+    )
+    token_path: str = Field(
+        default="auto", pattern=r"^(auto|[A-Za-z_][A-Za-z0-9_.-]{0,127})$"
+    )
+    authorization_scheme: Literal["Token", "Bearer", "raw"] = "Token"
+
+    @model_validator(mode="after")
+    def _check_distinct_login_fields(self) -> EditableAuthConfig:
+        if self.username_field == self.password_field:
+            raise ValueError("auth.username_field 与 password_field 不能相同")
+        return self
 
 
 class EditableLlmConfig(BaseModel):
@@ -966,6 +1000,10 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     "login_url": auth_payload["login_url"],
                     "username": auth_payload["username"],
                     "insecure_tls": auth_payload["insecure_tls"],
+                    "username_field": auth_payload["username_field"],
+                    "password_field": auth_payload["password_field"],
+                    "token_path": auth_payload["token_path"],
+                    "authorization_scheme": auth_payload["authorization_scheme"],
                     "password_configured": True,
                 }
             else:
@@ -1209,6 +1247,10 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     "login_url": auth.get("login_url", ""),
                     "username": auth.get("username", ""),
                     "insecure_tls": bool(auth.get("insecure_tls", True)),
+                    "username_field": auth.get("username_field", "username"),
+                    "password_field": auth.get("password_field", "password"),
+                    "token_path": auth.get("token_path", "auto"),
+                    "authorization_scheme": auth.get("authorization_scheme", "Token"),
                     "password_configured": bool(
                         auth.get("password")
                         or auth.get("password_configured")
@@ -1340,6 +1382,10 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     "login_url": auth_payload["login_url"],
                     "username": auth_payload["username"],
                     "insecure_tls": auth_payload["insecure_tls"],
+                    "username_field": auth_payload["username_field"],
+                    "password_field": auth_payload["password_field"],
+                    "token_path": auth_payload["token_path"],
+                    "authorization_scheme": auth_payload["authorization_scheme"],
                     "password_configured": True,
                 }
             else:
@@ -2471,6 +2517,10 @@ def _auth_fingerprint(auth: dict[str, Any]) -> str:
             "username": auth.get("username", ""),
             "password": auth.get("password", ""),
             "insecure_tls": bool(auth.get("insecure_tls", True)),
+            "username_field": auth.get("username_field", "username"),
+            "password_field": auth.get("password_field", "password"),
+            "token_path": auth.get("token_path", "auto"),
+            "authorization_scheme": auth.get("authorization_scheme", "Token"),
         },
         sort_keys=True,
         ensure_ascii=False,

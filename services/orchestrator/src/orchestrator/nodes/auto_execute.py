@@ -46,6 +46,52 @@ NODE_NAME = "auto_execute"
 _DEFAULT_TIMEOUT_S = 10.0  # X-EXEC-02：单用例执行超时上限
 _SENSITIVE_RESPONSE_KEYS = {"token", "access_token", "refresh_token", "password", "secret"}
 
+# C-15：不同项目的登录契约并不统一。以下是“自动识别”模式允许的、
+# 明确列举的常见凭据位置；不做无边界递归搜索，避免把普通业务字段误当作凭据。
+_DEFAULT_TOKEN_PATHS = (
+    "token",
+    "access_token",
+    "accessToken",
+    "key",
+    "jwt",
+    "id_token",
+    "idToken",
+    "data.token",
+    "data.access_token",
+    "data.accessToken",
+    "data.key",
+    "data.jwt",
+    "data.id_token",
+    "data.idToken",
+    "result.token",
+    "result.access_token",
+    "result.accessToken",
+    "result.key",
+)
+
+
+def _value_at_path(payload: dict[str, Any], path: str) -> str | None:
+    """从受控 dotted path 读取非空字符串；响应值永不写入日志或异常。"""
+    current: Any = payload
+    for segment in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(segment)
+    return current.strip() if isinstance(current, str) and current.strip() else None
+
+
+def _authorization_value(token: str, scheme: str) -> str:
+    """按配置构造注入值；raw 适配已有网关/自定义鉴权头。"""
+    return token if scheme == "raw" else f"{scheme} {token}"
+
+
+def _safe_response_shape(payload: Any) -> str:
+    """仅返回顶层字段名，辅助配置 Token 路径且不泄漏业务正文/令牌。"""
+    if not isinstance(payload, dict):
+        return "非 JSON 对象"
+    keys = sorted(str(key) for key in payload)[:12]
+    return "、".join(keys) if keys else "空对象"
+
 
 def _decode_unknown_body(value: Any) -> Any:
     """将 LLM 输出的 unknown body JSON 字符串还原为对象；非 JSON 原样保留。"""
@@ -493,8 +539,10 @@ async def login_for_headers(
 ) -> dict[str, str]:
     """C-15：执行前登录被测服务，提取凭据头（数值/凭据不经 LLM）。
 
-    实测口径（docs/13 C-15）：POST login_url JSON {username, password} →
-    - 响应 JSON 含 token 类字段（token/access_token/key）→ Authorization: Token <token>；
+    实测口径（docs/13 C-15）：POST login_url JSON 登录字段（默认 {username, password}，
+    可配置为 {userName, password} 等）→
+    - 响应 JSON 按 token_path（默认自动识别常见根层/ data.* / result.* 路径）取 Token，
+      再按 authorization_scheme 注入 Authorization；
     - 否则 Set-Cookie → Cookie 回带（session 会话口径）；
     - 登录失败（非 2xx/3xx 或连接异常）→ PipelineError X-EXEC-01（环境类，节点重试）。
     verify=insecure_tls（https 自签场景表单默认跳过校验）。
@@ -502,11 +550,21 @@ async def login_for_headers(
     login_url = str(auth.get("login_url", ""))
     username = str(auth.get("username", ""))
     password = str(auth.get("password", ""))
+    username_field = str(auth.get("username_field") or "username")
+    password_field = str(auth.get("password_field") or "password")
+    token_path = str(auth.get("token_path") or "auto")
+    authorization_scheme = str(auth.get("authorization_scheme") or "Token")
+    if username_field == password_field:
+        raise PipelineError(
+            code="X-EXEC-01",
+            message="鉴权配置无效（C-15）：用户名字段与密码字段不能相同",
+            node_id=NODE_NAME,
+        )
     verify = not bool(auth.get("insecure_tls", True))
     try:
         async with httpx.AsyncClient(timeout=10.0, transport=transport, verify=verify) as client:
             response = await client.post(
-                login_url, json={"username": username, "password": password}
+                login_url, json={username_field: username, password_field: password}
             )
     except (httpx.TimeoutException, httpx.TransportError) as exc:
         raise PipelineError(
@@ -523,16 +581,17 @@ async def login_for_headers(
             ),
             node_id=NODE_NAME,
         )
-    # 凭据提取：token 字段优先，回退 Set-Cookie 回带
+    # 凭据提取：自定义路径优先（或有限的常见路径自动识别），回退 Set-Cookie 回带。
     try:
         payload = response.json()
     except ValueError:
         payload = None
     if isinstance(payload, dict):
-        for field in ("token", "access_token", "key"):
-            token = payload.get(field)
-            if isinstance(token, str) and token:
-                return {"Authorization": f"Token {token}"}
+        paths = _DEFAULT_TOKEN_PATHS if token_path == "auto" else (token_path,)
+        for path in paths:
+            token = _value_at_path(payload, path)
+            if token:
+                return {"Authorization": _authorization_value(token, authorization_scheme)}
     cookies = [
         "=".join(part.strip() for part in cookie.split("=", 1))
         for cookie in response.headers.get_list("set-cookie")
@@ -545,7 +604,9 @@ async def login_for_headers(
     raise PipelineError(
         code="X-EXEC-01",
         message=(
-            f"登录响应无凭据可提取（C-15）：{login_url}（响应体无 token 字段且无 Set-Cookie）"
+            f"登录响应无凭据可提取（C-15）：{login_url}"
+            f"（Token 路径={token_path}；响应顶层字段：{_safe_response_shape(payload)}；"
+            "无 Set-Cookie）"
         ),
         node_id=NODE_NAME,
     )
