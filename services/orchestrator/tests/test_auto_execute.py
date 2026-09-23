@@ -855,6 +855,18 @@ async def test_login_for_headers_auto_recognizes_nested_token() -> None:
     assert headers == {"Authorization": "Token nested-token"}
 
 
+async def test_login_for_headers_auto_recognizes_body_wrapped_json_token() -> None:
+    """C-15：兼容业务网关的 {code,msg,body} 包装及 body JSON 字符串。"""
+    def login_service(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"code": 0, "msg": "ok", "body": '{"accessToken":"wrapped-token"}'},
+        )
+
+    headers = await login_for_headers(_AUTH, httpx.MockTransport(login_service))
+    assert headers == {"Authorization": "Token wrapped-token"}
+
+
 async def test_login_for_headers_cookie_fallback() -> None:
     """无 token 字段 → Set-Cookie 回带（session 会话口径，属性剔除）。"""
     def login_service(request: httpx.Request) -> httpx.Response:

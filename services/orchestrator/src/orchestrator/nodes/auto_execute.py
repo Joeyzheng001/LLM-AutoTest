@@ -63,6 +63,13 @@ _DEFAULT_TOKEN_PATHS = (
     "data.jwt",
     "data.id_token",
     "data.idToken",
+    "body.token",
+    "body.access_token",
+    "body.accessToken",
+    "body.key",
+    "body.jwt",
+    "body.id_token",
+    "body.idToken",
     "result.token",
     "result.access_token",
     "result.accessToken",
@@ -71,9 +78,16 @@ _DEFAULT_TOKEN_PATHS = (
 
 
 def _value_at_path(payload: dict[str, Any], path: str) -> str | None:
-    """从受控 dotted path 读取非空字符串；响应值永不写入日志或异常。"""
+    """从受控 dotted path 读取非空字符串，兼容包装层内嵌 JSON；不记录响应值。"""
     current: Any = payload
     for segment in path.split("."):
+        # 某些网关以字符串承载 body JSON，例如 {"body":"{...}"}。
+        # 仅在还要继续向下取字段时解码，纯字符串 body 可由用户显式填 token_path=body。
+        if isinstance(current, str):
+            try:
+                current = json.loads(current)
+            except json.JSONDecodeError:
+                return None
         if not isinstance(current, dict):
             return None
         current = current.get(segment)
@@ -90,7 +104,18 @@ def _safe_response_shape(payload: Any) -> str:
     if not isinstance(payload, dict):
         return "非 JSON 对象"
     keys = sorted(str(key) for key in payload)[:12]
-    return "、".join(keys) if keys else "空对象"
+    if not keys:
+        return "空对象"
+    body = payload.get("body")
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except json.JSONDecodeError:
+            body = None
+    if isinstance(body, dict):
+        nested = "、".join(sorted(str(key) for key in body)[:8]) or "空对象"
+        return f"{'、'.join(keys)}（body：{nested}）"
+    return "、".join(keys)
 
 
 def _decode_unknown_body(value: Any) -> Any:
