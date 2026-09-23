@@ -228,12 +228,6 @@ function restoreDraft(): void {
 
 const docError = ref('')
 const documentRows = reactive<VersionDocRow[]>([{ target: null, baseline: null }])
-// 浏览器本地目录选择（webkitdirectory）：与文档上传同一交互模式，本地/云端部署行为一致。
-// 浏览器安全限制不提供所选目录的绝对路径，仅在名称为空时自动填目录名；
-// 路径仍由用户补全为运行服务机器上的绝对路径（R-CODE-01 口径）。
-const repoDirInput = ref<HTMLInputElement | null>(null)
-let pendingRepoIndex = 0
-const dirPickHint = ref('')
 const repos = reactive<RepoRow[]>([
   {
     name: 'user-service',
@@ -572,30 +566,6 @@ function pickDocumentVersion(event: Event, index: number, role: 'target' | 'base
     documentRows[index][role] = file
   }
   input.value = '' // 允许重选同一文件
-}
-
-function chooseRepositoryDirectory(index: number): void {
-  // 旧实现调后端 /api/v1/system/pick-directory（服务端 tkinter 弹框）：
-  // 云端容器无图形环境恒 503，本地又在子线程建 Tk 弹不出框——点击「没反应」的根因。
-  // 改为浏览器本地 webkitdirectory 选择器，与服务端部署形态解耦。
-  pendingRepoIndex = index
-  const input = repoDirInput.value
-  if (!input) return
-  input.value = '' // 允许重选同一目录
-  input.click()
-}
-
-function pickRepositoryDirectory(event: Event): void {
-  const file = (event.target as HTMLInputElement).files?.[0]
-  if (!file) return
-  const relative = file.webkitRelativePath || file.name
-  const dirName = relative.includes('/') ? relative.split('/')[0]! : file.name
-  const row = repos[pendingRepoIndex]
-  if (!row.name.trim()) row.name = dirName
-  const root = repositoryRoot.value.replace(/[\\/]+$/, '')
-  const separator = /^[A-Za-z]:[\\/]/.test(root) ? '\\' : '/'
-  row.path = `${root}${separator}${dirName}`
-  dirPickHint.value = `已选择目录「${dirName}」，已自动填写服务端路径：${row.path}；若该目录未挂载到运行服务机器，请改用内部 Git。`
 }
 
 async function loadConfiguration(jobId: string): Promise<void> {
@@ -1165,23 +1135,16 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         <header class="group-title">
           被测仓库
           <span class="group-note"
-            >至少 1 个；可选择运行服务机器上的本地目录，或填写内部 Git
-            地址按分支/提交检出；访问令牌只加密保存</span
+            >至少 1 个；填写部署服务器已挂载的目录，或填写内部 Git 地址按分支/提交检出；访问令牌只加密保存</span
           >
         </header>
-
-        <input
-          ref="repoDirInput"
-          class="repo-dir-input"
-          type="file"
-          webkitdirectory
-          aria-hidden="true"
-          tabindex="-1"
-          @change="pickRepositoryDirectory"
-        />
+        <p class="switch-note repo-location-note">
+          “部署服务器目录”由运行服务直接读取，不会从当前浏览器上传任何源码。当前服务允许的目录根为
+          <code>{{ repositoryRoot }}</code>；若源码仅在你的电脑上，请选择“内部 Git”。
+        </p>
 
         <div class="repo-head">
-          <span>仓库名</span><span>来源</span><span>目录 / Git 地址</span><span>语言</span
+          <span>仓库名</span><span>来源</span><span>服务器目录 / Git 地址</span><span>语言</span
           ><span>分支</span><span>提交号</span><span>基线分支</span><span>令牌</span
           ><span>兜底</span><span />
         </div>
@@ -1195,7 +1158,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             :aria-label="`仓库 ${index + 1} 名称`"
           />
           <select v-model="row.source" class="repo-source" :aria-label="`仓库 ${index + 1} 来源`">
-            <option value="local">本地目录</option>
+            <option value="local">部署服务器目录</option>
             <option value="git">内部 Git</option>
           </select>
           <div class="repo-path-picker">
@@ -1204,8 +1167,8 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               v-model="row.path"
               type="text"
               class="mono"
-              placeholder="C:\\work\\user-service 或 /workspace/user-service"
-              :aria-label="`仓库 ${index + 1} 路径`"
+              placeholder="例如 /opt/repos/user-service 或 C:\\repos\\user-service"
+              :aria-label="`仓库 ${index + 1} 部署服务器目录`"
             />
             <input
               v-else
@@ -1215,14 +1178,6 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               placeholder="https://git.example.com/team/service.git"
               :aria-label="`仓库 ${index + 1} Git 地址`"
             />
-            <button
-              v-if="row.source === 'local'"
-              class="select-dir-btn"
-              type="button"
-              @click="chooseRepositoryDirectory(index)"
-            >
-              选择目录
-            </button>
           </div>
           <select
             v-model="row.language"
@@ -1288,7 +1243,6 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         </div>
 
         <button class="ghost-btn" type="button" @click="addRepo">+ 添加仓库</button>
-        <p v-if="dirPickHint" class="dir-pick-note" role="status">{{ dirPickHint }}</p>
         <p v-if="!reposValid" class="field-error">
           每个仓库需有名称，并填写本地绝对路径或合法 Git 地址；接口服务地址如填写须为
           http(s)；仓库数 ≥ 1。
@@ -1890,40 +1844,6 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 
 .repo-path-picker input {
   min-width: 0;
-}
-
-/* 浏览器本地目录选择（视觉隐藏，程序触发 click；不用 display:none 以兼容旧 Safari） */
-.repo-dir-input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-/* 选择目录按钮：实底描边样式（区别于文字态的 icon-btn） */
-.select-dir-btn {
-  padding: var(--space-2) var(--space-3);
-  background: var(--accent-dim);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-sm);
-  color: var(--accent-strong);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  white-space: nowrap;
-}
-
-.select-dir-btn:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #ffffff;
-}
-
-.dir-pick-note {
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-xs);
-  color: var(--accent-strong);
 }
 
 .doc-upload:hover,
