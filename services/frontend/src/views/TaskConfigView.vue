@@ -64,6 +64,7 @@ const auth = reactive({
   passwordTransform: 'plain' as 'plain' | 'base64_shift_2',
   tokenPath: 'auto',
   authorizationScheme: 'Token' as 'Token' | 'Bearer' | 'raw',
+  responseHeaderPathsJson: '',
 })
 const verifyingAuth = ref(false)
 const authVerificationMessage = ref('')
@@ -175,6 +176,7 @@ function saveDraft(): void {
           passwordTransform: auth.passwordTransform,
           tokenPath: auth.tokenPath,
           authorizationScheme: auth.authorizationScheme,
+          responseHeaderPathsJson: auth.responseHeaderPathsJson,
         },
         authEnabled: authEnabled.value,
         llm: { model: llm.model, baseUrl: llm.baseUrl, protocol: llm.protocol, maxTokens: llm.maxTokens },
@@ -326,6 +328,28 @@ function isAbsoluteRepositoryPath(value: string): boolean {
   return /^(\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/.test(value.trim())
 }
 
+function parseResponseHeaderPaths(): Record<string, string> {
+  const raw = auth.responseHeaderPathsJson.trim()
+  if (!raw) return {}
+  const parsed: unknown = JSON.parse(raw)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('响应字段→请求头映射必须是 JSON 对象')
+  }
+  const entries = Object.entries(parsed)
+  const headerName = /^[A-Za-z][A-Za-z0-9-]{0,63}$/
+  const responsePath = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/
+  if (
+    entries.length > 8 ||
+    entries.some(
+      ([header, path]) =>
+        typeof path !== 'string' || !headerName.test(header) || !responsePath.test(path),
+    )
+  ) {
+    throw new Error('响应字段→请求头映射格式不合法')
+  }
+  return Object.fromEntries(entries) as Record<string, string>
+}
+
 async function verifyAuthBeforeSave(): Promise<void> {
   if (!authValid.value || !authEnabled.value) return
   verifyingAuth.value = true
@@ -342,11 +366,18 @@ async function verifyAuthBeforeSave(): Promise<void> {
         password_transform: auth.passwordTransform,
         token_path: auth.tokenPath.trim() || 'auto',
         authorization_scheme: auth.authorizationScheme,
+        response_header_paths: parseResponseHeaderPaths(),
       },
       editingJobId.value || undefined,
     )
     authSessionId.value = result.session_id
-    authVerificationMessage.value = `鉴权成功，已建立本次任务的${result.credential_type === 'token' ? ' Token' : ' Cookie'}会话`
+    const label =
+      result.credential_type === 'token'
+        ? 'Token'
+        : result.credential_type === 'cookie'
+          ? 'Cookie'
+          : '请求头'
+    authVerificationMessage.value = `鉴权成功，已建立本次任务的${label}会话`
   } catch (err) {
     authSessionId.value = ''
     authVerificationMessage.value = err instanceof Error ? `鉴权失败：${err.message}` : '鉴权失败'
@@ -403,6 +434,15 @@ const documentsValid = computed(
 
 const restValid = computed(() => form.restUrl.trim().startsWith('http'))
 
+const responseHeaderPathsValid = computed(() => {
+  try {
+    parseResponseHeaderPaths()
+    return true
+  } catch {
+    return false
+  }
+})
+
 const authContractValid = computed(() => {
   const fieldName = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/
   const tokenPath = /^(auto|[A-Za-z_][A-Za-z0-9_.-]{0,127})$/
@@ -410,7 +450,8 @@ const authContractValid = computed(() => {
     fieldName.test(auth.usernameField.trim()) &&
     fieldName.test(auth.passwordField.trim()) &&
     auth.usernameField.trim() !== auth.passwordField.trim() &&
-    tokenPath.test(auth.tokenPath.trim() || 'auto')
+    tokenPath.test(auth.tokenPath.trim() || 'auto') &&
+    responseHeaderPathsValid.value
   )
 })
 
@@ -606,6 +647,10 @@ async function loadConfiguration(jobId: string): Promise<void> {
       passwordTransform: config.auth?.password_transform ?? 'plain',
       tokenPath: config.auth?.token_path ?? 'auto',
       authorizationScheme: config.auth?.authorization_scheme ?? 'Token',
+      responseHeaderPathsJson:
+        config.auth?.response_header_paths && Object.keys(config.auth.response_header_paths).length
+          ? JSON.stringify(config.auth.response_header_paths, null, 2)
+          : '',
     })
     llmEnabled.value = config.llm !== null
     existingLlmKey.value = config.llm?.api_key_configured ?? false
@@ -721,6 +766,7 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
             password_transform: auth.passwordTransform,
             token_path: auth.tokenPath.trim() || 'auto',
             authorization_scheme: auth.authorizationScheme,
+            response_header_paths: parseResponseHeaderPaths(),
           },
           ...(authSessionId.value ? { auth_session_id: authSessionId.value } : {}),
         }
@@ -986,9 +1032,20 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                   </select>
                 </label>
               </div>
+              <label class="field auth-header-mappings">
+                <span class="field-label">响应字段 → 后续请求头映射（可选）</span>
+                <textarea
+                  v-model="auth.responseHeaderPathsJson"
+                  class="mono"
+                  rows="3"
+                  placeholder='{"usertoken":"body.token","userid":"body.userId","username":"body.userName"}'
+                  spellcheck="false"
+                />
+              </label>
               <p class="switch-note">
                 当前接口如请求体为 <code>{ userName, password }</code>，请将“用户名字段”改为 <code>userName</code>。
                 若登录页抓包中的密码与输入值不同，请选择对应的密码提交方式；若仍无法自动识别，请根据登录响应填写如 <code>body.token</code> 的路径。
+                若后续接口不使用标准 Authorization，可填写响应字段到请求头的映射。
               </p>
             </details>
             <label class="switch-row">
@@ -1014,7 +1071,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               </span>
             </div>
             <p v-if="!authValid" class="field-error">
-              开启登录后，登录接口地址须为 http(s)，用户名和密码必填；字段名只能包含字母、数字、下划线、点或短横线，且用户名字段与密码字段不能相同。
+              开启登录后，登录接口地址须为 http(s)，用户名和密码必填；字段名只能包含字母、数字、下划线、点或短横线，且用户名字段与密码字段不能相同。响应字段映射须为合法 JSON 对象。
             </p>
             <p v-if="editingJobId && !auth.password && existingAuthPassword" class="switch-note">
               密码不会回传；留空会保留当前任务中已加密保存的密码。

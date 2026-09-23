@@ -21,6 +21,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import tempfile
@@ -124,6 +125,21 @@ class RequirementDocumentPair(BaseModel):
     baseline: DocInput | None = None
 
 
+_AUTH_HEADER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,63}$")
+_AUTH_RESPONSE_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
+
+
+def _validate_response_header_paths(mappings: dict[str, str]) -> None:
+    """约束用户可配置的响应字段→请求头映射，防止非法 HTTP Header 注入。"""
+    if len(mappings) > 8:
+        raise ValueError("auth.response_header_paths 最多配置 8 项")
+    for header, path in mappings.items():
+        if not _AUTH_HEADER_NAME_RE.fullmatch(header):
+            raise ValueError("auth.response_header_paths 的请求头名称不合法")
+        if not _AUTH_RESPONSE_PATH_RE.fullmatch(path):
+            raise ValueError("auth.response_header_paths 的响应路径不合法")
+
+
 class AuthConfig(BaseModel):
     """鉴权配置（C-15：登录请求/凭据响应契约可配置）。
 
@@ -150,11 +166,15 @@ class AuthConfig(BaseModel):
         default="auto", pattern=r"^(auto|[A-Za-z_][A-Za-z0-9_.-]{0,127})$"
     )
     authorization_scheme: Literal["Token", "Bearer", "raw"] = "Token"
+    # 非标准鉴权可将登录响应字段映射为后续每个接口请求头，例如
+    # {"usertoken":"body.token", "userid":"body.userId"}。
+    response_header_paths: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_distinct_login_fields(self) -> AuthConfig:
         if self.username_field == self.password_field:
             raise ValueError("auth.username_field 与 password_field 不能相同")
+        _validate_response_header_paths(self.response_header_paths)
         return self
 
 
@@ -251,11 +271,13 @@ class EditableAuthConfig(BaseModel):
         default="auto", pattern=r"^(auto|[A-Za-z_][A-Za-z0-9_.-]{0,127})$"
     )
     authorization_scheme: Literal["Token", "Bearer", "raw"] = "Token"
+    response_header_paths: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_distinct_login_fields(self) -> EditableAuthConfig:
         if self.username_field == self.password_field:
             raise ValueError("auth.username_field 与 password_field 不能相同")
+        _validate_response_header_paths(self.response_header_paths)
         return self
 
 
@@ -776,7 +798,11 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         return {
             "authenticated": True,
             "session_id": session_id,
-            "credential_type": "token" if "Authorization" in headers else "cookie",
+            "credential_type": (
+                "token"
+                if "Authorization" in headers
+                else ("cookie" if "Cookie" in headers else "headers")
+            ),
         }
 
     @app.post("/api/v1/llm/verify")
@@ -1007,6 +1033,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     "password_transform": auth_payload["password_transform"],
                     "token_path": auth_payload["token_path"],
                     "authorization_scheme": auth_payload["authorization_scheme"],
+                    "response_header_paths": auth_payload["response_header_paths"],
                     "password_configured": True,
                 }
             else:
@@ -1255,6 +1282,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     "password_transform": auth.get("password_transform", "plain"),
                     "token_path": auth.get("token_path", "auto"),
                     "authorization_scheme": auth.get("authorization_scheme", "Token"),
+                    "response_header_paths": auth.get("response_header_paths", {}),
                     "password_configured": bool(
                         auth.get("password")
                         or auth.get("password_configured")
@@ -1391,6 +1419,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     "password_transform": auth_payload["password_transform"],
                     "token_path": auth_payload["token_path"],
                     "authorization_scheme": auth_payload["authorization_scheme"],
+                    "response_header_paths": auth_payload["response_header_paths"],
                     "password_configured": True,
                 }
             else:
@@ -2527,6 +2556,7 @@ def _auth_fingerprint(auth: dict[str, Any]) -> str:
             "password_transform": auth.get("password_transform", "plain"),
             "token_path": auth.get("token_path", "auto"),
             "authorization_scheme": auth.get("authorization_scheme", "Token"),
+            "response_header_paths": auth.get("response_header_paths", {}),
         },
         sort_keys=True,
         ensure_ascii=False,

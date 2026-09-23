@@ -946,6 +946,7 @@ async def test_submit_job_auth_persisted_and_passed(
         "password_transform": "plain",
         "token_path": "auto",
         "authorization_scheme": "Token",
+        "response_header_paths": {},
     }
     response = await client.post("/api/v1/jobs", json=body)
     assert response.status_code == 202
@@ -965,6 +966,7 @@ async def test_submit_job_auth_persisted_and_passed(
         "password_transform": "plain",
         "token_path": "auto",
         "authorization_scheme": "Token",
+        "response_header_paths": {},
     }
     assert fake.calls[-1]["auth"] == saved["auth"]
     # 未填 auth 的提交 → runner 收到 None（鉴权可选，不影响既有链路）

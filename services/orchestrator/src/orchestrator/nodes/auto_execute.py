@@ -137,6 +137,28 @@ def _safe_response_shape(payload: Any) -> str:
     return "、".join(keys)
 
 
+def _mapped_response_headers(
+    payload: dict[str, Any] | None, mappings: Any
+) -> tuple[dict[str, str] | None, list[str]]:
+    """将响应 dotted path 显式映射为后续请求头，缺失项只返回路径而不泄漏正文。"""
+    if not isinstance(mappings, dict) or not mappings:
+        return None, []
+    if not isinstance(payload, dict):
+        return None, [str(path) for path in mappings.values()]
+    headers: dict[str, str] = {}
+    missing: list[str] = []
+    for header, path in mappings.items():
+        if not isinstance(header, str) or not isinstance(path, str):
+            missing.append(str(path))
+            continue
+        value = _value_at_path(payload, path)
+        if value is None:
+            missing.append(path)
+        else:
+            headers[header] = value
+    return (headers if not missing else None), missing
+
+
 def _decode_unknown_body(value: Any) -> Any:
     """将 LLM 输出的 unknown body JSON 字符串还原为对象；非 JSON 原样保留。"""
     if not isinstance(value, str):
@@ -599,6 +621,7 @@ async def login_for_headers(
     password_transform = str(auth.get("password_transform") or "plain")
     token_path = str(auth.get("token_path") or "auto")
     authorization_scheme = str(auth.get("authorization_scheme") or "Token")
+    response_header_paths = auth.get("response_header_paths")
     if username_field == password_field:
         raise PipelineError(
             code="X-EXEC-01",
@@ -635,6 +658,9 @@ async def login_for_headers(
         payload = response.json()
     except ValueError:
         payload = None
+    mapped_headers, missing_paths = _mapped_response_headers(payload, response_header_paths)
+    if mapped_headers is not None:
+        return mapped_headers
     if isinstance(payload, dict):
         paths = _DEFAULT_TOKEN_PATHS if token_path == "auto" else (token_path,)
         for path in paths:
@@ -655,7 +681,12 @@ async def login_for_headers(
         message=(
             f"登录响应无凭据可提取（C-15）：{login_url}"
             f"（Token 路径={token_path}；响应顶层字段：{_safe_response_shape(payload)}；"
-            "无 Set-Cookie）"
+            + (
+                f"响应头映射缺失：{'、'.join(missing_paths)}；"
+                if missing_paths
+                else ""
+            )
+            + "无 Set-Cookie）"
         ),
         node_id=NODE_NAME,
     )

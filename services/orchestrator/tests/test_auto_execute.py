@@ -884,6 +884,34 @@ async def test_login_for_headers_applies_configured_password_transform() -> None
     assert headers == {"Authorization": "Token transformed-token"}
 
 
+async def test_login_for_headers_maps_response_fields_to_custom_headers() -> None:
+    """C-15：非标准服务可把登录 body 中的身份字段回带为后续请求头。"""
+    def login_service(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "body": {
+                    "token": "header-token",
+                    "userId": "42",
+                    "userName": "tester",
+                }
+            },
+        )
+
+    headers = await login_for_headers(
+        {
+            **_AUTH,
+            "response_header_paths": {
+                "usertoken": "body.token",
+                "userid": "body.userId",
+                "username": "body.userName",
+            },
+        },
+        httpx.MockTransport(login_service),
+    )
+    assert headers == {"usertoken": "header-token", "userid": "42", "username": "tester"}
+
+
 async def test_login_for_headers_cookie_fallback() -> None:
     """无 token 字段 → Set-Cookie 回带（session 会话口径，属性剔除）。"""
     def login_service(request: httpx.Request) -> httpx.Response:

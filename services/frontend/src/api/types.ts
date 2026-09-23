@@ -168,12 +168,14 @@ export interface AuthConfig {
   token_path?: string
   /** 提取到 Token 后的 Authorization 注入格式；raw 表示不添加前缀。 */
   authorization_scheme?: 'Token' | 'Bearer' | 'raw'
+  /** 非标准服务：登录响应字段到后续接口请求头的映射，例如 usertoken → body.token。 */
+  response_header_paths?: Record<string, string>
 }
 
 export interface AuthVerificationResponse {
   authenticated: true
   session_id: string
-  credential_type: 'token' | 'cookie'
+  credential_type: 'token' | 'cookie' | 'headers'
 }
 
 export interface LlmConfig {
