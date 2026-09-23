@@ -762,7 +762,9 @@ def _parse_item_batch(
                     continue
                 copied_claim = dict(claim)
                 if not isinstance(copied_claim.get("source_refs"), list) or not copied_claim.get("source_refs"):
-                    copied_claim["source_refs"] = list(copied["source_refs"])
+                    refs = copied.get("source_refs")
+                    if isinstance(refs, list) and refs:
+                        copied_claim["source_refs"] = list(refs)
                 copied_claims.append(copied_claim)
             copied["claims"] = copied_claims
         normalized.append(copied)
