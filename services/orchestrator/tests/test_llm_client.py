@@ -144,6 +144,30 @@ async def test_timeout_error_message_has_exception_type(tmp_path: Path) -> None:
         await client.complete("req_parse", _PROMPT, "内容")
     assert excinfo.value.code == "X-LLM-01"
     assert "ReadTimeout" in excinfo.value.message  # 类型名在场，不再只剩冒号
+    assert "响应超时" in excinfo.value.message
+
+
+async def test_connect_timeout_explains_gateway_network_boundary(tmp_path: Path) -> None:
+    """配置/任务失败须区分“网关不可达”与模型返回慢，且不泄露目标 URL。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("")
+
+    client = LlmClient(
+        _settings(),
+        "job-connect-timeout",
+        tmp_path / "llm_calls.jsonl",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=(0, 0),
+        max_attempts=1,
+    )
+    with pytest.raises(PipelineError) as excinfo:
+        await client.complete("req_parse", _PROMPT, "内容")
+    assert excinfo.value.code == "X-LLM-01"
+    assert "ConnectTimeout" in excinfo.value.message
+    assert "连接超时" in excinfo.value.message
+    assert "路由、防火墙或代理策略" in excinfo.value.message
+    assert "example.test" not in excinfo.value.message
 
 
 async def test_4xx_no_retry(tmp_path: Path) -> None:

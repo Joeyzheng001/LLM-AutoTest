@@ -40,6 +40,49 @@ def strip_think_blocks(text: str) -> str:
     return stripped or text.strip()
 
 
+def describe_transport_error(exc: httpx.TimeoutException | httpx.TransportError) -> str:
+    """将底层网络异常转成可行动、且不泄露地址或凭据的中文说明。
+
+    ``str(exc)`` 在不少超时场景为空；仅展示类型名又不足以让使用者区分网关
+    不可达、网关处理缓慢和本机证书问题。这里刻意不拼接 URL、请求头或响应正文，避免
+    错误消息进入任务事件/页面后扩大内部拓扑和凭据暴露面。
+    """
+    exception_name = type(exc).__name__
+    detail = str(exc).strip()
+    suffix = f"：{detail}" if detail else ""
+
+    if isinstance(exc, httpx.ConnectTimeout):
+        return (
+            f"LLM 中转站连接超时（{exception_name}）：部署服务器无法建立到网关的 HTTPS 连接，"
+            "请检查服务器到网关的路由、防火墙或代理策略"
+            f"{suffix}"
+        )
+    if isinstance(exc, httpx.ReadTimeout):
+        return (
+            f"LLM 中转站响应超时（{exception_name}）：连接已发出但未在时限内返回，"
+            "请检查网关负载/限流，或改用更快模型后重试"
+            f"{suffix}"
+        )
+    if isinstance(exc, httpx.WriteTimeout):
+        return (
+            f"LLM 中转站请求发送超时（{exception_name}）：请检查服务器出口网络或代理策略"
+            f"{suffix}"
+        )
+    if isinstance(exc, httpx.ProxyError):
+        return f"LLM 中转站代理连接失败（{exception_name}）：请检查代理地址、凭据和网络策略{suffix}"
+    if isinstance(exc, httpx.ConnectError):
+        return (
+            f"LLM 中转站连接失败（{exception_name}）：请检查网关地址、DNS、证书链和防火墙策略"
+            f"{suffix}"
+        )
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return (
+            f"LLM 中转站协议异常（{exception_name}）：请确认所选 OpenAI/Anthropic 协议与网关一致"
+            f"{suffix}"
+        )
+    return f"LLM 网络调用失败（{exception_name}）{suffix}"
+
+
 @dataclass(frozen=True)
 class LlmResult:
     """单次调用成功结果。"""
@@ -154,11 +197,9 @@ class LlmClient:
             try:
                 response = await client.post(endpoint, json=payload, headers=headers)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                # 网络类：可重试（X-LLM-01）。httpx 异常的 str 可能为空（如
-                # ReadTimeout），须带异常类型名否则报错无法排障（P-16）。
-                raise _RetryableError(
-                    f"LLM 网络调用失败：{type(exc).__name__}: {exc}"
-                ) from exc
+                # 网络类：可重试（X-LLM-01）。底层异常可能无 message，故以稳定分类和
+                # 可行动提示输出；禁止带 URL、请求头或正文，避免泄露内部拓扑/凭据。
+                raise _RetryableError(describe_transport_error(exc)) from exc
         if response.status_code >= 500:
             # 网关 5xx 视为暂时性故障：可重试
             raise _RetryableError(f"LLM 服务端错误：HTTP {response.status_code}")
