@@ -1237,6 +1237,28 @@ async def test_verify_llm_connection_uses_selected_protocol_without_persisting_o
     assert captured["max_attempts"] == 1
 
 
+async def test_verify_llm_connection_rejects_invalid_base_url_before_calling_model(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """错误地址是用户配置问题，须返回 400，不能让 Settings 校验升级为 500。"""
+    _app, _fake, client, _repo_dir = env
+    called = False
+
+    class UnexpectedLlmClient:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+    monkeypatch.setattr("orchestrator.api.LlmClient", UnexpectedLlmClient)
+    response = await client.post(
+        "/api/v1/llm/verify",
+        json={"llm": {"api_key": "x", "base_url": "not-a-url"}},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "llm.base_url 须为 http(s) 地址"
+    assert called is False
+
+
 async def test_submit_job_llm_key_is_runtime_only(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:

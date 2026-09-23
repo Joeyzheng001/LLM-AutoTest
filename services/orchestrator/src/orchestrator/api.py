@@ -755,6 +755,8 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         _request_scope(app, http_request)
         supplied = request.llm
         source = "task" if supplied is not None else "service"
+        if supplied is not None and not supplied.base_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="llm.base_url 须为 http(s) 地址")
         api_key = (supplied.api_key if supplied is not None else "") or settings.llm_api_key
         if not api_key:
             raise HTTPException(
