@@ -498,8 +498,8 @@ async def _complete_cases_with_coverage_recovery(
                         pass
                 raise second_error from first_error
             merged = _merge_case_entries(first_cases or [], second_cases)
-            missing = _missing_categories(merged, interfaces)
-            for interface, categories in missing:
+            fallback_missing: list[tuple[dict[str, Any], list[str]]] = []
+            for interface, categories in _missing_categories(merged, interfaces):
                 targeted_content = (
                     f"{user_content}\n\n"
                     "这是漏产补充请求。只为下面指定的接口和场景输出 JSON，"
@@ -514,9 +514,15 @@ async def _complete_cases_with_coverage_recovery(
                 wanted = [
                     case for case in additions if str(case.get("category", "")) in categories
                 ]
-                if {str(case.get("category", "")) for case in wanted} != set(categories):
-                    raise second_error
-                merged = _merge_case_entries(merged, wanted)
+                if {str(case.get("category", "")) for case in wanted} == set(categories):
+                    merged = _merge_case_entries(merged, wanted)
+                else:
+                    # 定向补产仍缺：交由程序确定性兜底，不让模型不稳定性导致漏产降级
+                    fallback_missing.append((interface, categories))
+            if fallback_missing:
+                merged = _merge_case_entries(
+                    merged, _synthesize_fallback_cases(fallback_missing)
+                )
             _validate_batch_coverage(merged, interfaces)
             return merged
 
@@ -555,6 +561,165 @@ def _merge_case_entries(
             merged.append(item)
             seen.add(key)
     return merged
+
+
+def _synthesize_fallback_cases(
+    missing: list[tuple[dict[str, Any], list[str]]],
+) -> list[dict[str, Any]]:
+    """程序确定性兜底：LLM 多轮补不齐时，按接口参数定义生成通用用例。
+
+    只生成确定性可推导的场景，不猜业务数据：
+    - normal：body 第一个字段给类型默认值，或简单参数给类型默认值，预期 2xx；
+    - boundary：body 第一个字段给边界值（空串/负数），或简单参数给边界值，预期 4xx；
+    - exception：缺必填 body（保留 path 参数占位），预期 4xx。
+
+    所有兜底用例带 synthesized=True，由 _finalize_cases 统一标 low_confidence，
+    提示人工复核（程序兜底语义上不如 LLM 设计的业务场景精确）。
+    """
+    cases: list[dict[str, Any]] = []
+    for interface, categories in missing:
+        if_id = str(interface.get("id", ""))
+        params_defs = [
+            p for p in interface.get("params", []) if isinstance(p, dict)
+        ]
+        for category in categories:
+            case = _synthesize_fallback_case(if_id, category, params_defs)
+            if case is not None:
+                cases.append(case)
+    return cases
+
+
+def _synthesize_fallback_case(
+    if_id: str, category: str, params_defs: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """为单个接口的单个缺失场景构造一条确定性兜底用例；无法推导返回 None。"""
+    body = next((p for p in params_defs if str(p.get("in", "")) == "body"), None)
+    simple = next(
+        (p for p in params_defs if str(p.get("in", "")) in {"query", "path"}), None
+    )
+    path_placeholder = {
+        str(p.get("name")): "test"
+        for p in params_defs
+        if str(p.get("in", "")) == "path"
+    }
+
+    if category == "exception":
+        # 缺必填 body（若存在）；无 body 则缺必填 path/query，由 4xx 豁免缺参校验
+        if body is not None:
+            params: dict[str, Any] = dict(path_placeholder)
+            title = f"{if_id} 异常用例（必填 body 缺失，程序兜底）"
+        else:
+            params = {}
+            title = f"{if_id} 异常用例（必填参数缺失，程序兜底）"
+        return {
+            "interface_id": if_id,
+            "category": "exception",
+            "title": title,
+            "params": params,
+            "expected": "status_class=4xx",
+            "synthesized": True,
+        }
+
+    if category not in {"normal", "boundary"}:
+        return None
+
+    if body is not None:
+        # body 复杂对象：字段级或空对象
+        name = str(body.get("name"))
+        fields = [f for f in body.get("fields", []) if isinstance(f, dict)]
+        if category == "normal":
+            if fields:
+                body_value = {
+                    str(f.get("name")): _type_default_value(
+                        str(f.get("type", "")), str(f.get("name", ""))
+                    )
+                    for f in fields
+                }
+                params = {**path_placeholder, name: body_value}
+                title = f"{if_id} 正常用例（字段默认值，程序兜底）"
+            else:
+                params = {**path_placeholder, name: {}}
+                title = f"{if_id} 正常用例（空 body，程序兜底）"
+            expected = "status_class=2xx"
+        else:  # boundary
+            if fields:
+                field = fields[0]
+                value = _type_boundary_value(str(field.get("type", "")))
+                params = {**path_placeholder, name: {str(field.get("name")): value}}
+                title = f"{if_id} 边界用例（字段 {field.get('name')} 边界值，程序兜底）"
+            else:
+                params = {**path_placeholder, name: {}}
+                title = f"{if_id} 边界用例（空 body，程序兜底）"
+            expected = "status_class=4xx"
+    elif simple is not None:
+        # 无 body：用简单参数（query/path）给类型默认值/边界值
+        sname = str(simple.get("name"))
+        stype = str(simple.get("type", ""))
+        if category == "normal":
+            params = {**path_placeholder, sname: _type_default_value(stype, sname)}
+            title = f"{if_id} 正常用例（最小请求，程序兜底）"
+            expected = "status_class=2xx"
+        else:  # boundary
+            params = {**path_placeholder, sname: _type_boundary_value(stype)}
+            title = f"{if_id} 边界用例（参数 {sname} 边界值，程序兜底）"
+            expected = "status_class=4xx"
+    else:
+        return None
+
+    return {
+        "interface_id": if_id,
+        "category": category,
+        "title": title,
+        "params": params,
+        "expected": expected,
+        "synthesized": True,
+    }
+
+
+def _type_default_value(type_name: str, field_name: str = "") -> Any:
+    """按字段类型 + 字段名语义给一个最小但更真实的正常值（程序兜底 normal 用）。"""
+    t = (type_name or "").lower()
+    name = (field_name or "").lower()
+    if any(k in t for k in ("int", "long", "short", "byte")):
+        return 1
+    if "decimal" in t or "double" in t or "float" in t:
+        return 1
+    if "bool" in t:
+        return True
+    if "list" in t or "set" in t or t == "array":
+        # 集合字段给非空数组（空数组易被服务端当作缺参拒绝）
+        if any(k in name for k in ("to", "cc", "bcc", "recipient", "email", "mail")):
+            return ["test@example.com"]
+        return ["test"]
+    if t == "object":
+        return {}
+    # String：按字段名语义给更真实的值
+    if any(k in name for k in ("email", "mail")):
+        return "test@example.com"
+    if any(k in name for k in ("phone", "mobile")):
+        return "13800000000"
+    if any(
+        k in name
+        for k in ("requestid", "serialno", "request_no", "serial_no", "trace", "uuid")
+    ):
+        return "test-request-001"
+    if any(k in name for k in ("date", "time")):
+        return "2026-01-01"
+    return "test"
+
+
+def _type_boundary_value(type_name: str) -> Any:
+    """按字段类型给一个边界值（程序兜底 boundary 用，预期触发服务端校验拒绝）。"""
+    t = (type_name or "").lower()
+    if any(k in t for k in ("int", "long", "short", "byte", "decimal", "double", "float")):
+        return -1
+    if "bool" in t:
+        return "not-a-boolean"
+    if t == "array" or "list" in t or "set" in t:
+        return []
+    if t == "object":
+        return {}
+    return ""
 
 
 def _looks_like_cross_node_payload(
@@ -1164,8 +1329,9 @@ def _finalize_cases(
         if str(case.get("auth_mode", "")) in {"inherit", "missing", "invalid"}:
             entry["auth_mode"] = str(case["auth_mode"])
 
-        # low_confidence：接口定义含 unknown 参数（X-GEN-03，代码判定）
-        if case["interface_id"] in unknown_ifs:
+        # low_confidence：接口定义含 unknown 参数（X-GEN-03，代码判定），
+        # 或程序确定性兜底用例（synthesized，非 LLM 设计的业务场景）
+        if case["interface_id"] in unknown_ifs or case.get("synthesized"):
             entry["low_confidence"] = True
 
         # 脚本渲染（R-GEN-03：py_compile 校验 loadable）

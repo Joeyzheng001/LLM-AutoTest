@@ -21,6 +21,7 @@ from orchestrator.nodes.testcase_generate import (
     _filter_param_violations,
     _parse_e2e_cases,
     _parse_llm_cases,
+    _synthesize_fallback_cases,
     _validate_batch_coverage,
 )
 from orchestrator.pipeline import NodeStatus
@@ -612,3 +613,92 @@ async def test_testcase_generate_skip_order_guard(
         await run_testcase_generate(engine, state, te_store, _StubLlm([_LLM_GOOD]), _PROMPTS)
 
     assert err.value.code == X_ORCH_02
+
+
+def test_synthesize_fallback_cases_covers_missing_categories() -> None:
+    """程序兜底：对缺失的 normal/boundary/exception 生成三类确定性用例。"""
+    interface: dict[str, Any] = {
+        "id": "IF-REST-001",
+        "params": [
+            {
+                "name": "request",
+                "type": "MailSendRequest",
+                "in": "body",
+                "required": True,
+                "fields": [{"name": "subject", "type": "String"}],
+            }
+        ],
+    }
+    cases = _synthesize_fallback_cases(
+        [(interface, ["normal", "boundary", "exception"])]
+    )
+    assert {c["category"] for c in cases} == {"normal", "boundary", "exception"}
+    assert all(c["synthesized"] is True for c in cases)
+    assert all(c["interface_id"] == "IF-REST-001" for c in cases)
+    # 参数名合规（只用接口定义的 body 参数名，不引入清单外参数）
+    for case in cases:
+        assert set(case["params"]) <= {"request"}
+    # normal 预期 2xx，boundary/exception 预期 4xx
+    expected_by_category = {c["category"]: c["expected"] for c in cases}
+    assert expected_by_category["normal"] == "status_class=2xx"
+    assert expected_by_category["boundary"] == "status_class=4xx"
+    assert expected_by_category["exception"] == "status_class=4xx"
+
+
+def test_synthesize_fallback_cases_preserves_path_param_on_exception() -> None:
+    """exception 兜底缺 body 时保留 path 参数占位，避免缺必填 path 参数。"""
+    interface: dict[str, Any] = {
+        "id": "IF-REST-005",
+        "params": [
+            {"name": "code", "type": "String", "in": "path", "required": True},
+            {"name": "param", "type": "JSONObject", "in": "body", "required": True},
+        ],
+    }
+    cases = _synthesize_fallback_cases([(interface, ["exception"])])
+    assert len(cases) == 1
+    case = cases[0]
+    assert case["params"] == {"code": "test"}
+    assert case["expected"] == "status_class=4xx"
+
+
+def test_synthesize_fallback_cases_uses_simple_param_without_body() -> None:
+    """无 body 参数时，用 query/path 简单参数兜底 normal/boundary/exception。"""
+    interface: dict[str, Any] = {
+        "id": "IF-REST-001",
+        "params": [{"name": "id", "type": "long", "in": "query", "required": True}],
+    }
+    cases = _synthesize_fallback_cases([(interface, ["normal", "boundary", "exception"])])
+    assert {c["category"] for c in cases} == {"normal", "boundary", "exception"}
+    by_category = {c["category"]: c for c in cases}
+    # normal：id 给默认值 1；boundary：id 给边界值 -1；exception：缺必填 id
+    assert by_category["normal"]["params"] == {"id": 1}
+    assert by_category["boundary"]["params"] == {"id": -1}
+    assert by_category["exception"]["params"] == {}
+
+
+def test_synthesize_fallback_normal_uses_semantic_defaults_for_all_fields() -> None:
+    """normal 兜底给所有字段填语义化默认值（非只填第一个字段的裸默认值）。"""
+    interface: dict[str, Any] = {
+        "id": "IF-REST-001",
+        "params": [
+            {
+                "name": "request",
+                "type": "MailSendRequest",
+                "in": "body",
+                "required": True,
+                "fields": [
+                    {"name": "requestId", "type": "String"},
+                    {"name": "to", "type": "List<String>"},
+                    {"name": "subject", "type": "String"},
+                ],
+            }
+        ],
+    }
+    cases = _synthesize_fallback_cases([(interface, ["normal"])])
+    assert len(cases) == 1
+    body = cases[0]["params"]["request"]
+    assert body == {
+        "requestId": "test-request-001",
+        "to": ["test@example.com"],
+        "subject": "test",
+    }
