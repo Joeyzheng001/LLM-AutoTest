@@ -293,3 +293,44 @@ def test_strip_think_blocks_variants() -> None:
     assert strip_think_blocks("<think>只有开头不闭合") == "<think>只有开头不闭合"
     assert strip_think_blocks("<think>a</think> 前文 <think>b</think> 后文") == "前文  后文"
     assert strip_think_blocks('<think>{"cases": []}</think>') == '<think>{"cases": []}</think>'
+
+
+async def test_reasoner_content_falls_back_to_reasoning_content(tmp_path: Path) -> None:
+    """推理模型 content 为空时回退 reasoning_content，避免误报内容缺失。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "", "reasoning_content": "推理通道正文"}}],
+                "usage": {"total_tokens": 64},
+            },
+        )
+
+    client = LlmClient(
+        _settings(),
+        "job-abc12345-def-6",
+        tmp_path / "trace.jsonl",
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.complete("req_parse", _PROMPT, "需求")
+    assert result.text == "推理通道正文"
+
+
+async def test_reasoner_empty_both_channels_still_fails(tmp_path: Path) -> None:
+    """content 与 reasoning_content 都为空时仍按结构异常失败（不静默吞）。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": None, "reasoning_content": ""}}]},
+        )
+
+    client = LlmClient(
+        _settings(),
+        "job-abc12345-def-6",
+        tmp_path / "trace.jsonl",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(PipelineError, match="content 为空"):
+        await client.complete("req_parse", _PROMPT, "需求")

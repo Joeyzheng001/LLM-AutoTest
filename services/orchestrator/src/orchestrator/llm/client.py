@@ -299,10 +299,17 @@ def _extract_response_text(protocol: str, data: Any) -> str:
     if not isinstance(data, dict):
         raise ValueError("响应根节点不是对象")
     if protocol == "openai-chat":
-        text = data["choices"][0]["message"]["content"]
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("choices[0].message.content 为空")
-        return text
+        message = data["choices"][0]["message"]
+        text = message.get("content")
+        if isinstance(text, str) and text.strip():
+            return text
+        # C-17：DeepSeek Reasoner 等推理模型可能把正文放在 reasoning_content，
+        # content 为空（思考通道与正文通道分离）；此时回退 reasoning_content，
+        # 避免把可用正文当成失败丢弃。仍以非空为下限，不静默吞掉结构变化。
+        reasoning = message.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
+        raise ValueError("choices[0].message.content 为空")
     if protocol == "openai-responses":
         output_text = data.get("output_text")
         if isinstance(output_text, str) and output_text.strip():
