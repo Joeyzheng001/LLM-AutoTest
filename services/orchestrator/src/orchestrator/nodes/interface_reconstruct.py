@@ -100,6 +100,22 @@ async def run_interface_reconstruct(
             {"candidates": raw_candidates, "warnings": raw_warnings}
         )
 
+        # C-09 扩展：按变更范围过滤——只还原「变更文件」里的接口，变更范围外
+        # 的接口不属于本次改动，不进入 LLM 语义解析。无变更范围时保持全量。
+        changed_files = _collect_changed_files(_load_code_inventory(store, state.job_id))
+        if changed_files:
+            scoped = _filter_candidates_by_scope(candidates, changed_files)
+            if not scoped:
+                raise PipelineError(
+                    code="X-REV-04",
+                    message="变更范围内无接口候选：变更文件里没有可还原的接口",
+                    node_id=NODE_NAME,
+                )
+            warnings.append(
+                f"按变更范围过滤：{len(candidates)} 个候选 → {len(scoped)} 个（来自变更文件）"
+            )
+            candidates = scoped
+
         if not candidates:
             raise PipelineError(
                 code="X-REV-04",
@@ -169,6 +185,59 @@ async def run_interface_reconstruct(
     except PipelineError as exc:
         engine.mark_failed(state, NODE_NAME, exc)
         raise
+
+
+def _load_code_inventory(store: ArtifactStore, job_id: str) -> dict[str, Any]:
+    """读 code_inventory.json（C-09 变更范围来源）；缺失返回空（全量）。"""
+    try:
+        return dict(store.read_json(job_id, "code_inventory.json"))
+    except FileNotFoundError:
+        return {}
+
+
+def _collect_changed_files(inventory: dict[str, Any]) -> dict[str, set[str]]:
+    """从 code_inventory 提取变更文件（added + modified），按 repo 分组。
+
+    无变更范围（未配提交号/基线分支，或 code_inventory 缺失）返回空 dict，
+    表示全量（不过滤）。
+    """
+    changed: dict[str, set[str]] = {}
+    for repo in inventory.get("repositories") or []:
+        if not isinstance(repo, dict):
+            continue
+        repo_name = str(repo.get("name", ""))
+        changed_files = repo.get("changed_files") or {}
+        if not isinstance(changed_files, dict):
+            continue
+        paths = {
+            value
+            for key in ("added", "modified")
+            for value in (changed_files.get(key) or [])
+            if isinstance(value, str) and value
+        }
+        if paths:
+            changed[repo_name] = paths
+    return changed
+
+
+def _filter_candidates_by_scope(
+    candidates: list[dict[str, Any]], changed_files: dict[str, set[str]]
+) -> list[dict[str, Any]]:
+    """按变更范围过滤候选。
+
+    只有「配了变更范围」的仓库才过滤（只保留变更文件里的接口）；未配变更范围的
+    仓库保持全量（无依据过滤）。removed 文件里的接口已删除、不在还原范围。
+    """
+    kept: list[dict[str, Any]] = []
+    for cand in candidates:
+        loc = cand.get("code_location") or {}
+        repo = str(loc.get("repo", ""))
+        file = str(loc.get("file", ""))
+        if repo not in changed_files:
+            kept.append(cand)  # 该仓库未配变更范围 → 全保留
+        elif file in changed_files[repo]:
+            kept.append(cand)  # 变更文件里的接口 → 保留
+    return kept
 
 
 def _normalize_candidates(response: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:

@@ -1,10 +1,11 @@
 <!-- R-REV-02②：静态候选 → LLM 语义解析补全。输出经 schemas/interfaces.json 校验（条目级字段经代码回填溯源字段后落盘），失败即节点失败。 -->
 
 ---
-version: 1.2
+version: 1.3
 spec: R-REV-02
 owner: 甲
 changelog:
+  - 1.3 | 2026-09-24 | 明确 in 字段推断规则（无法推断时复杂对象 body / 简单类型 query，禁止 unknown）
   - 1.2 | 2026-09-23 | body 复杂类型参数字段明细：候选含 request_body（AST 提取）时填入 params[].fields
   - 1.1 | 2026-09-16 | 大候选集分批输入：读取 candidates 字段并仅输出当前批次条目
   - 1.0 | 2026-09-15 | 初版（输入为 java-parser 静态候选清单，含 snippet/related_files 上下文）
@@ -43,6 +44,7 @@ sampling:
 - `candidate_id` 必须原样使用输入候选的 ID，**一个候选最多输出一个条目，禁止虚构输入中不存在的候选**；
 - 只输出 `interfaces` 数组——`id` / `schema_version` / `job_id` / `code_location` / `is_fallback` / `confidence` 由系统从候选回填，你**不得**输出这些字段；
 - 语义解析只做**证据可支撑的补全**：优先依据 snippet 与 related_files 的源码上下文；类型无法确定时填 `"unknown"` 并给 `default`（X-REV-02 口径），禁止编造类型；
+- `in`（REST 参数位置）优先从注解/源码推断：`@RequestBody`→body、`@RequestParam`→query、`@PathVariable`→path、`@RequestHeader`→header；无法从源码推断时，复杂对象参数填 `body`、简单类型参数填 `query`，**不要填 `unknown`**；
 - 候选可能含 `request_body` 字段——这是源码 AST 提取出的 `@RequestBody` 复杂类型字段明细（`[{"name","type","description"}]`）。当接口的 body 参数对应候选的 `request_body` 时，把这份字段明细**原样**填入该参数的 `fields` 数组，字段名/类型/描述都以 request_body 为准，不得编造或省略字段；
 - 每个输入候选都应产出条目；确无语义可解析（如 snippet 为空壳）时 summary 如实写「静态特征，语义待人工确认」；
 - 禁止合并、拆分或推断未出现的接口。

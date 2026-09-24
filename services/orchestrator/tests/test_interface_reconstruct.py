@@ -21,6 +21,10 @@ from common.prompts_loader import PromptSpec
 from helpers import requirement_review_payload
 from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
 from orchestrator.nodes import run_interface_reconstruct
+from orchestrator.nodes.interface_reconstruct import (
+    _collect_changed_files,
+    _filter_candidates_by_scope,
+)
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 _PROMPTS = Path(__file__).resolve().parents[3] / "prompts"
@@ -301,3 +305,53 @@ async def test_interface_reconstruct_skip_order_guard(tmp_path: Path) -> None:
 
     assert err.value.code == X_ORCH_02
     assert state.node("interface_reconstruct").status is NodeStatus.PENDING
+
+
+def test_collect_changed_files_groups_added_and_modified_by_repo() -> None:
+    """变更文件按 repo 分组，added + modified 都纳入；removed 排除。"""
+    inventory: dict[str, Any] = {
+        "repositories": [
+            {
+                "name": "repo-a",
+                "changed_files": {
+                    "added": ["A.java"],
+                    "modified": ["B.java"],
+                    "removed": ["C.java"],
+                },
+            },
+            {"name": "repo-b", "changed_files": {"modified": ["D.java"]}},
+        ]
+    }
+    changed = _collect_changed_files(inventory)
+    assert changed == {"repo-a": {"A.java", "B.java"}, "repo-b": {"D.java"}}
+
+
+def test_collect_changed_files_returns_empty_without_scope() -> None:
+    """无变更范围（缺 changed_files 或整个 inventory 空）→ 空 dict（全量）。"""
+    assert _collect_changed_files({}) == {}
+    assert _collect_changed_files({"repositories": [{"name": "r", "files": []}]}) == {}
+
+
+def test_filter_candidates_by_scope_keeps_only_changed_files() -> None:
+    """只保留 code_location.file 落在变更文件里的候选。"""
+    candidates: list[dict[str, Any]] = [
+        {"candidate_id": "CAND-001", "code_location": {"repo": "repo-a", "file": "A.java"}},
+        {"candidate_id": "CAND-002", "code_location": {"repo": "repo-a", "file": "B.java"}},
+        {"candidate_id": "CAND-003", "code_location": {"repo": "repo-a", "file": "Other.java"}},
+        {"candidate_id": "CAND-004", "code_location": {"repo": "repo-b", "file": "D.java"}},
+    ]
+    changed = {"repo-a": {"A.java", "B.java"}, "repo-b": {"D.java"}}
+    kept = _filter_candidates_by_scope(candidates, changed)
+    assert [c["candidate_id"] for c in kept] == ["CAND-001", "CAND-002", "CAND-004"]
+
+
+def test_filter_candidates_keeps_repos_without_scope() -> None:
+    """未配变更范围的仓库全保留；配了变更范围的仓库才按文件过滤。"""
+    candidates: list[dict[str, Any]] = [
+        {"candidate_id": "CAND-001", "code_location": {"repo": "scoped", "file": "A.java"}},
+        {"candidate_id": "CAND-002", "code_location": {"repo": "scoped", "file": "Other.java"}},
+        {"candidate_id": "CAND-003", "code_location": {"repo": "unscoped", "file": "X.java"}},
+        {"candidate_id": "CAND-004", "code_location": {"repo": "unscoped", "file": "Y.java"}},
+    ]
+    kept = _filter_candidates_by_scope(candidates, {"scoped": {"A.java"}})
+    assert [c["candidate_id"] for c in kept] == ["CAND-001", "CAND-003", "CAND-004"]

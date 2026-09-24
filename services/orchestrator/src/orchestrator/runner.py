@@ -325,6 +325,7 @@ class PipelineRunner:
                     code=exc.code,
                     attempt=attempt,
                     retryable=exc.code.startswith("X-LLM-"),
+                    **({"details": exc.details} if exc.details else {}),
                 )
                 # 设计 §1.3：节点级自动重试仅 LLM 调用类失败（网络级重试在 LlmClient 内）
                 if not exc.code.startswith("X-LLM-"):

@@ -37,7 +37,7 @@
                 "name": { "type": "string", "minLength": 1 },
                 "type": { "type": "string", "description": "类型名或字面量 unknown" },
                 "required": { "type": "boolean" },
-                "in": { "type": "string", "enum": ["path", "query", "body", "header"], "description": "REST 参数位置" },
+                "in": { "type": "string", "enum": ["path", "query", "body", "header", "unknown"], "description": "REST 参数位置（unknown = 位置无法从注解推断）" },
                 "default": { "description": "unknown 参数的边界默认值（X-REV-02）" },
                 "fields": {
                   "type": "array",
