@@ -41,6 +41,8 @@ class RepositoryInput:
     language: str = "java"
     # 可选的真实服务入口；源码扫描契约不消费该字段，执行节点按 code_location.repo 路由。
     service_base_url: str | None = None
+    # C-09 扩展：按提交号圈定变更范围（多个提交的 diff 并集）；空 = 不圈定。
+    commits: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
         """请求体序列化（可选字段仅在非默认时出现）。"""
@@ -55,6 +57,8 @@ class RepositoryInput:
             payload["is_fallback"] = True
         if self.include_paths:
             payload["include_paths"] = list(self.include_paths)
+        if self.commits:
+            payload["commits"] = list(self.commits)
         return payload
 
 

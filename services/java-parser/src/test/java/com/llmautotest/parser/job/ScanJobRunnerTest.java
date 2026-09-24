@@ -185,6 +185,44 @@ class ScanJobRunnerTest {
         assertThat(error.get("code")).isEqualTo("BRANCH_DIFF_FAILED");
     }
 
+    // ---- C-09 扩展：按提交号圈定变更范围 ----
+
+    @Test
+    void commitDiffProducesUnionOfChangedFiles() throws Exception {
+        Path repo = gitRepoWithMultipleCommits();
+        // 按提交粒度圈定：HEAD~1（加 A）+ HEAD（加 B）的 diff 并集，与分支 diff 无关
+        RepositoryInput input = new RepositoryInput(
+                "multi", repo.toString(), "main", null, null, null, List.of("HEAD~1", "HEAD"));
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-m", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        assertThat(entry.get("status")).isEqualTo("ok");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> changed = (Map<String, Object>) entry.get("changed_files");
+        assertThat((List<Object>) changed.get("added")).containsExactly("A.java", "B.java");
+        assertThat((List<Object>) changed.get("modified")).isEmpty();
+        assertThat((List<Object>) changed.get("removed")).isEmpty();
+        // 未指定基线分支 → 不产出 baseline_branch；产出提交号清单
+        assertThat(entry.get("baseline_branch")).isNull();
+        assertThat((List<Object>) entry.get("commits")).containsExactly("HEAD~1", "HEAD");
+    }
+
+    @Test
+    void commitDiffOnUnknownCommitReportsError() throws Exception {
+        Path repo = gitRepoWithMultipleCommits();
+        RepositoryInput input = new RepositoryInput(
+                "multi", repo.toString(), "main", null, null, null, List.of("no-such-commit"));
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-n", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        assertThat(entry.get("status")).isEqualTo("error");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> error = (Map<String, Object>) entry.get("error");
+        assertThat(error.get("code")).isEqualTo("COMMIT_DIFF_FAILED");
+    }
+
     /** 建真实 git 仓库：main（A.java + B.java）→ feature（改 A + 删 B + 加 C）。 */
     private Path gitRepoWithFeatureBranch() throws Exception {
         Path repo = Files.createDirectories(tempDir.resolve("diffed"));
@@ -199,6 +237,19 @@ class ScanJobRunnerTest {
         Files.writeString(repo.resolve("C.java"), "class C {}\n");
         runGit(repo, "add", "-A");
         runGit(repo, "commit", "-m", "feature");
+        return repo;
+    }
+
+    /** 建真实 git 仓库：main 上两个提交——HEAD~1 加 A.java，HEAD 加 B.java。 */
+    private Path gitRepoWithMultipleCommits() throws Exception {
+        Path repo = Files.createDirectories(tempDir.resolve("multi-commit"));
+        runGit(repo, "init", "-b", "main");
+        Files.writeString(repo.resolve("A.java"), "class A {}\n");
+        runGit(repo, "add", "-A");
+        runGit(repo, "commit", "-m", "c1-add-A");
+        Files.writeString(repo.resolve("B.java"), "class B {}\n");
+        runGit(repo, "add", "-A");
+        runGit(repo, "commit", "-m", "c2-add-B");
         return repo;
     }
 

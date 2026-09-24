@@ -51,7 +51,26 @@ public class ScanJobRunner {
         entry.put("name", repo.name());
         entry.put("path", repo.path());
         entry.put("branch", repo.branch());
-        if (repo.baseline() != null) {
+        if (!repo.commits().isEmpty()) {
+            // C-09 扩展：指定提交号 → 按提交 diff 并集圈定变更范围（优先于基线分支）。
+            entry.put("commits", repo.commits());
+            try {
+                entry.put("changed_files", diffCommits(Path.of(repo.path()), repo.commits()));
+            } catch (IOException | InterruptedException ex) {
+                if (ex instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                entry.put("status", "error");
+                entry.put("file_count", 0);
+                entry.put("files", List.of());
+                entry.put("error", Map.of(
+                        "code", "COMMIT_DIFF_FAILED",
+                        "message", "提交号比对失败（非 Git 仓库或提交不存在）："
+                                + String.join(",", repo.commits()),
+                        "details", Map.of("stderr", ex.getMessage() == null ? "" : ex.getMessage())));
+                return entry;
+            }
+        } else if (repo.baseline() != null) {
             // C-09：指定基线分支 → diff 失败归仓库级 X-CODE-01 宁停不猜（合法路径检查前）
             entry.put("baseline_branch", repo.baseline());
             try {
@@ -161,24 +180,41 @@ public class ScanJobRunner {
      */
     private Map<String, Object> diffBranches(Path root, String baseline, String target)
             throws IOException, InterruptedException {
-        Process process = new ProcessBuilder(
-                        "git", "-C", root.toString(), "diff", "--name-status", baseline + "..." + target)
-                .start();
-        String stdout;
-        try {
-            if (!process.waitFor(GIT_TIMEOUT.toSeconds(), TimeUnit.SECONDS)) {
-                process.destroyForcibly();
-                throw new IOException("git diff 超时（>" + GIT_TIMEOUT.toSeconds() + "s）");
-            }
-            if (process.exitValue() != 0) {
-                throw new IOException(new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).trim());
-            }
-            stdout = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        } finally {
-            process.getInputStream().close();
-            process.getErrorStream().close();
-        }
+        return parseNameStatus(runGitNameStatus(root, "diff", "--name-status", baseline + "..." + target));
+    }
 
+    /**
+     * C-09 扩展：按多个提交号圈定变更范围（每个提交相对其父提交的 diff 并集）。
+     *
+     * <p>一个分支常承载多个功能改造，按分支 diff 会圈进无关改动；此处对每个提交
+     * 分别取 {@code git diff <commit>^ <commit>} 再合并去重，使变更范围精确到提交粒度。
+     * 根提交无父提交时退化为 {@code git show --name-status} 取该提交全量变更。
+     */
+    private Map<String, Object> diffCommits(Path root, List<String> commits)
+            throws IOException, InterruptedException {
+        Map<String, Object> merged = emptyNameStatus();
+        for (String commit : commits) {
+            Map<String, Object> one;
+            try {
+                one = parseNameStatus(runGitNameStatus(root, "diff", "--name-status", commit + "^", commit));
+            } catch (IOException ex) {
+                // 根提交没有父提交：退化为 git show 该提交的完整变更
+                one = parseNameStatus(runGitNameStatus(root, "show", "--name-status", "--format=", commit));
+            }
+            mergeNameStatus(merged, one);
+        }
+        return merged;
+    }
+
+    private static Map<String, Object> emptyNameStatus() {
+        Map<String, Object> changed = new LinkedHashMap<>();
+        changed.put("added", new ArrayList<String>());
+        changed.put("modified", new ArrayList<String>());
+        changed.put("removed", new ArrayList<String>());
+        return changed;
+    }
+
+    private static Map<String, Object> parseNameStatus(String stdout) {
         List<String> added = new ArrayList<>();
         List<String> modified = new ArrayList<>();
         List<String> removed = new ArrayList<>();
@@ -212,6 +248,44 @@ public class ScanJobRunner {
         changed.put("modified", modified);
         changed.put("removed", removed);
         return changed;
+    }
+
+    private static void mergeNameStatus(Map<String, Object> into, Map<String, Object> from) {
+        mergeUnique((List<String>) into.get("added"), (List<String>) from.get("added"));
+        mergeUnique((List<String>) into.get("modified"), (List<String>) from.get("modified"));
+        mergeUnique((List<String>) into.get("removed"), (List<String>) from.get("removed"));
+    }
+
+    private static void mergeUnique(List<String> into, List<String> from) {
+        for (String value : from) {
+            if (!into.contains(value)) {
+                into.add(value);
+            }
+        }
+    }
+
+    private String runGitNameStatus(Path root, String... args) throws IOException, InterruptedException {
+        List<String> command = new ArrayList<>();
+        command.add("git");
+        command.add("-C");
+        command.add(root.toString());
+        command.addAll(List.of(args));
+        Process process = new ProcessBuilder(command).start();
+        String stdout;
+        try {
+            if (!process.waitFor(GIT_TIMEOUT.toSeconds(), TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                throw new IOException("git 超时（>" + GIT_TIMEOUT.toSeconds() + "s）");
+            }
+            if (process.exitValue() != 0) {
+                throw new IOException(new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).trim());
+            }
+            stdout = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        } finally {
+            process.getInputStream().close();
+            process.getErrorStream().close();
+        }
+        return stdout;
     }
 
     private static boolean isDecodableUtf8(Path file) {

@@ -11,12 +11,20 @@ public record RepositoryInput(
         String branch,
         @JsonProperty("baseline_branch") String baselineBranch,
         @JsonProperty("is_fallback") Boolean isFallback,
-        @JsonProperty("include_paths") List<String> includePaths) {
+        @JsonProperty("include_paths") List<String> includePaths,
+        @JsonProperty("commits") List<String> commits) {
 
     /** 兼容旧 5 参构造（无基线分支，C-09 前调用点）。 */
     public RepositoryInput(
             String name, String path, String branch, Boolean isFallback, List<String> includePaths) {
-        this(name, path, branch, null, isFallback, includePaths);
+        this(name, path, branch, null, isFallback, includePaths, null);
+    }
+
+    /** 兼容旧 6 参构造（基线分支，无提交号）。 */
+    public RepositoryInput(
+            String name, String path, String branch, String baselineBranch,
+            Boolean isFallback, List<String> includePaths) {
+        this(name, path, branch, baselineBranch, isFallback, includePaths, null);
     }
 
     /** 基线分支缺省为不比对（null/空白均视为未指定）。 */
@@ -32,5 +40,10 @@ public record RepositoryInput(
     /** include_paths 缺省为空（全仓库扫描）。 */
     public List<String> includes() {
         return includePaths == null ? List.of() : includePaths;
+    }
+
+    /** 提交号缺省为空（未指定时不圈定变更范围，退回基线分支 diff 或全仓）。 */
+    public List<String> commits() {
+        return commits == null ? List.of() : commits;
     }
 }

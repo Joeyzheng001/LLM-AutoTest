@@ -9,6 +9,7 @@ from orchestrator.persistence import Database
 from orchestrator.repository_resolver import (
     RepositoryResolutionError,
     _classify_name_status,
+    _parse_commits,
     preview_branch_diff,
     resolve_repository_inputs,
 )
@@ -155,7 +156,63 @@ def test_preview_branch_diff_requires_baseline(tmp_path: Path) -> None:
         cache_root=tmp_path,
     )
 
-    assert result["error"] == "未指定基线分支，无法对比差异"
+    assert result["error"] == "未指定基线分支或提交号，无法对比差异"
     assert result["added"] == []
     assert result["modified"] == []
     assert result["removed"] == []
+
+
+def test_preview_diff_supports_commit_union(tmp_path: Path) -> None:
+    """提交号预览：多个提交的 diff 并集。"""
+    (tmp_path / "A.java").write_text("class A {}\n", encoding="utf-8")
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@e.com")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "c1-add-A")
+    (tmp_path / "B.java").write_text("class B {}\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "c2-add-B")
+
+    result = preview_branch_diff(
+        {
+            "name": "demo",
+            "source": "local",
+            "path": str(tmp_path),
+            "branch": "main",
+            "commits": ["HEAD~1", "HEAD"],
+        },
+        cache_root=tmp_path,
+    )
+
+    assert result["added"] == ["A.java", "B.java"]
+    assert result["modified"] == []
+    assert result["removed"] == []
+    assert result["commits"] == ["HEAD~1", "HEAD"]
+
+
+def test_parse_commits_prefers_list_and_falls_back_to_legacy_commit() -> None:
+    assert _parse_commits({"commits": ["a1b2c3", "d4e5f6"]}) == ("a1b2c3", "d4e5f6")
+    # 兼容旧单值 commit
+    assert _parse_commits({"commit": "a1b2c3"}) == ("a1b2c3",)
+    # 逗号分隔字符串 / 空值
+    assert _parse_commits({"commits": "a1b2c3"}) == ("a1b2c3",)
+    assert _parse_commits({"commits": ["  ", "a1b2c3", ""]}) == ("a1b2c3",)
+    assert _parse_commits({}) == ()
+
+
+def test_local_repository_passes_commits_to_resolved_input(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    resolved = resolve_repository_inputs(
+        [
+            {
+                "name": "demo",
+                "source": "local",
+                "path": str(tmp_path),
+                "branch": "main",
+                "commits": ["a1b2c3", "d4e5f6"],
+            }
+        ],
+        cache_root=tmp_path,
+    )
+    assert resolved[0].commits == ("a1b2c3", "d4e5f6")

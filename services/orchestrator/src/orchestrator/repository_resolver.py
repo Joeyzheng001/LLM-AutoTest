@@ -59,6 +59,7 @@ def resolve_repository_inputs(
         source = str(raw.get("source") or "local").strip().lower()
         branch = str(raw.get("branch") or "main").strip() or "main"
         baseline = str(raw.get("baseline_branch") or "").strip() or None
+        commits = _parse_commits(raw)
         include_paths = tuple(str(item) for item in raw.get("include_paths", ()))
         language = str(raw.get("language") or "java")
         service_base_url = str(raw.get("service_base_url") or "").strip() or None
@@ -77,6 +78,7 @@ def resolve_repository_inputs(
                 include_paths=include_paths,
                 language=language,
                 service_base_url=service_base_url,
+                commits=commits,
             )
             resolved.append(resolved_input)
             _register_snapshot(
@@ -106,7 +108,7 @@ def resolve_repository_inputs(
             name=name,
             remote_url=remote_url,
             branch=branch,
-            commit=commit,
+            commit=commits[-1] if commits else commit,
             cache_root=cache_root,
             access_token=access_token,
         )
@@ -119,6 +121,7 @@ def resolve_repository_inputs(
             include_paths=include_paths,
             language=language,
             service_base_url=service_base_url,
+            commits=commits,
         )
         resolved.append(resolved_input)
         _register_snapshot(
@@ -139,6 +142,19 @@ def resolve_repository_inputs(
             cache_hit=cache_hit,
         )
     return resolved
+
+
+def _parse_commits(raw: dict[str, Any]) -> tuple[str, ...]:
+    """解析提交号列表（C-09 扩展）：优先 ``commits``，兼容旧 ``commit`` 单值。"""
+    values = raw.get("commits")
+    if values is None:
+        legacy = str(raw.get("commit") or "").strip()
+        values = [legacy] if legacy else []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, (list, tuple)):
+        return ()
+    return tuple(str(value).strip() for value in values if str(value).strip())
 
 
 def _is_supported_remote(remote_url: str) -> bool:
@@ -322,32 +338,33 @@ def preview_branch_diff(
     cache_root: Path,
     access_token: str | None = None,
 ) -> dict[str, Any]:
-    """预览仓库「基线 → 当前」分支的差异文件清单（不创建 job、不写产物）。
+    """预览仓库差异文件清单（不创建 job、不写产物）。
 
-    仅执行 ``git diff --name-status``（merge-base 口径），与 java-parser 扫描侧
-    ``ScanJobRunner.diffBranches`` 的分类规则一致。remote 仓库复用
-    ``_checkout_remote`` 的版本化缓存；失败时返回带 ``error`` 字段的结构而非抛异常，
-    供配置页直接展示。
+    两种变更范围来源：``commits``（提交号 diff 并集，优先）或
+    ``baseline_branch``（分支对比）。与 java-parser 扫描侧分类规则一致；
+    remote 仓库复用 ``_checkout_remote`` 的版本化缓存；失败时返回带
+    ``error`` 字段的结构而非抛异常，供配置页直接展示。
     """
     name = str(repo.get("name") or "").strip()
     source = str(repo.get("source") or "local").strip().lower()
     branch = str(repo.get("branch") or "main").strip() or "main"
     baseline = str(repo.get("baseline_branch") or "").strip() or None
-    target = str(repo.get("commit") or "").strip() or branch
+    commits = _parse_commits(repo)
 
     def _error(message: str) -> dict[str, Any]:
         return {
             "name": name,
             "baseline": baseline,
             "target": branch,
+            "commits": list(commits),
             "added": [],
             "modified": [],
             "removed": [],
             "error": message,
         }
 
-    if not baseline:
-        return _error("未指定基线分支，无法对比差异")
+    if not commits and not baseline:
+        return _error("未指定基线分支或提交号，无法对比差异")
 
     if source == "local":
         workspace = Path(str(repo.get("path") or ""))
@@ -355,7 +372,7 @@ def preview_branch_diff(
             return _error("本地路径不存在或不是绝对目录")
     elif source == "git":
         remote_url = str(repo.get("remote_url") or "").strip()
-        commit = str(repo.get("commit") or "").strip() or None
+        commit = commits[-1] if commits else (str(repo.get("commit") or "").strip() or None)
         if not _is_supported_remote(remote_url):
             return _error("remote_url 不是支持的 Git 地址")
         try:
@@ -372,14 +389,55 @@ def preview_branch_diff(
     else:
         return _error("source 仅支持 local/git")
 
+    if commits:
+        added: list[str] = []
+        modified: list[str] = []
+        removed: list[str] = []
+        for commit in commits:
+            try:
+                result = _run_git(
+                    ["diff", "--name-status", f"{commit}^", commit],
+                    cwd=workspace,
+                    access_token=access_token,
+                )
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                # 根提交没有父提交：退化为 git show 该提交全量变更
+                try:
+                    result = _run_git(
+                        ["show", "--name-status", "--format=", commit],
+                        cwd=workspace,
+                        access_token=access_token,
+                    )
+                except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                    return _error(f"提交号比对失败（提交不存在）：{commit}")
+            entry_added, entry_modified, entry_removed = _classify_name_status(result.stdout)
+            for value in entry_added:
+                if value not in added:
+                    added.append(value)
+            for value in entry_modified:
+                if value not in modified:
+                    modified.append(value)
+            for value in entry_removed:
+                if value not in removed:
+                    removed.append(value)
+        return {
+            "name": name,
+            "baseline": baseline,
+            "target": branch,
+            "commits": list(commits),
+            "added": added,
+            "modified": modified,
+            "removed": removed,
+        }
+
     try:
         result = _run_git(
-            ["diff", "--name-status", f"{baseline}...{target}"],
+            ["diff", "--name-status", f"{baseline}...{branch}"],
             cwd=workspace,
             access_token=access_token,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return _error(f"分支比对失败（非 Git 仓库或 ref 不存在）：{baseline}...{target}")
+        return _error(f"分支比对失败（非 Git 仓库或 ref 不存在）：{baseline}...{branch}")
 
     added, modified, removed = _classify_name_status(result.stdout)
     return {

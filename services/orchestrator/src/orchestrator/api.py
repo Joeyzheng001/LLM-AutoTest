@@ -112,12 +112,17 @@ class RepoConfig(BaseModel):
 
 
 class DiffPreviewRequest(BaseModel):
-    """分支差异预览请求：本地绝对路径或 Git 地址由服务端自动识别。"""
+    """差异预览请求：本地绝对路径或 Git 地址由服务端自动识别。
+
+    支持两种变更范围来源：``baseline_branch``（分支对比）或 ``commits``
+    （提交号 diff 并集）；二者都填时提交号优先。
+    """
 
     name: str
     address: str
     branch: str = "main"
     baseline_branch: str | None = None
+    commits: list[str] | None = None
     access_token: str | None = Field(default=None, max_length=512)
 
 
@@ -964,6 +969,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "remote_url": address if is_git else None,
             "branch": request.branch.strip() or "main",
             "baseline_branch": (request.baseline_branch or "").strip() or None,
+            "commits": list(request.commits or []),
         }
         result = await asyncio.to_thread(
             preview_branch_diff,
