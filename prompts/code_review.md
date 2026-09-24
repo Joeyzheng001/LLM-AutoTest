@@ -1,10 +1,11 @@
 <!-- F-REVW-01~05：按 claim 审查需求符合性，结论必须引用程序提供的证据 ID。 -->
 
 ---
-version: 2.1
+version: 2.2
 spec: F-REVW-01
 owner: 甲
 changelog:
+  - 2.2 | 2026-09-24 | 语义召回：接口少时全量送 LLM 语义判断；interfaces_complete 信号下允许判 missing
   - 2.1 | 2026-09-22 | 普通业务实现片段、条件完整性和扫描覆盖门禁
   - 2.0 | 2026-09-22 | 声明级审查、多接口多证据引用；证据不足时优先无法判断
   - 1.4 | 2026-09-17 | 引入调用链和增量审查焦点
@@ -47,9 +48,13 @@ sampling:
 - `implemented`：至少有一个直接、语义相关的证据引用，且证据覆盖该 claim 的全部条件。
 - `partial`：有直接证据证明部分行为存在，同时能指出未覆盖或违反的具体条件。
 - `missing`：只有在扫描范围明确完整，且现有证据足以确认该能力不存在或被明确拒绝时使用。
-  未找到证据本身不等于不存在。
+  未找到证据本身不等于不存在。当输入中 `interfaces_complete` 为 `true`（已向你提供全部接口清单）
+  且 `scan_coverage.complete` 为 `true`（仓库扫描完整）时，你已看到全部接口——此时若确认没有任何
+  接口与当前 claim 语义相关，可判 `missing`，并在 `unmet_conditions` 列出该 claim 要求但缺失的能力
+  （例如「自动审批设置的增删改查接口不存在于被测仓库」）。
 - `undetermined`：证据缺失、只有接口契约/路径名、调用链不完整、动态行为不可见，或扫描覆盖范围
-  不足以判断时使用；在 `verification_needed` 写出需要查验的具体位置或信息。
+  不足以判断时使用；在 `verification_needed` 写出需要查验的具体位置或信息。接口清单不完整
+  （`interfaces_complete` 为 `false`）时，不要仅凭未召回接口判定 `missing`。
 
 以下高风险行为必须引用与该需求直接相关的代码/配置证据：Session/Token 生命周期、权限、
 密码处理、事务/回滚、幂等、状态流转、数据一致性、缓存、异步消息和定时任务。全仓库出现某类
@@ -74,5 +79,6 @@ sampling:
 - 当前批次每个 claim 恰好输出一次，无遗漏、重复或跨批引用。
 - 每个 `implemented` 至少引用一个直接证据，且覆盖 claim 的全部条件。
 - 每个 `partial` 均同时说明已有支持和具体缺口。
-- 没有证据的 claim 使用 `undetermined`；没有把“未搜到”直接判为 `missing`。
+- 没有证据的 claim 使用 `undetermined`；没有把“未搜到”直接判为 `missing`（除非
+  `interfaces_complete` 与 `scan_coverage.complete` 同时为 `true`，且已确认无相关接口）。
 - JSON 可解析，顶层只有 `assessments`。

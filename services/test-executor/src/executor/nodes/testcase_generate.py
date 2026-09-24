@@ -791,31 +791,41 @@ def _derive_testpoints(
     mapped_requirements: set[str] = set()
     for mapping in mappings:
         requirement_id = str(mapping.get("requirement_id", ""))
-        interface_id = str(mapping.get("interface_id", ""))
-        if requirement_id not in requirement_by_id or interface_id not in interface_ids:
+        if requirement_id not in requirement_by_id:
+            continue
+        # 一个需求可映射多个接口：逐接口派生测试点，避免只覆盖首个接口（C-12）。
+        mapped_ids = [str(value) for value in (mapping.get("interface_ids") or [])]
+        if not mapped_ids:
+            legacy = str(mapping.get("interface_id", ""))
+            if legacy:
+                mapped_ids = [legacy]
+        valid_ids = [value for value in mapped_ids if value in interface_ids]
+        if not valid_ids:
             continue
         mapped_requirements.add(requirement_id)
         requirement = requirement_by_id[requirement_id]
         title = str(requirement.get("title", requirement_id))
         description = str(requirement.get("description", "")).strip()
-        append_point(
-            requirement_id,
-            interface_id,
-            "REQ",
-            f"验证“{title}”主业务流程" + (f"：{description}" if description else ""),
-            ["正常主流程", "输入边界与空值", "异常/权限/业务拒绝"],
-            f"需求 {requirement_id} ↔ 接口 {interface_id}",
-        )
         status = str(mapping.get("status", ""))
-        if status in {"partial", "missing", "undetermined"}:
+        for interface_id in valid_ids:
             append_point(
                 requirement_id,
                 interface_id,
-                "RISK",
-                f"确认“{title}”在实现状态为 {status} 时的遗漏、降级或不一致行为",
-                ["关键业务路径", "异常提示与数据一致性", "配置/会话/权限等服务端行为"],
-                f"代码评审映射状态：{status}",
+                "REQ",
+                f"验证“{title}”主业务流程" + (f"：{description}" if description else ""),
+                ["正常主流程", "输入边界与空值", "异常/权限/业务拒绝"],
+                f"需求 {requirement_id} ↔ 接口 {interface_id}",
             )
+        if status in {"partial", "missing", "undetermined"}:
+            for interface_id in valid_ids:
+                append_point(
+                    requirement_id,
+                    interface_id,
+                    "RISK",
+                    f"确认“{title}”在实现状态为 {status} 时的遗漏、降级或不一致行为",
+                    ["关键业务路径", "异常提示与数据一致性", "配置/会话/权限等服务端行为"],
+                    f"代码评审映射状态：{status}",
+                )
     for requirement_id, requirement in requirement_by_id.items():
         if requirement_id in mapped_requirements:
             continue

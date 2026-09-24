@@ -20,6 +20,7 @@ from common.prompts_loader import PromptSpec
 
 from helpers import requirement_review_payload
 from orchestrator.nodes import run_code_review
+from orchestrator.nodes.code_review import _select_interfaces_for_claims
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 _PROMPTS = Path(__file__).resolve().parents[3] / "prompts"
@@ -517,3 +518,43 @@ def test_partial_authorization_gap_is_release_blocking() -> None:
 
     assert risks[0]["severity"] == "P0"
     assert "阻断发布" in risks[0]["action"]
+
+
+def test_select_interfaces_full_recall_when_few_interfaces() -> None:
+    """接口不超过阈值时全量返回：语义召回不因字面不重叠漏召接口。"""
+    claims = [
+        {
+            "requirement_title": "自动审批设置",
+            "statement": "配置审批规则供下游取数调用",
+            "acceptance_criteria": [],
+        }
+    ]
+    interfaces = [
+        {"id": "IF-001", "signature": {"summary": "风险审批试算接口"}, "params": []},
+        {"id": "IF-002", "signature": {"summary": "公共邮件发送接口"}, "params": []},
+    ]
+    result = _select_interfaces_for_claims(claims, interfaces)
+    # 字面几乎零重叠，但接口少 → 全量交给 LLM 语义判断，不盲给前 N 个
+    assert [item["id"] for item in result] == ["IF-001", "IF-002"]
+
+
+def test_select_interfaces_lexical_prefilter_when_many_interfaces() -> None:
+    """接口超过阈值时退化为字面重叠预筛，控制上下文规模。"""
+    claims = [
+        {
+            "requirement_title": "用户查询",
+            "statement": "按 ID 查询用户",
+            "acceptance_criteria": [],
+        }
+    ]
+    interfaces = [
+        {
+            "id": f"IF-{index:03d}",
+            "signature": {"summary": "用户查询" if index == 0 else "无关接口"},
+            "params": [],
+        }
+        for index in range(45)
+    ]
+    result = _select_interfaces_for_claims(claims, interfaces)
+    assert len(result) <= 40
+    assert result[0]["id"] == "IF-000"

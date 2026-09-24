@@ -171,6 +171,9 @@ async def run_code_review(
             batch_claim_ids = {str(claim["claim_id"]) for claim in batch}
             batch_interfaces = _select_interfaces_for_claims(batch, interface_index)
             batch_interface_ids = {str(item["id"]) for item in batch_interfaces if item.get("id")}
+            # 接口清单是否完整：全量召回时 LLM 可确信「这些就是全部接口」，
+            # 从而对无匹配的 claim 给出更明确的 missing 判定而非一律 undetermined。
+            interfaces_complete = len(batch_interfaces) == len(interface_index)
             selected_evidence = _select_evidence_for_claims(
                 batch,
                 code_evidence,
@@ -204,6 +207,7 @@ async def run_code_review(
                     "batch": {"index": index, "total": len(claim_batches)},
                     "claims": batch,
                     "interfaces": batch_interfaces,
+                    "interfaces_complete": interfaces_complete,
                     "behavior_evidence": batch_behavior_evidence,
                     "code_evidence": selected_evidence,
                     "call_chains": batch_call_chains,
@@ -345,9 +349,17 @@ def _compact_interfaces(interfaces: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def _select_interfaces_for_claims(
-    claims: list[dict[str, Any]], interfaces: list[dict[str, Any]], limit: int = 24
+    claims: list[dict[str, Any]], interfaces: list[dict[str, Any]], limit: int = 40
 ) -> list[dict[str, Any]]:
-    """按声明词项收窄接口上下文，避免每批重复塞入整仓接口目录。"""
+    """按声明语义收窄接口上下文。
+
+    接口总数不超过 limit 时全量返回，交由 LLM 做语义判断——字面 n-gram 召回会
+    漏召「语义相关但字面不重叠」的接口（如“自动审批”与“风险审批试算”），而接口
+    少时全量送入 LLM 的成本可忽略，语义召回由 LLM 的理解能力天然完成。仅当接口
+    超出 limit 时，才用字面重叠预筛兜底，避免上下文膨胀。
+    """
+    if len(interfaces) <= limit:
+        return list(interfaces)
     claim_tokens = _content_tokens(" ".join(
         " ".join(str(claim.get(key, "")) for key in ("requirement_title", "statement"))
         + " " + " ".join(str(value) for value in claim.get("acceptance_criteria", []))

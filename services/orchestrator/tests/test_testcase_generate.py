@@ -18,6 +18,7 @@ from common.pipeline import NodeStatus
 from common.prompts_loader import PromptSpec
 from executor.nodes import run_testcase_generate
 from executor.nodes.testcase_generate import (
+    _derive_testpoints,
     _filter_param_violations,
     _parse_e2e_cases,
     _parse_llm_cases,
@@ -702,3 +703,38 @@ def test_synthesize_fallback_normal_uses_semantic_defaults_for_all_fields() -> N
         "to": ["test@example.com"],
         "subject": "test",
     }
+
+
+def test_derive_testpoints_iterates_all_mapped_interfaces() -> None:
+    """一个需求映射多个接口时，逐个接口派生主流程测试点（C-12）。"""
+    requirements: list[dict[str, Any]] = [
+        {"id": "REQ-001", "title": "自动审批接口", "description": ""}
+    ]
+    interfaces: list[dict[str, Any]] = [
+        {"id": "IF-REST-001"},
+        {"id": "IF-REST-002"},
+        {"id": "IF-REST-003"},
+    ]
+    mappings: list[dict[str, Any]] = [
+        {
+            "requirement_id": "REQ-001",
+            "status": "implemented",
+            "interface_ids": ["IF-REST-001", "IF-REST-002"],
+        }
+    ]
+    points = _derive_testpoints(requirements, interfaces, mappings)
+    main = [p for p in points if p.get("source") == "REQ"]
+    assert {p["interface_id"] for p in main} == {"IF-REST-001", "IF-REST-002"}
+
+
+def test_derive_testpoints_ignores_fabricated_interface_ids() -> None:
+    """映射里的接口 id 不在接口清单时跳过，不伪造接口归属。"""
+    requirements: list[dict[str, Any]] = [{"id": "REQ-001", "title": "X", "description": ""}]
+    interfaces: list[dict[str, Any]] = [{"id": "IF-REST-001"}]
+    mappings: list[dict[str, Any]] = [
+        {"requirement_id": "REQ-001", "status": "missing", "interface_ids": ["IF-REAL-999"]}
+    ]
+    points = _derive_testpoints(requirements, interfaces, mappings)
+    # 无有效接口 → 落入「尚未映射到接口」需求级风险点，而非伪造接口
+    assert all(p.get("interface_id") is None for p in points)
+    assert any(p.get("source") == "RISK" for p in points)
