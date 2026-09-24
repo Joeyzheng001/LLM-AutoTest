@@ -162,7 +162,8 @@ export function previewBranchDiff(payload: {
   name: string
   address: string
   branch: string
-  baseline_branch: string
+  baseline_branch?: string
+  commits?: string[]
   access_token?: string
 }): Promise<DiffPreviewResponse> {
   return request('/api/v1/repos/diff-preview', {

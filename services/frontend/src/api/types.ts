@@ -127,6 +127,8 @@ export interface RepoConfig {
   branch: string
   commit?: string | null
   baseline_branch?: string // C-09：基线分支（非空 → 双分支 diff 变更范围视图）
+  /** C-09 扩展：按提交号圈定变更范围（多个提交 diff 并集）；空 = 不圈定。 */
+  commits?: string[]
   is_fallback: boolean
   include_paths?: string[]
   /** C-07：接口执行按 code_location.repo 路由到该仓库对应服务；为空回退任务级 rest_url。 */
@@ -136,11 +138,12 @@ export interface RepoConfig {
   access_token_configured?: boolean
 }
 
-/** 分支差异预览结果（POST /api/v1/repos/diff-preview） */
+/** 差异预览结果（POST /api/v1/repos/diff-preview，分支对比或提交号并集） */
 export interface DiffPreviewResponse {
   name: string
   baseline: string | null
   target: string
+  commits?: string[] // 提交号模式时回显
   added: string[]
   modified: string[]
   removed: string[]

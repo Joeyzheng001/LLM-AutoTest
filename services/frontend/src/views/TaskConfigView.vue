@@ -42,13 +42,14 @@ interface RepoRow {
   address: string // 统一仓库地址：本地绝对路径 或 Git 地址（提交时自动识别 source）
   serviceBaseUrl: string
   branch: string
-  commit: string
+  commit: string // 提交号（多值，逗号/换行/空格分隔）
   baselineBranch: string
+  diffMode: 'branch' | 'commit' // 变更范围来源：分支对比 或 提交号
   accessToken: string
   accessTokenConfigured: boolean
   language: 'java' | 'python' // C-13：仓库语言（扫描器分流）
   isFallback: boolean
-  diffPreview: DiffPreviewState | null // 分支差异预览（仅前端状态，不提交）
+  diffPreview: DiffPreviewState | null // 差异预览（仅前端状态，不提交）
 }
 
 // 每行是一对需求版本：被测版本必填，基线版本可选；单版本保持原文处理。
@@ -261,6 +262,7 @@ const repos = reactive<RepoRow[]>([
     branch: 'main',
     commit: '',
     baselineBranch: '',
+    diffMode: 'branch',
     accessToken: '',
     accessTokenConfigured: false,
     language: 'java',
@@ -306,6 +308,7 @@ function addRepo(): void {
     branch: 'main',
     commit: '',
     baselineBranch: '',
+    diffMode: 'branch',
     accessToken: '',
     accessTokenConfigured: false,
     language: 'java',
@@ -322,20 +325,43 @@ async function previewDiff(index: number): Promise<void> {
   const row = repos[index]
   if (!row) return
   const address = row.address.trim()
+  if (!address) {
+    row.diffPreview = { loading: false, result: null, error: '请先填写仓库地址' }
+    return
+  }
+  const base = {
+    name: row.name.trim() || address,
+    address,
+    branch: row.branch.trim() || 'main',
+    ...(row.accessToken.trim() ? { access_token: row.accessToken.trim() } : {}),
+  }
+  if (row.diffMode === 'commit') {
+    const commits = row.commit.split(/[,，\s]+/).filter(Boolean)
+    if (!commits.length) {
+      row.diffPreview = { loading: false, result: null, error: '请先填写至少一个提交号' }
+      return
+    }
+    row.diffPreview = { loading: true, result: null, error: '' }
+    try {
+      const result = await previewBranchDiff({ ...base, commits })
+      row.diffPreview = { loading: false, result, error: result.error || '' }
+    } catch (error) {
+      row.diffPreview = {
+        loading: false,
+        result: null,
+        error: error instanceof Error ? error.message : '预览失败',
+      }
+    }
+    return
+  }
   const baseline = row.baselineBranch.trim()
-  if (!address || !baseline) {
-    row.diffPreview = { loading: false, result: null, error: '请先填写仓库地址和基线分支' }
+  if (!baseline) {
+    row.diffPreview = { loading: false, result: null, error: '请先填写基线分支' }
     return
   }
   row.diffPreview = { loading: true, result: null, error: '' }
   try {
-    const result = await previewBranchDiff({
-      name: row.name.trim() || address,
-      address,
-      branch: row.branch.trim() || 'main',
-      baseline_branch: baseline,
-      ...(row.accessToken.trim() ? { access_token: row.accessToken.trim() } : {}),
-    })
+    const result = await previewBranchDiff({ ...base, baseline_branch: baseline })
     row.diffPreview = { loading: false, result, error: result.error || '' }
   } catch (error) {
     row.diffPreview = {
@@ -643,8 +669,9 @@ async function loadConfiguration(jobId: string): Promise<void> {
         address: repo.source === 'git' ? repo.remote_url || '' : repo.path,
         serviceBaseUrl: repo.service_base_url || '',
         branch: repo.branch || 'main',
-        commit: repo.commit || '',
+        commit: (repo.commits ?? []).join(', ') || repo.commit || '',
         baselineBranch: repo.baseline_branch || '',
+        diffMode: ((repo.commits?.length ?? 0) > 0 ? 'commit' : 'branch') as 'branch' | 'commit',
         accessToken: '',
         accessTokenConfigured: repo.access_token_configured ?? false,
         language: repo.language || 'java',
@@ -755,6 +782,8 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
     repos: repos.map((row) => {
       const address = row.address.trim()
       const isGit = classifyRepoSource(address) === 'git'
+      // C-09 扩展：提交号支持多个（逗号/换行/空格分隔），按提交 diff 并集圈定变更范围
+      const commits = row.commit.split(/[,，\s]+/).filter(Boolean)
       return {
         name: row.name.trim(),
         source: isGit ? 'git' : 'local',
@@ -762,9 +791,11 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
         ...(isGit ? { remote_url: address } : {}),
         ...(row.serviceBaseUrl.trim() ? { service_base_url: row.serviceBaseUrl.trim() } : {}),
         branch: row.branch.trim() || 'main',
-        ...(row.commit.trim() ? { commit: row.commit.trim() } : {}),
-        // C-09：基线分支可选（空 = 不比对；非空 → code_review 派生变更范围视图）
-        ...(row.baselineBranch.trim() ? { baseline_branch: row.baselineBranch.trim() } : {}),
+        // 变更范围来源由 diffMode 决定：提交号模式提交 commits，分支模式提交 baseline_branch
+        ...(row.diffMode === 'commit' && commits.length ? { commits } : {}),
+        ...(row.diffMode === 'branch' && row.baselineBranch.trim()
+          ? { baseline_branch: row.baselineBranch.trim() }
+          : {}),
         is_fallback: row.isFallback,
         // C-13：仓库语言（java → java-parser；python → 内置 AST 扫描 Django/FastAPI/Flask）
         language: row.language,
@@ -1196,10 +1227,11 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
       <section class="field-group">
         <header class="group-title">
           被测仓库
-          <span class="group-note">填本地目录或 Git 地址，按分支对比拿差异代码</span>
+          <span class="group-note">填本地目录或 Git 地址，按分支对比或提交号圈定差异代码</span>
         </header>
         <p class="switch-note repo-location-note">
-          填部署服务器已挂载的本地绝对路径，或内部 Git 地址；填「基线分支」后，系统会 git diff
+          填部署服务器已挂载的本地绝对路径，或内部 Git
+          地址；通过「变更范围来源」选择分支对比或提交号， 系统会 git diff
           拿差异代码，只分析改动部分。当前服务允许的目录根为 <code>{{ repositoryRoot }}</code
           >。
         </p>
@@ -1235,11 +1267,22 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           </label>
 
           <div class="diff-branch-panel">
-            <div class="diff-branch-title">对比分支</div>
+            <div class="diff-branch-title">变更范围</div>
             <p class="diff-branch-hint">
-              填「基线分支」后系统执行 git diff 拿差异代码，只分析改动部分；留空则扫描全仓
+              选择用分支对比还是提交号圈定 Code Review 的差异代码；留空则扫描全仓
             </p>
-            <div class="two-col">
+            <label class="field">
+              <span class="field-label">变更范围来源</span>
+              <select
+                v-model="row.diffMode"
+                class="mono"
+                :aria-label="`仓库 ${index + 1} 变更范围来源`"
+              >
+                <option value="branch">分支对比</option>
+                <option value="commit">提交号</option>
+              </select>
+            </label>
+            <div v-if="row.diffMode === 'branch'" class="two-col">
               <label class="field">
                 <span class="field-label">当前分支（被测）</span>
                 <input
@@ -1251,7 +1294,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                 />
               </label>
               <label class="field">
-                <span class="field-label">基线分支（对比基准，可选）</span>
+                <span class="field-label">基线分支（对比基准）</span>
                 <input
                   v-model="row.baselineBranch"
                   type="text"
@@ -1261,6 +1304,16 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                 />
               </label>
             </div>
+            <label v-else class="field">
+              <span class="field-label">提交号（多个用逗号分隔）</span>
+              <input
+                v-model="row.commit"
+                type="text"
+                class="mono"
+                placeholder="如 a1b2c3,d4e5f6"
+                :aria-label="`仓库 ${index + 1} 提交号（多个用逗号分隔）`"
+              />
+            </label>
             <button
               type="button"
               class="ghost-btn diff-preview-btn"
@@ -1274,10 +1327,19 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             </p>
             <div v-else-if="row.diffPreview?.result" class="diff-preview-result">
               <div class="diff-preview-summary">
-                对比 {{ row.diffPreview.result.baseline }}…{{ row.diffPreview.result.target }}：新增
-                {{ row.diffPreview.result.added.length }} · 修改
-                {{ row.diffPreview.result.modified.length }} · 删除
-                {{ row.diffPreview.result.removed.length }}
+                <template v-if="row.diffPreview.result.commits?.length">
+                  提交 {{ row.diffPreview.result.commits.join(', ') }}：新增
+                  {{ row.diffPreview.result.added.length }} · 修改
+                  {{ row.diffPreview.result.modified.length }} · 删除
+                  {{ row.diffPreview.result.removed.length }}
+                </template>
+                <template v-else>
+                  对比 {{ row.diffPreview.result.baseline }}…{{
+                    row.diffPreview.result.target
+                  }}：新增 {{ row.diffPreview.result.added.length }} · 修改
+                  {{ row.diffPreview.result.modified.length }} · 删除
+                  {{ row.diffPreview.result.removed.length }}
+                </template>
               </div>
               <ul v-if="row.diffPreview.result.added.length" class="diff-file-list">
                 <li
@@ -1310,7 +1372,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           </div>
 
           <details class="repo-advanced">
-            <summary>高级设置（语言 · 提交号 · 访问令牌 · 兜底 · 接口服务地址）</summary>
+            <summary>高级设置（语言 · 访问令牌 · 兜底 · 接口服务地址）</summary>
             <div class="repo-advanced-grid">
               <label class="field">
                 <span class="field-label">语言</span>
@@ -1318,16 +1380,6 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                   <option value="java">Java</option>
                   <option value="python">Python</option>
                 </select>
-              </label>
-              <label class="field">
-                <span class="field-label">提交号（可选）</span>
-                <input
-                  v-model="row.commit"
-                  type="text"
-                  class="mono"
-                  placeholder="固定版本复跑"
-                  :aria-label="`仓库 ${index + 1} 提交号`"
-                />
               </label>
               <label class="field">
                 <span class="field-label">访问令牌（可选）</span>
@@ -1363,8 +1415,9 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           http(s)；仓库数 ≥ 1。
         </p>
         <p class="switch-note">
-          填「基线分支」后，Code Review 和用例生成只针对 git diff 出的差异代码（新增/修改/删除）；
-          留空则按全仓处理。提交号优先于分支，适合固定版本复跑。远程仓库会按地址+版本建立缓存，
+          通过「变更范围来源」下拉框选择：分支对比（按基线分支 diff
+          圈定差异代码）或提交号（按多个提交的 diff
+          并集圈定，一个分支多个功能改造时更精确）；留空则按全仓处理。远程仓库会按地址+版本建立缓存，
           后续重跑复用同一检出结果。接口服务地址用于多仓库/多服务任务，留空则使用任务级 REST 地址。
         </p>
       </section>
