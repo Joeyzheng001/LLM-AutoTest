@@ -38,7 +38,20 @@
                 "type": { "type": "string", "description": "类型名或字面量 unknown" },
                 "required": { "type": "boolean" },
                 "in": { "type": "string", "enum": ["path", "query", "body", "header"], "description": "REST 参数位置" },
-                "default": { "description": "unknown 参数的边界默认值（X-REV-02）" }
+                "default": { "description": "unknown 参数的边界默认值（X-REV-02）" },
+                "fields": {
+                  "type": "array",
+                  "description": "body 复杂类型参数的字段明细（java-parser AST 提取，供下游用例设计 boundary/exception）",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "type"],
+                    "properties": {
+                      "name": { "type": "string", "minLength": 1 },
+                      "type": { "type": "string" },
+                      "description": { "type": "string" }
+                    }
+                  }
+                }
               }
             }
           },

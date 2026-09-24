@@ -44,7 +44,20 @@
             }
           },
           "is_fallback": { "type": "boolean" },
-          "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "静态定位置信度" }
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "静态定位置信度" },
+          "request_body": {
+            "type": "array",
+            "description": "@RequestBody 复杂类型参数字段明细（java-parser AST 提取；动态类型如 JSONObject 无法解析则缺失）",
+            "items": {
+              "type": "object",
+              "required": ["name", "type"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "type": { "type": "string" },
+                "description": { "type": "string" }
+              }
+            }
+          }
         }
       }
     },
