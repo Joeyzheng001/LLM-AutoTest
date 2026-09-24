@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orchestrator.llm_batch import chunk_json_items, chunk_text
+from common.llm_batch import chunk_json_items, chunk_text
 
 
 def test_chunk_text_keeps_heading_context() -> None:

@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from orchestrator.errors import PipelineError
-from orchestrator.prompts_loader import _NODE_KNOWLEDGE, _parse_meta, load_prompt
+from common.errors import PipelineError
+from common.prompts_loader import _NODE_KNOWLEDGE, _parse_meta, load_prompt
 
 _TEMPLATE_LIKE = """---
 version: 1.2

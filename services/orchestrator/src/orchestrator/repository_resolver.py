@@ -16,7 +16,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from orchestrator.errors import PipelineError
+from common.errors import PipelineError
+
 from orchestrator.javaparser_client import RepositoryInput
 
 _GIT_TIMEOUT_S = 300

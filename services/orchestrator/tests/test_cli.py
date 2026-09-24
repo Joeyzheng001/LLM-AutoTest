@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from common.config import Settings
 from cryptography.fernet import Fernet
 
 from orchestrator.__main__ import _cmd_init_db, _cmd_migrate_db, _cmd_validate_deployment
-from orchestrator.config import Settings
 from orchestrator.persistence import Database
 
 

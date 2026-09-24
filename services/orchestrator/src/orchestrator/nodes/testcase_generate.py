@@ -30,22 +30,22 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
 
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import async_playwright
-
-from orchestrator.artifacts import ArtifactStore
-from orchestrator.case_validation import (
+from common.artifacts import ArtifactStore
+from common.case_validation import (
     expected_client_error,
     inspect_case_parameters,
     materialize_declared_defaults,
 )
-from orchestrator.engine import Engine, JobState
-from orchestrator.errors import X_LLM_02, X_ORCH_01, PipelineError
-from orchestrator.llm import LlmResult
-from orchestrator.llm_batch import chunk_json_items
-from orchestrator.llm_repair import complete_with_json_repair
+from common.engine import Engine, JobState
+from common.errors import X_LLM_02, X_ORCH_01, PipelineError
+from common.llm import LlmResult
+from common.llm_batch import chunk_json_items
+from common.llm_repair import complete_with_json_repair
+from common.prompts_loader import PromptSpec, load_prompt
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import async_playwright
+
 from orchestrator.nodes.req_parse import _strip_code_fence
-from orchestrator.prompts_loader import PromptSpec, load_prompt
 
 NODE_NAME = "testcase_generate"
 

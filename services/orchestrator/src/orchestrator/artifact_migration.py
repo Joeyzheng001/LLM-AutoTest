@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from orchestrator.artifacts import ARTIFACT_FILES, JOB_ID_RE, ArtifactStore
+from common.artifacts import ARTIFACT_FILES, JOB_ID_RE, ArtifactStore
+
 from orchestrator.persistence import Database
 
 

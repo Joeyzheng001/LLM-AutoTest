@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from common.artifacts import ArtifactStore
+
 from orchestrator.artifact_migration import migrate_artifact_index
-from orchestrator.artifacts import ArtifactStore
 from orchestrator.persistence import Database
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"

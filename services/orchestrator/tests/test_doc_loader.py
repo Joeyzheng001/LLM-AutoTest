@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from common.errors import PipelineError
 from docx import Document
 from openpyxl import Workbook
 
 from orchestrator.doc_loader import load_document_text
-from orchestrator.errors import PipelineError
 
 
 def test_load_md(tmp_path: Path) -> None:

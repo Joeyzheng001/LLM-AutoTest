@@ -9,10 +9,10 @@ import json
 from pathlib import Path
 
 import pytest
+from common.artifacts import ArtifactStore
+from common.errors import PipelineError
+from common.object_storage import ObjectStorageError
 
-from orchestrator.artifacts import ArtifactStore
-from orchestrator.errors import PipelineError
-from orchestrator.object_storage import ObjectStorageError
 from orchestrator.persistence import Database
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"

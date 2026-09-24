@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import pytest
-
-from orchestrator.config import Settings
+from common.config import Settings
 
 
 def test_settings_from_env_complete() -> None:

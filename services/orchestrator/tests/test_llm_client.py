@@ -7,11 +7,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-
-from orchestrator.config import Settings
-from orchestrator.errors import PipelineError
-from orchestrator.llm import LlmClient
-from orchestrator.prompts_loader import PromptSpec
+from common.config import Settings
+from common.errors import PipelineError
+from common.llm import LlmClient
+from common.prompts_loader import PromptSpec
 
 _PROMPT = PromptSpec(
     name="req_parse",
@@ -287,7 +286,7 @@ async def test_anthropic_messages_protocol_extracts_content_and_usage(tmp_path: 
 
 def test_strip_think_blocks_variants() -> None:
     """无标记原样返回；不闭合标记不静默截断（交由下游解析报 X-LLM-02）。"""
-    from orchestrator.llm.client import strip_think_blocks
+    from common.llm.client import strip_think_blocks
 
     assert strip_think_blocks("纯正文") == "纯正文"
     assert strip_think_blocks("<think>只有开头不闭合") == "<think>只有开头不闭合"

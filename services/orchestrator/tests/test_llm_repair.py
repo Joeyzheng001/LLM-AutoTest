@@ -5,11 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
-from orchestrator.errors import X_LLM_02, PipelineError
-from orchestrator.llm import LlmResult
-from orchestrator.llm_repair import complete_with_json_repair
-from orchestrator.prompts_loader import PromptSpec
+from common.errors import X_LLM_02, PipelineError
+from common.llm import LlmResult
+from common.llm_repair import complete_with_json_repair
+from common.prompts_loader import PromptSpec
 
 
 class _StubLlm:

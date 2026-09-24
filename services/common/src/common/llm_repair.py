@@ -9,9 +9,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol, TypeVar
 
-from orchestrator.errors import X_LLM_02, PipelineError
-from orchestrator.llm import LlmResult
-from orchestrator.prompts_loader import PromptSpec
+from common.errors import X_LLM_02, PipelineError
+from common.llm import LlmResult
+from common.prompts_loader import PromptSpec
 
 T = TypeVar("T")
 

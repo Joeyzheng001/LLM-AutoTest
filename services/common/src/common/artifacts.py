@@ -19,8 +19,8 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from orchestrator.errors import X_ORCH_01, PipelineError
-from orchestrator.object_storage import ObjectStorage, ObjectStorageError
+from common.errors import X_ORCH_01, PipelineError
+from common.object_storage import ObjectStorage, ObjectStorageError
 
 # C-12 安全：job_id 完整正则（字符集不含路径分隔符与 ..；长度 ≤64+4）。
 # 单点下沉在 job_dir——CLI/API/内部调用统一兜底，防目录穿越参与 rmtree/写入。

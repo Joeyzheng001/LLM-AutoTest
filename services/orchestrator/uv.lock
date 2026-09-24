@@ -672,6 +672,32 @@ wheels = [
 ]
 
 [[package]]
+name = "llm-autotest-common"
+version = "0.1.0"
+source = { editable = "../common" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "httpx" },
+    { name = "jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cryptography", specifier = ">=43.0" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "jsonschema", specifier = ">=4.23" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.13" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "ruff", specifier = ">=0.7" },
+    { name = "types-jsonschema", specifier = ">=4.26.0.20260518" },
+]
+
+[[package]]
 name = "lxml"
 version = "6.1.3"
 source = { registry = "https://pypi.org/simple" }
@@ -894,6 +920,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jsonschema" },
+    { name = "llm-autotest-common" },
     { name = "openpyxl" },
     { name = "playwright" },
     { name = "psycopg", extra = ["binary"] },
@@ -920,6 +947,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jsonschema", specifier = ">=4.23" },
+    { name = "llm-autotest-common", editable = "../common" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "playwright", specifier = ">=1.57.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.3" },

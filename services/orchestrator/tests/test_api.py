@@ -17,15 +17,15 @@ from typing import Any
 
 import httpx
 import pytest
+from common.config import Settings
+from common.pipeline import NODE_ORDER, NodeStatus
+from common.security import SecretStore
 from fastapi import FastAPI
 
 from helpers import requirement_review_payload
 from orchestrator.api import create_app
-from orchestrator.config import Settings
 from orchestrator.persistence import Database, JobRecord
-from orchestrator.pipeline import NODE_ORDER, NodeStatus
 from orchestrator.runner import PipelineOutcome
-from orchestrator.security import SecretStore
 
 _DOC = "# 需求\n\n1. 查询用户\n2. 创建用户\n"
 _GIT_BINARY = shutil.which("git") or "git"

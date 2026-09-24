@@ -16,7 +16,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from orchestrator.artifacts import ensure_job_id
+from common.artifacts import ensure_job_id
 
 SENSITIVE_KEYS = frozenset(
     {

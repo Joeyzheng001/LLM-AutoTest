@@ -15,8 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-
-from orchestrator.errors import X_ORCH_03, PipelineError
+from common.errors import X_ORCH_03, PipelineError
 
 DEFAULT_TIMEOUT_S = 30.0  # 单次 HTTP 请求超时
 DEFAULT_POLL_INTERVAL_S = 2.0  # 轮询间隔

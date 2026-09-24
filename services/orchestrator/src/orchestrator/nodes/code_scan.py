@@ -14,9 +14,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from orchestrator.artifacts import ArtifactStore
-from orchestrator.engine import Engine, JobState
-from orchestrator.errors import X_ORCH_01, PipelineError
+from common.artifacts import ArtifactStore
+from common.engine import Engine, JobState
+from common.errors import X_ORCH_01, PipelineError
+
 from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
 from orchestrator.python_scan import scan_repository
 

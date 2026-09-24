@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from orchestrator.errors import X_ORCH_01, PipelineError
+from common.errors import X_ORCH_01, PipelineError
 
 _SUPPORTED_SUFFIXES = (".md", ".txt", ".docx", ".xlsx")
 

@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from orchestrator.model_catalog import DEFAULT_RELAY_MODEL
+from common.model_catalog import DEFAULT_RELAY_MODEL
 
 
 @dataclass(frozen=True)

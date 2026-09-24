@@ -21,9 +21,9 @@ from typing import Any
 
 import httpx
 
-from orchestrator.config import Settings
-from orchestrator.errors import X_LLM_01, PipelineError
-from orchestrator.prompts_loader import PromptSpec
+from common.config import Settings
+from common.errors import X_LLM_01, PipelineError
+from common.prompts_loader import PromptSpec
 
 # docs/12 §三：重试退避间隔（秒）；测试注入 0 加速
 DEFAULT_RETRY_BACKOFF: tuple[float, float] = (5.0, 20.0)

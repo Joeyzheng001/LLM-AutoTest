@@ -11,15 +11,15 @@ from pathlib import Path
 
 import httpx
 import pytest
+from common.artifacts import ArtifactStore
+from common.config import Settings
+from common.engine import Engine
+from common.llm.client import LlmResult
+from common.pipeline import NodeStatus
+from common.prompts_loader import PromptSpec
 
-from orchestrator.artifacts import ArtifactStore
-from orchestrator.config import Settings
-from orchestrator.engine import Engine
 from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
-from orchestrator.llm.client import LlmResult
 from orchestrator.nodes.code_review import SupportsComplete
-from orchestrator.pipeline import NodeStatus
-from orchestrator.prompts_loader import PromptSpec
 from orchestrator.runner import PipelineRunner, repository_inputs_from_config
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
@@ -550,7 +550,7 @@ async def test_runner_force_node_archives_old_artifacts(tmp_path: Path) -> None:
 
 async def test_runner_force_node_rejects_unknown_node(tmp_path: Path) -> None:
     """force-node 未知节点：X-ORCH-01 拒绝，不产生任何副作用。"""
-    from orchestrator.errors import PipelineError
+    from common.errors import PipelineError
 
     llm = StubLlm(_default_llm_scripts())
     runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)

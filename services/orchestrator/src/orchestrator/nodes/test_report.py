@@ -26,10 +26,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from orchestrator.artifacts import ArtifactStore
-from orchestrator.engine import Engine, JobState
-from orchestrator.errors import X_ORCH_01, PipelineError
-from orchestrator.pipeline import NODE_ORDER, NodeStatus
+from common.artifacts import ArtifactStore
+from common.engine import Engine, JobState
+from common.errors import X_ORCH_01, PipelineError
+from common.pipeline import NODE_ORDER, NodeStatus
 
 NODE_NAME = "test_report"
 

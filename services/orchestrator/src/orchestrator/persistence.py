@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
+from common.security import redact_secrets
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -31,8 +32,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Engine as SqlEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
-
-from orchestrator.security import redact_secrets
 
 
 def utc_now() -> datetime:

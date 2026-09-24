@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from orchestrator.artifacts import JOB_ID_RE
+from common.artifacts import JOB_ID_RE
 
 
 @dataclass(frozen=True)

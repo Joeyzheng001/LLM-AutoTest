@@ -35,7 +35,7 @@ def load_prompt(prompts_dir: Path, name: str) -> PromptSpec:
     Raises:
         PipelineError: X-LLM-03——文件缺失或元信息块不合规（配置错误，人工介入）。
     """
-    from orchestrator.errors import X_LLM_03, PipelineError
+    from common.errors import X_LLM_03, PipelineError
 
     path = prompts_dir / f"{name}.md"
     if not path.is_file():
@@ -118,7 +118,7 @@ _NODE_KNOWLEDGE: dict[str, tuple[str, ...]] = {
 
 def _load_node_knowledge(prompts_dir: Path, name: str) -> tuple[str, tuple[str, ...]]:
     """加载节点 Skill 与审核记忆；文件不存在视为配置错误，禁止静默退化。"""
-    from orchestrator.errors import X_LLM_03, PipelineError
+    from common.errors import X_LLM_03, PipelineError
 
     # 单元测试或外部最小 Prompt 包不带知识目录时保持旧加载器行为；
     # 正式 prompts 包一旦声明 knowledge 目录，就要求节点映射文件完整存在。

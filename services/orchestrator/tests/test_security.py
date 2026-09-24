@@ -7,9 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
-from cryptography.fernet import Fernet
-
-from orchestrator.security import (
+from common.security import (
     REDACTED,
     AccessPolicy,
     SecretStore,
@@ -17,6 +15,7 @@ from orchestrator.security import (
     redact_secrets,
     write_private_json,
 )
+from cryptography.fernet import Fernet
 
 
 def test_redact_secrets_copies_nested_sensitive_fields() -> None:
