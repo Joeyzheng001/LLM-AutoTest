@@ -3,6 +3,7 @@
 import type {
   ChangeScopeEntry,
   DefectEntry,
+  DiffPreviewResponse,
   ExecResult,
   ExecSummary,
   InterfaceCandidate,
@@ -145,9 +146,7 @@ export function verifyAuthentication(
 }
 
 /** 以极小无业务提示验证中转站协议、模型和凭据；不创建任务或保存模型正文。 */
-export function verifyLlmConnection(
-  llm?: LlmConfig,
-): Promise<LlmVerificationResponse> {
+export function verifyLlmConnection(llm?: LlmConfig): Promise<LlmVerificationResponse> {
   return request('/api/v1/llm/verify', {
     method: 'POST',
     body: JSON.stringify(llm ? { llm } : {}),
@@ -156,6 +155,20 @@ export function verifyLlmConnection(
 
 export function getRepositoryRoot(): Promise<{ root: string; exists: boolean }> {
   return request('/api/v1/system/repository-root')
+}
+
+/** 预览仓库「基线 → 当前」分支差异，不创建 job、不写产物。 */
+export function previewBranchDiff(payload: {
+  name: string
+  address: string
+  branch: string
+  baseline_branch: string
+  access_token?: string
+}): Promise<DiffPreviewResponse> {
+  return request('/api/v1/repos/diff-preview', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function getJobConfiguration(jobId: string): Promise<JobConfiguration> {

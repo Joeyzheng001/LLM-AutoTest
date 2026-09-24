@@ -12,12 +12,7 @@ import RequirementsView from './views/RequirementsView.vue'
 import TaskConfigView from './views/TaskConfigView.vue'
 import TestCasesView from './views/TestCasesView.vue'
 import TestReportView from './views/TestReportView.vue'
-import {
-  clearAccessContext,
-  getAccessContext,
-  getAccessMode,
-  setAccessContext,
-} from './api/client'
+import { clearAccessContext, getAccessContext, getAccessMode, setAccessContext } from './api/client'
 import { navigation } from './api/navigation'
 
 interface NavView {

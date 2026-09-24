@@ -54,7 +54,9 @@ const claimById = computed(() => {
   return new Map(claims.map((claim) => [claim.claim_id, claim]))
 })
 
-const evidenceById = computed(() => new Map(evidenceCatalog.value.map((item) => [item.evidence_id, item])))
+const evidenceById = computed(
+  () => new Map(evidenceCatalog.value.map((item) => [item.evidence_id, item])),
+)
 
 const evidenceText = computed(() => {
   return (mapping: ReviewMapping) => {
@@ -194,7 +196,9 @@ const uncoveredCount = computed(
         仓库扫描或代码证据提取范围不完整；“缺失”结论已自动降为“待核查”，请先补齐扫描范围再判断功能是否遗漏。
         <span v-if="scanCoverage.review_evidence_limited">本次代码证据提取触及系统上限。</span>
         <span v-if="scanCoverage.repositories.length">
-          未完整扫描：{{ scanCoverage.repositories.map((repo) => repo.repo || '未命名仓库').join('、') }}
+          未完整扫描：{{
+            scanCoverage.repositories.map((repo) => repo.repo || '未命名仓库').join('、')
+          }}
         </span>
       </div>
       <!-- 覆盖率口径：结构性说明（R-REVW-01），非前端计算数值 -->
@@ -220,63 +224,85 @@ const uncoveredCount = computed(
           </thead>
           <tbody>
             <template v-for="mapping in mappings" :key="mapping.requirement_id">
-            <tr>
-              <td>
-                <div class="req-cell">
-                  <span class="mono req-id">{{ mapping.requirement_id }}</span>
-                  <span class="req-title">{{ requirementTitle(mapping.requirement_id) }}</span>
-                </div>
-              </td>
-              <td>
-                <span class="mono">{{ mapping.interface_ids?.join('、') || mapping.interface_id || '—' }}</span>
-              </td>
-              <td>
-                <span class="mono loc">{{ evidenceText(mapping) || '—' }}</span>
-              </td>
-              <td>
-                <span class="tag" :data-status="mapping.status">
-                  {{ MAPPING_STATUS_LABELS[mapping.status] ?? mapping.status }}
-                </span>
-              </td>
-              <td>
-                <span class="mono loc">{{ mapping.evidence_quality ?? '—' }}</span>
-              </td>
-              <td>
-                <span class="mono">{{ formatConfidence(mapping.confidence) }}</span>
-              </td>
-            </tr>
-            <tr v-if="mapping.claim_assessments?.length" :key="`${mapping.requirement_id}-claims`" class="claim-detail-row">
-              <td colspan="6">
-                <details>
-                  <summary>逐条声明评审与代码证据（{{ mapping.claim_assessments.length }}）</summary>
-                  <article v-for="assessment in mapping.claim_assessments" :key="assessment.claim_id" class="claim-assessment">
-                    <header>
-                      <span class="mono req-id">{{ assessment.claim_id }}</span>
-                      <span class="tag" :data-status="assessment.status">
-                        {{ MAPPING_STATUS_LABELS[assessment.status] ?? assessment.status }}
-                      </span>
-                      <span v-if="assessment.interface_ids.length" class="mono loc">
-                        接口：{{ assessment.interface_ids.join('、') }}
-                      </span>
-                    </header>
-                    <p v-if="claimStatement(assessment.claim_id)" class="claim-statement">
-                      {{ claimStatement(assessment.claim_id) }}
-                    </p>
-                    <p v-if="assessment.met_conditions.length" class="assessment-positive">
-                      已支持：{{ assessment.met_conditions.join('；') }}
-                    </p>
-                    <p v-if="assessmentSummary(assessment)" class="assessment-caveat">
-                      缺口 / 待核查：{{ assessmentSummary(assessment) }}
-                    </p>
-                    <div v-for="ref in assessment.evidence_refs" :key="ref" class="evidence-reference">
-                      <div class="mono">{{ ref }} · {{ evidenceLocation(ref) }}</div>
-                      <pre v-if="evidenceExcerpt(ref)">{{ evidenceExcerpt(ref) }}</pre>
-                    </div>
-                    <p v-if="!assessment.evidence_refs.length" class="assessment-caveat">没有可引用的代码证据。</p>
-                  </article>
-                </details>
-              </td>
-            </tr>
+              <tr>
+                <td>
+                  <div class="req-cell">
+                    <span class="mono req-id">{{ mapping.requirement_id }}</span>
+                    <span class="req-title">{{ requirementTitle(mapping.requirement_id) }}</span>
+                  </div>
+                </td>
+                <td>
+                  <span class="mono">{{
+                    mapping.interface_ids?.join('、') || mapping.interface_id || '—'
+                  }}</span>
+                </td>
+                <td>
+                  <span class="mono loc">{{ evidenceText(mapping) || '—' }}</span>
+                </td>
+                <td>
+                  <span class="tag" :data-status="mapping.status">
+                    {{ MAPPING_STATUS_LABELS[mapping.status] ?? mapping.status }}
+                  </span>
+                </td>
+                <td>
+                  <span class="mono loc">{{ mapping.evidence_quality ?? '—' }}</span>
+                </td>
+                <td>
+                  <span class="mono">{{ formatConfidence(mapping.confidence) }}</span>
+                </td>
+              </tr>
+              <tr
+                v-if="mapping.claim_assessments?.length"
+                :key="`${mapping.requirement_id}-claims`"
+                class="claim-detail-row"
+              >
+                <td colspan="6">
+                  <details>
+                    <summary>
+                      逐条声明评审与代码证据（{{ mapping.claim_assessments.length }}）
+                    </summary>
+                    <article
+                      v-for="assessment in mapping.claim_assessments"
+                      :key="assessment.claim_id"
+                      class="claim-assessment"
+                    >
+                      <header>
+                        <span class="mono req-id">{{ assessment.claim_id }}</span>
+                        <span class="tag" :data-status="assessment.status">
+                          {{ MAPPING_STATUS_LABELS[assessment.status] ?? assessment.status }}
+                        </span>
+                        <span v-if="assessment.interface_ids.length" class="mono loc">
+                          接口：{{ assessment.interface_ids.join('、') }}
+                        </span>
+                      </header>
+                      <p v-if="claimStatement(assessment.claim_id)" class="claim-statement">
+                        {{ claimStatement(assessment.claim_id) }}
+                      </p>
+                      <p v-if="assessment.met_conditions.length" class="assessment-positive">
+                        已支持：{{ assessment.met_conditions.join('；') }}
+                      </p>
+                      <p v-if="assessmentSummary(assessment)" class="assessment-caveat">
+                        缺口 / 待核查：{{ assessmentSummary(assessment) }}
+                      </p>
+                      <div
+                        v-for="evidenceRef in assessment.evidence_refs"
+                        :key="evidenceRef"
+                        class="evidence-reference"
+                      >
+                        <div class="mono">
+                          {{ evidenceRef }} · {{ evidenceLocation(evidenceRef) }}
+                        </div>
+                        <pre v-if="evidenceExcerpt(evidenceRef)">{{
+                          evidenceExcerpt(evidenceRef)
+                        }}</pre>
+                      </div>
+                      <p v-if="!assessment.evidence_refs.length" class="assessment-caveat">
+                        没有可引用的代码证据。
+                      </p>
+                    </article>
+                  </details>
+                </td>
+              </tr>
             </template>
           </tbody>
         </table>

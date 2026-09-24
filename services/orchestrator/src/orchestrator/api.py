@@ -53,7 +53,7 @@ from orchestrator.object_storage import ObjectStorageError, build_object_storage
 from orchestrator.persistence import Database
 from orchestrator.pipeline import NODE_ORDER, PipelineState
 from orchestrator.prompts_loader import PromptSpec
-from orchestrator.repository_resolver import resolve_repository_inputs
+from orchestrator.repository_resolver import preview_branch_diff, resolve_repository_inputs
 from orchestrator.runner import PipelineOutcome, PipelineRunner
 from orchestrator.security import (
     AccessPolicy,
@@ -111,6 +111,16 @@ class RepoConfig(BaseModel):
     access_token: str | None = Field(default=None, max_length=512)
 
 
+class DiffPreviewRequest(BaseModel):
+    """分支差异预览请求：本地绝对路径或 Git 地址由服务端自动识别。"""
+
+    name: str
+    address: str
+    branch: str = "main"
+    baseline_branch: str | None = None
+    access_token: str | None = Field(default=None, max_length=512)
+
+
 class DocInput(BaseModel):
     """单份需求文档（C-10 多文档；名称 + base64 内容）。"""
 
@@ -160,7 +170,7 @@ class AuthConfig(BaseModel):
     password_field: str = Field(
         default="password", pattern=r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
     )
-    password_transform: Literal["plain", "base64_shift_2"] = "plain"
+    password_transform: Literal["plain", "base64_shift_2"] = "plain"  # noqa: S105
     # auto 仅识别 C-15 列明的有限路径；自定义值为 dotted path，如 data.accessToken。
     token_path: str = Field(
         default="auto", pattern=r"^(auto|[A-Za-z_][A-Za-z0-9_.-]{0,127})$"
@@ -266,7 +276,7 @@ class EditableAuthConfig(BaseModel):
     password_field: str = Field(
         default="password", pattern=r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
     )
-    password_transform: Literal["plain", "base64_shift_2"] = "plain"
+    password_transform: Literal["plain", "base64_shift_2"] = "plain"  # noqa: S105
     token_path: str = Field(
         default="auto", pattern=r"^(auto|[A-Za-z_][A-Za-z0-9_.-]{0,127})$"
     )
@@ -628,7 +638,9 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
     @app.middleware("http")
     async def _access_control(request: Request, call_next: Any) -> Any:
         """可选部门令牌校验；健康检查和本地兼容模式不受影响。"""
-        if request.url.path.startswith("/api/v1/") and request.url.path != "/api/v1/system/access-mode":
+        is_api_path = request.url.path.startswith("/api/v1/")
+        is_access_mode = request.url.path == "/api/v1/system/access-mode"
+        if is_api_path and not is_access_mode:
             principal = app.state.access_policy.authenticate(request.headers)
             if principal is None:
                 return JSONResponse(status_code=401, content={"detail": "访问令牌无效或缺失"})
@@ -932,6 +944,34 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "ready": all(item["status"] in {"ok", "skipped"} for item in checks),
             "checks": checks,
         }
+
+    @app.post("/api/v1/repos/diff-preview")
+    async def preview_repo_diff(
+        request: DiffPreviewRequest, http_request: Request
+    ) -> dict[str, Any]:
+        """预览仓库「基线 → 当前」分支差异，不创建 job、不写产物。"""
+        _request_scope(app, http_request)
+        address = request.address.strip()
+        if not address:
+            raise HTTPException(status_code=400, detail="仓库地址不能为空")
+        is_git = re.match(r"^(https?|ssh|git|file)://", address) is not None or address.startswith(
+            "git@"
+        )
+        repo: dict[str, Any] = {
+            "name": request.name.strip(),
+            "source": "git" if is_git else "local",
+            "path": address if not is_git else "",
+            "remote_url": address if is_git else None,
+            "branch": request.branch.strip() or "main",
+            "baseline_branch": (request.baseline_branch or "").strip() or None,
+        }
+        result = await asyncio.to_thread(
+            preview_branch_diff,
+            repo,
+            cache_root=Path(settings.artifacts_root),
+            access_token=request.access_token or None,
+        )
+        return result
 
     @app.get("/api/v1/pipeline/nodes")
     async def list_nodes() -> dict[str, object]:

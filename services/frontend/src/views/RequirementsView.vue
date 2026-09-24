@@ -14,7 +14,9 @@ const props = defineProps<{ initialJobId?: string }>()
 const items = ref<RequirementItem[]>([])
 const sourceFiles = ref<string[]>([])
 const sourceCatalog = ref<RequirementSource[]>([])
-const sourceById = computed(() => new Map(sourceCatalog.value.map((source) => [source.source_id, source])))
+const sourceById = computed(
+  () => new Map(sourceCatalog.value.map((source) => [source.source_id, source])),
+)
 const review = ref<RequirementReview | null>(null)
 const reviewNote = ref('')
 const loading = ref(false)
@@ -172,16 +174,18 @@ watch(_jobId, () => void load())
               <b>{{ issue.question }}</b>
               <p>{{ issue.location }} · {{ issue.reason }} · 影响：{{ issue.impact }}</p>
               <p v-if="issue.claim_ids?.length || issue.source_refs?.length" class="issue-trace">
-                <span v-if="issue.claim_ids?.length">关联声明：{{ issue.claim_ids.join('、') }}</span>
+                <span v-if="issue.claim_ids?.length"
+                  >关联声明：{{ issue.claim_ids.join('、') }}</span
+                >
                 <span v-if="issue.source_refs?.length">
                   原文来源：{{ issue.source_refs.map((ref) => sourceText(ref)).join('；') }}
                 </span>
               </p>
-              <template v-for="ref in issue.source_refs ?? []" :key="ref">
-                <blockquote v-if="sourceExcerpt(ref)" class="issue-source-excerpt">
-                  {{ sourceExcerpt(ref) }}
+              <template v-for="sourceRef in issue.source_refs ?? []" :key="sourceRef">
+                <blockquote v-if="sourceExcerpt(sourceRef)" class="issue-source-excerpt">
+                  {{ sourceExcerpt(sourceRef) }}
                 </blockquote>
-                <small v-if="sourceExcerptTruncated(ref)" class="excerpt-note">
+                <small v-if="sourceExcerptTruncated(sourceRef)" class="excerpt-note">
                   原文较长，当前仅展示前 600 字。
                 </small>
               </template>
@@ -258,12 +262,22 @@ watch(_jobId, () => void load())
                     </header>
                     <p>{{ claim.statement }}</p>
                     <ul v-if="claim.acceptance_criteria?.length">
-                      <li v-for="criterion in claim.acceptance_criteria" :key="criterion">{{ criterion }}</li>
+                      <li v-for="criterion in claim.acceptance_criteria" :key="criterion">
+                        {{ criterion }}
+                      </li>
                     </ul>
-                    <div v-for="ref in claim.source_refs ?? item.source_refs ?? []" :key="ref" class="source-ref">
-                      <span class="mono">{{ sourceText(ref) }}</span>
-                      <blockquote v-if="sourceExcerpt(ref)">{{ sourceExcerpt(ref) }}</blockquote>
-                      <small v-if="sourceExcerptTruncated(ref)">原文较长，当前仅展示前 600 字；原文仍以来源文档为准。</small>
+                    <div
+                      v-for="sourceRef in claim.source_refs ?? item.source_refs ?? []"
+                      :key="sourceRef"
+                      class="source-ref"
+                    >
+                      <span class="mono">{{ sourceText(sourceRef) }}</span>
+                      <blockquote v-if="sourceExcerpt(sourceRef)">
+                        {{ sourceExcerpt(sourceRef) }}
+                      </blockquote>
+                      <small v-if="sourceExcerptTruncated(sourceRef)"
+                        >原文较长，当前仅展示前 600 字；原文仍以来源文档为准。</small
+                      >
                     </div>
                   </article>
                 </details>

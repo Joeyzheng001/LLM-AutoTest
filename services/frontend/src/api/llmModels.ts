@@ -23,9 +23,21 @@ export interface LlmModelGroup {
 export const DEFAULT_RELAY_MODEL = 'deepseek-reasoner-code'
 
 export const LLM_PROTOCOL_OPTIONS: Array<{ value: LlmProtocol; label: string; hint: string }> = [
-  { value: 'openai-chat', label: 'OpenAI · Chat Completions', hint: 'POST /v1/chat/completions · Bearer Key' },
-  { value: 'openai-responses', label: 'OpenAI · Responses', hint: 'POST /v1/responses · Bearer Key' },
-  { value: 'anthropic-messages', label: 'Anthropic · Messages', hint: 'POST /v1/messages · x-api-key' },
+  {
+    value: 'openai-chat',
+    label: 'OpenAI · Chat Completions',
+    hint: 'POST /v1/chat/completions · Bearer Key',
+  },
+  {
+    value: 'openai-responses',
+    label: 'OpenAI · Responses',
+    hint: 'POST /v1/responses · Bearer Key',
+  },
+  {
+    value: 'anthropic-messages',
+    label: 'Anthropic · Messages',
+    hint: 'POST /v1/messages · x-api-key',
+  },
 ]
 
 export const LLM_MODEL_GROUPS: LlmModelGroup[] = [
@@ -42,7 +54,11 @@ export const LLM_MODEL_GROUPS: LlmModelGroup[] = [
       { value: 'cloud/claude-5-opus', label: 'Claude 5 Opus（中转站）', capability: 'text' },
       { value: 'cloud/claude-5-fable', label: 'Claude 5 Fable（中转站）', capability: 'text' },
       { value: 'cloud/gpt-5.6-sol', label: 'GPT 5.6 Sol（中转站）', capability: 'text' },
-      { value: 'cloud/gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview（中转站）', capability: 'multimodal' },
+      {
+        value: 'cloud/gemini-3.1-pro-preview',
+        label: 'Gemini 3.1 Pro Preview（中转站）',
+        capability: 'multimodal',
+      },
     ],
   },
   {

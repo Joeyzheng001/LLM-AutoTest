@@ -8,6 +8,7 @@ import {
   getJobConfiguration,
   getRepositoryRoot,
   preflightJob,
+  previewBranchDiff,
   submitJob,
   updateJobConfiguration,
   verifyAuthentication,
@@ -21,15 +22,24 @@ import {
   isKnownLlmModel,
   llmModelWarning,
 } from '../api/llmModels'
-import type { FixtureStep, JobConfigurationUpdatePayload, JobSubmitPayload } from '../api/types'
+import type {
+  DiffPreviewResponse,
+  FixtureStep,
+  JobConfigurationUpdatePayload,
+  JobSubmitPayload,
+} from '../api/types'
 
 const props = defineProps<{ initialJobId?: string }>()
 
+interface DiffPreviewState {
+  loading: boolean
+  result: DiffPreviewResponse | null
+  error: string
+}
+
 interface RepoRow {
   name: string
-  source: 'local' | 'git'
-  path: string
-  remoteUrl: string
+  address: string // 统一仓库地址：本地绝对路径 或 Git 地址（提交时自动识别 source）
   serviceBaseUrl: string
   branch: string
   commit: string
@@ -38,6 +48,7 @@ interface RepoRow {
   accessTokenConfigured: boolean
   language: 'java' | 'python' // C-13：仓库语言（扫描器分流）
   isFallback: boolean
+  diffPreview: DiffPreviewState | null // 分支差异预览（仅前端状态，不提交）
 }
 
 // 每行是一对需求版本：被测版本必填，基线版本可选；单版本保持原文处理。
@@ -103,6 +114,8 @@ const e2e = reactive({
 const fixturesJson = ref('')
 const fixturePlaceholder =
   '[{"name":"seed-user","phase":"setup","method":"POST","path":"/fixtures/users","body":{"id":1},"expected":"status=201","required":true}]'
+const responseHeaderPathsPlaceholder =
+  '{"usertoken":"body.token","userid":"body.userId","username":"body.userName"}'
 
 onMounted(() => {
   void loadRepositoryRoot()
@@ -112,7 +125,12 @@ onMounted(() => {
     const config = saved as Record<string, unknown>
     if (typeof config.model === 'string') llm.model = config.model
     if (typeof config.baseUrl === 'string') llm.baseUrl = config.baseUrl
-    if (config.protocol === 'openai-chat' || config.protocol === 'openai-responses' || config.protocol === 'anthropic-messages') llm.protocol = config.protocol
+    if (
+      config.protocol === 'openai-chat' ||
+      config.protocol === 'openai-responses' ||
+      config.protocol === 'anthropic-messages'
+    )
+      llm.protocol = config.protocol
     if (typeof config.maxTokens === 'number') llm.maxTokens = config.maxTokens
     // 兼容并清理旧版本曾写入 localStorage 的 API Key；从此不再恢复或重新保存。
     if ('apiKey' in config) {
@@ -162,9 +180,10 @@ function saveDraft(): void {
       JSON.stringify({
         form: { ...form },
         repos: repos.map((repo) => {
-          const { accessToken, accessTokenConfigured, ...safeRepo } = repo
+          const { accessToken, accessTokenConfigured, diffPreview, ...safeRepo } = repo
           void accessToken
           void accessTokenConfigured
+          void diffPreview
           return safeRepo
         }),
         auth: {
@@ -179,7 +198,12 @@ function saveDraft(): void {
           responseHeaderPathsJson: auth.responseHeaderPathsJson,
         },
         authEnabled: authEnabled.value,
-        llm: { model: llm.model, baseUrl: llm.baseUrl, protocol: llm.protocol, maxTokens: llm.maxTokens },
+        llm: {
+          model: llm.model,
+          baseUrl: llm.baseUrl,
+          protocol: llm.protocol,
+          maxTokens: llm.maxTokens,
+        },
         llmEnabled: llmEnabled.value,
         e2e: { ...e2e },
         e2eEnabled: e2eEnabled.value,
@@ -208,6 +232,7 @@ function restoreDraft(): void {
           ...(repo as RepoRow),
           accessToken: '',
           accessTokenConfigured: false,
+          diffPreview: null,
         })),
       )
     }
@@ -231,9 +256,7 @@ const documentRows = reactive<VersionDocRow[]>([{ target: null, baseline: null }
 const repos = reactive<RepoRow[]>([
   {
     name: 'user-service',
-    source: 'local',
-    path: '',
-    remoteUrl: '',
+    address: '',
     serviceBaseUrl: '',
     branch: 'main',
     commit: '',
@@ -242,20 +265,7 @@ const repos = reactive<RepoRow[]>([
     accessTokenConfigured: false,
     language: 'java',
     isFallback: false,
-  },
-  {
-    name: 'order-center',
-    source: 'local',
-    path: '',
-    remoteUrl: '',
-    serviceBaseUrl: '',
-    branch: 'main',
-    commit: '',
-    baselineBranch: '',
-    accessToken: '',
-    accessTokenConfigured: false,
-    language: 'java',
-    isFallback: false,
+    diffPreview: null,
   },
 ])
 
@@ -275,7 +285,7 @@ const preflightResult = ref<{
 const activeStep = ref('documents')
 
 const configSteps = [
-  { id: 'documents', label: '需求与仓库', hint: '文档版本、源码来源' },
+  { id: 'documents', label: '需求与仓库', hint: '文档版本、仓库地址' },
   { id: 'environment', label: '被测系统', hint: 'REST 地址、登录、E2E 页面' },
   { id: 'credentials', label: '模型配置', hint: '中转站与输出设置' },
   { id: 'confirm', label: '确认提交', hint: '校验并启动' },
@@ -291,9 +301,7 @@ function goToStep(stepId: string): void {
 function addRepo(): void {
   repos.push({
     name: '',
-    source: 'local',
-    path: '',
-    remoteUrl: '',
+    address: '',
     serviceBaseUrl: '',
     branch: 'main',
     commit: '',
@@ -302,11 +310,40 @@ function addRepo(): void {
     accessTokenConfigured: false,
     language: 'java',
     isFallback: false,
+    diffPreview: null,
   })
 }
 
 function removeRepo(index: number): void {
   repos.splice(index, 1)
+}
+
+async function previewDiff(index: number): Promise<void> {
+  const row = repos[index]
+  if (!row) return
+  const address = row.address.trim()
+  const baseline = row.baselineBranch.trim()
+  if (!address || !baseline) {
+    row.diffPreview = { loading: false, result: null, error: '请先填写仓库地址和基线分支' }
+    return
+  }
+  row.diffPreview = { loading: true, result: null, error: '' }
+  try {
+    const result = await previewBranchDiff({
+      name: row.name.trim() || address,
+      address,
+      branch: row.branch.trim() || 'main',
+      baseline_branch: baseline,
+      ...(row.accessToken.trim() ? { access_token: row.accessToken.trim() } : {}),
+    })
+    row.diffPreview = { loading: false, result, error: result.error || '' }
+  } catch (error) {
+    row.diffPreview = {
+      loading: false,
+      result: null,
+      error: error instanceof Error ? error.message : '预览失败',
+    }
+  }
 }
 
 function addDocumentRow(): void {
@@ -320,6 +357,13 @@ function removeDocumentRow(index: number): void {
 function isAbsoluteRepositoryPath(value: string): boolean {
   // POSIX / macOS / Linux，Windows 盘符路径，以及 UNC 网络共享路径。
   return /^(\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/.test(value.trim())
+}
+
+function classifyRepoSource(value: string): 'git' | 'local' {
+  // 与后端契约一致：明确的 Git URL / scp-like 地址判为 git，否则按本地绝对路径处理。
+  const v = value.trim()
+  if (/^(https?|ssh|git|file):\/\//.test(v) || v.startsWith('git@')) return 'git'
+  return 'local'
 }
 
 function parseResponseHeaderPaths(): Record<string, string> {
@@ -400,7 +444,8 @@ async function verifyLlmBeforeSave(): Promise<void> {
     llmVerificationOk.value = true
     llmVerificationMessage.value = `中转站可用 · ${result.protocol} · ${result.model} · ${result.duration_ms}ms${result.tokens == null ? '' : ` · ${result.tokens} tokens`}`
   } catch (err) {
-    llmVerificationMessage.value = err instanceof Error ? `中转站不可用：${err.message}` : '中转站不可用'
+    llmVerificationMessage.value =
+      err instanceof Error ? `中转站不可用：${err.message}` : '中转站不可用'
   } finally {
     verifyingLlm.value = false
   }
@@ -409,15 +454,18 @@ async function verifyLlmBeforeSave(): Promise<void> {
 const reposValid = computed(
   () =>
     repos.length >= 1 &&
-    repos.every(
-      (row) =>
+    repos.every((row) => {
+      const address = row.address.trim()
+      const isGit = classifyRepoSource(address) === 'git'
+      return (
         row.name.trim() !== '' &&
+        address !== '' &&
         (!row.serviceBaseUrl.trim() || /^https?:\/\//.test(row.serviceBaseUrl.trim())) &&
-        (row.source === 'git'
-          ? /^(https?|ssh|git|file):\/\//.test(row.remoteUrl.trim()) ||
-            row.remoteUrl.trim().startsWith('git@')
-          : isAbsoluteRepositoryPath(row.path)),
-    ),
+        (isGit
+          ? /^(https?|ssh|git|file):\/\//.test(address) || address.startsWith('git@')
+          : isAbsoluteRepositoryPath(address))
+      )
+    }),
 )
 
 const documentsValid = computed(
@@ -542,7 +590,7 @@ const formInvalidReasons = computed(() => {
   if (!documentsValid.value) {
     reasons.push('每行至少选择一份被测版本需求文档')
   }
-  if (!reposValid.value) reasons.push('补全仓库名称、源码来源和可选接口服务地址')
+  if (!reposValid.value) reasons.push('每个仓库需填写名称和仓库地址')
   if (!restValid.value) reasons.push('填写合法的 REST 服务地址')
   if (!authValid.value) reasons.push('补全鉴权地址、用户名和密码')
   if (!llmValid.value) {
@@ -592,9 +640,7 @@ async function loadConfiguration(jobId: string): Promise<void> {
       repos.length,
       ...config.repos.map((repo) => ({
         name: repo.name,
-        source: repo.source || 'local',
-        path: repo.path,
-        remoteUrl: repo.remote_url || '',
+        address: repo.source === 'git' ? repo.remote_url || '' : repo.path,
         serviceBaseUrl: repo.service_base_url || '',
         branch: repo.branch || 'main',
         commit: repo.commit || '',
@@ -603,6 +649,7 @@ async function loadConfiguration(jobId: string): Promise<void> {
         accessTokenConfigured: repo.access_token_configured ?? false,
         language: repo.language || 'java',
         isFallback: repo.is_fallback,
+        diffPreview: null,
       })),
     )
     authEnabled.value = config.auth !== null
@@ -705,21 +752,25 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
   const payload: JobSubmitPayload = {
     docs: [],
     ...(documentPairs.length ? { document_pairs: documentPairs } : {}),
-    repos: repos.map((row) => ({
-      name: row.name.trim(),
-      source: row.source,
-      path: row.source === 'local' ? row.path.trim() : '',
-      ...(row.source === 'git' ? { remote_url: row.remoteUrl.trim() } : {}),
-      ...(row.serviceBaseUrl.trim() ? { service_base_url: row.serviceBaseUrl.trim() } : {}),
-      branch: row.branch.trim() || 'main',
-      ...(row.commit.trim() ? { commit: row.commit.trim() } : {}),
-      // C-09：基线分支可选（空 = 不比对；非空 → code_review 派生变更范围视图）
-      ...(row.baselineBranch.trim() ? { baseline_branch: row.baselineBranch.trim() } : {}),
-      is_fallback: row.isFallback,
-      // C-13：仓库语言（java → java-parser；python → 内置 AST 扫描 Django/FastAPI/Flask）
-      language: row.language,
-      ...(row.accessToken.trim() ? { access_token: row.accessToken.trim() } : {}),
-    })),
+    repos: repos.map((row) => {
+      const address = row.address.trim()
+      const isGit = classifyRepoSource(address) === 'git'
+      return {
+        name: row.name.trim(),
+        source: isGit ? 'git' : 'local',
+        path: isGit ? '' : address,
+        ...(isGit ? { remote_url: address } : {}),
+        ...(row.serviceBaseUrl.trim() ? { service_base_url: row.serviceBaseUrl.trim() } : {}),
+        branch: row.branch.trim() || 'main',
+        ...(row.commit.trim() ? { commit: row.commit.trim() } : {}),
+        // C-09：基线分支可选（空 = 不比对；非空 → code_review 派生变更范围视图）
+        ...(row.baselineBranch.trim() ? { baseline_branch: row.baselineBranch.trim() } : {}),
+        is_fallback: row.isFallback,
+        // C-13：仓库语言（java → java-parser；python → 内置 AST 扫描 Django/FastAPI/Flask）
+        language: row.language,
+        ...(row.accessToken.trim() ? { access_token: row.accessToken.trim() } : {}),
+      }
+    }),
     rest_url: form.restUrl.trim(),
     rest_insecure_tls: restInsecureTls.value,
     resume: form.resume,
@@ -916,8 +967,10 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           </label>
           <p class="field-help">
             接口用例会将接口路径拼到此地址后发送请求。例如基础地址为
-            <code>https://test.example.com</code>、接口路径为 <code>/api/orders/</code>，完整请求地址就是
-            <code>https://test.example.com/api/orders/</code>。这不是浏览器页面地址，也不是登录接口地址。
+            <code>https://test.example.com</code>、接口路径为
+            <code>/api/orders/</code>，完整请求地址就是
+            <code>https://test.example.com/api/orders/</code
+            >。这不是浏览器页面地址，也不是登录接口地址。
           </p>
           <p v-if="!restValid" class="field-error" role="status">
             请输入以 http:// 或 https:// 开头的被测服务地址。
@@ -927,7 +980,8 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             <span>跳过接口 HTTPS 证书校验（测试环境自签名证书）</span>
           </label>
           <p class="switch-note">
-            此设置用于接口连通性探测、接口用例执行和缺陷复测；登录验证与 E2E 浏览器各自使用独立的证书设置。
+            此设置用于接口连通性探测、接口用例执行和缺陷复测；登录验证与 E2E
+            浏览器各自使用独立的证书设置。
           </p>
         </div>
 
@@ -939,7 +993,8 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           </label>
           <template v-if="authEnabled">
             <p class="field-help">
-              配置一次账号。接口测试通过登录接口取得 Token 或 Cookie；E2E 可复用同源会话，也可让浏览器按用例步骤登录。
+              配置一次账号。接口测试通过登录接口取得 Token 或 Cookie；E2E
+              可复用同源会话，也可让浏览器按用例步骤登录。
             </p>
             <label class="field">
               <span class="field-label">登录接口地址（POST）</span>
@@ -986,12 +1041,18 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                   <span class="field-label">密码提交方式</span>
                   <select v-model="auth.passwordTransform">
                     <option value="plain">原样提交（默认）</option>
-                    <option value="base64_shift_2">Base64 编码后字符偏移 2（兼容历史登录页）</option>
+                    <option value="base64_shift_2">
+                      Base64 编码后字符偏移 2（兼容历史登录页）
+                    </option>
                   </select>
                 </label>
                 <label class="field">
                   <span class="field-label">Token 路径</span>
-                  <input v-model="auth.tokenPath" class="mono" placeholder="auto 或 data.accessToken" />
+                  <input
+                    v-model="auth.tokenPath"
+                    class="mono"
+                    placeholder="auto 或 data.accessToken"
+                  />
                 </label>
                 <label class="field">
                   <span class="field-label">Token 注入格式</span>
@@ -1008,14 +1069,16 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                   v-model="auth.responseHeaderPathsJson"
                   class="mono"
                   rows="3"
-                  placeholder='{"usertoken":"body.token","userid":"body.userId","username":"body.userName"}'
+                  :placeholder="responseHeaderPathsPlaceholder"
                   spellcheck="false"
                 />
               </label>
               <p class="switch-note">
-                当前接口如请求体为 <code>{ userName, password }</code>，请将“用户名字段”改为 <code>userName</code>。
-                若登录页抓包中的密码与输入值不同，请选择对应的密码提交方式；若仍无法自动识别，请根据登录响应填写如 <code>body.token</code> 的路径。
-                若后续接口不使用标准 Authorization，可填写响应字段到请求头的映射。
+                当前接口如请求体为 <code>{ userName, password }</code>，请将“用户名字段”改为
+                <code>userName</code>。
+                若登录页抓包中的密码与输入值不同，请选择对应的密码提交方式；若仍无法自动识别，请根据登录响应填写如
+                <code>body.token</code> 的路径。 若后续接口不使用标准
+                Authorization，可填写响应字段到请求头的映射。
               </p>
             </details>
             <label class="switch-row">
@@ -1041,13 +1104,16 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               </span>
             </div>
             <p v-if="!authValid" class="field-error">
-              开启登录后，登录接口地址须为 http(s)，用户名和密码必填；字段名只能包含字母、数字、下划线、点或短横线，且用户名字段与密码字段不能相同。响应字段映射须为合法 JSON 对象。
+              开启登录后，登录接口地址须为
+              http(s)，用户名和密码必填；字段名只能包含字母、数字、下划线、点或短横线，且用户名字段与密码字段不能相同。响应字段映射须为合法
+              JSON 对象。
             </p>
             <p v-if="editingJobId && !auth.password && existingAuthPassword" class="switch-note">
               密码不会回传；留空会保留当前任务中已加密保存的密码。
             </p>
             <p class="switch-note">
-              登录会话由服务端暂存并用于后续执行；密码不会显示或回传到浏览器。接口测试使用登录接口返回的会话；E2E 是否复用该会话由下方登录方式决定。
+              登录会话由服务端暂存并用于后续执行；密码不会显示或回传到浏览器。接口测试使用登录接口返回的会话；E2E
+              是否复用该会话由下方登录方式决定。
             </p>
           </template>
           <p v-else class="field-help">关闭后，接口用例和 E2E 用例都按未登录状态访问。</p>
@@ -1084,11 +1150,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                 <span>生成 E2E 测试用例</span>
               </label>
               <label class="switch-row">
-                <input
-                  v-model="e2e.executeCases"
-                  type="checkbox"
-                  :disabled="!e2e.generateCases"
-                />
+                <input v-model="e2e.executeCases" type="checkbox" :disabled="!e2e.generateCases" />
                 <span>执行 E2E 用例（Playwright）</span>
               </label>
               <label class="switch-row">
@@ -1130,128 +1192,180 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         </div>
       </section>
 
-      <!-- 被测仓库（本地目录或内部 Git；远程检出后进入版本化缓存） -->
+      <!-- 被测仓库（本地目录或 Git 地址；填基线分支后 git diff 拿差异代码） -->
       <section class="field-group">
         <header class="group-title">
           被测仓库
-          <span class="group-note"
-            >至少 1 个；填写部署服务器已挂载的目录，或填写内部 Git 地址按分支/提交检出；访问令牌只加密保存</span
-          >
+          <span class="group-note">填本地目录或 Git 地址，按分支对比拿差异代码</span>
         </header>
         <p class="switch-note repo-location-note">
-          “部署服务器目录”由运行服务直接读取，不会从当前浏览器上传任何源码。当前服务允许的目录根为
-          <code>{{ repositoryRoot }}</code>；若源码仅在你的电脑上，请选择“内部 Git”。
+          填部署服务器已挂载的本地绝对路径，或内部 Git 地址；填「基线分支」后，系统会 git diff
+          拿差异代码，只分析改动部分。当前服务允许的目录根为 <code>{{ repositoryRoot }}</code
+          >。
         </p>
 
-        <div class="repo-head">
-          <span>仓库名</span><span>来源</span><span>服务器目录 / Git 地址</span><span>语言</span
-          ><span>分支</span><span>提交号</span><span>基线分支</span><span>令牌</span
-          ><span>兜底</span><span />
-        </div>
-
-        <div v-for="(row, index) in repos" :key="index" class="repo-row">
-          <input
-            v-model="row.name"
-            type="text"
-            class="mono"
-            placeholder="user-service"
-            :aria-label="`仓库 ${index + 1} 名称`"
-          />
-          <select v-model="row.source" class="repo-source" :aria-label="`仓库 ${index + 1} 来源`">
-            <option value="local">部署服务器目录</option>
-            <option value="git">内部 Git</option>
-          </select>
-          <div class="repo-path-picker">
+        <div v-for="(row, index) in repos" :key="index" class="repo-card">
+          <div class="repo-card-head">
             <input
-              v-if="row.source === 'local'"
-              v-model="row.path"
+              v-model="row.name"
+              type="text"
+              class="mono repo-name"
+              placeholder="仓库名，如 user-service"
+              :aria-label="`仓库 ${index + 1} 名称`"
+            />
+            <button
+              class="icon-btn"
+              type="button"
+              :disabled="repos.length <= 1"
+              @click="removeRepo(index)"
+            >
+              移除
+            </button>
+          </div>
+
+          <label class="field">
+            <span class="field-label">仓库地址（本地绝对路径 或 Git 地址）</span>
+            <input
+              v-model="row.address"
               type="text"
               class="mono"
-              placeholder="例如 /opt/repos/user-service 或 C:\\repos\\user-service"
-              :aria-label="`仓库 ${index + 1} 部署服务器目录`"
-            />
-            <input
-              v-else
-              v-model="row.remoteUrl"
-              type="url"
-              class="mono"
-              placeholder="https://git.example.com/team/service.git"
-              :aria-label="`仓库 ${index + 1} Git 地址`"
-            />
-          </div>
-          <select
-            v-model="row.language"
-            class="mono repo-language"
-            :aria-label="`仓库 ${index + 1} 语言`"
-          >
-            <option value="java">Java</option>
-            <option value="python">Python</option>
-          </select>
-          <input
-            v-model="row.branch"
-            type="text"
-            class="mono"
-            placeholder="main"
-            :aria-label="`仓库 ${index + 1} 分支`"
-          />
-          <input
-            v-model="row.commit"
-            type="text"
-            class="mono repo-commit"
-            placeholder="提交号（可选）"
-            :aria-label="`仓库 ${index + 1} 提交号`"
-          />
-          <input
-            v-model="row.baselineBranch"
-            type="text"
-            class="mono"
-            placeholder="可选，如 main"
-            :aria-label="`仓库 ${index + 1} 基线分支`"
-          />
-          <input
-            v-if="row.source === 'git'"
-            v-model="row.accessToken"
-            type="password"
-            class="mono repo-token"
-            :placeholder="row.accessTokenConfigured ? '已配置，留空复用' : '访问令牌（可选）'"
-            :aria-label="`仓库 ${index + 1} 访问令牌`"
-          />
-          <span v-else class="repo-token-placeholder" aria-hidden="true" />
-          <input
-            v-model="row.isFallback"
-            type="checkbox"
-            :aria-label="`仓库 ${index + 1} 兜底标记`"
-          />
-          <button
-            class="icon-btn"
-            type="button"
-            :disabled="repos.length <= 1"
-            @click="removeRepo(index)"
-          >
-            移除
-          </button>
-          <label class="repo-service-field">
-            <span>接口服务地址（可选）</span>
-            <input
-              v-model="row.serviceBaseUrl"
-              type="url"
-              class="mono"
-              placeholder="http://127.0.0.1:9000（留空使用任务级 REST 地址）"
-              :aria-label="`仓库 ${index + 1} 接口服务地址（可选）`"
+              placeholder="git@git.htffund.com/team/service.git  或  /opt/repos/service"
+              :aria-label="`仓库 ${index + 1} 地址`"
             />
           </label>
+
+          <div class="diff-branch-panel">
+            <div class="diff-branch-title">对比分支</div>
+            <p class="diff-branch-hint">
+              填「基线分支」后系统执行 git diff 拿差异代码，只分析改动部分；留空则扫描全仓
+            </p>
+            <div class="two-col">
+              <label class="field">
+                <span class="field-label">当前分支（被测）</span>
+                <input
+                  v-model="row.branch"
+                  type="text"
+                  class="mono"
+                  placeholder="feature/xxx"
+                  :aria-label="`仓库 ${index + 1} 当前分支`"
+                />
+              </label>
+              <label class="field">
+                <span class="field-label">基线分支（对比基准，可选）</span>
+                <input
+                  v-model="row.baselineBranch"
+                  type="text"
+                  class="mono"
+                  placeholder="main / master"
+                  :aria-label="`仓库 ${index + 1} 基线分支`"
+                />
+              </label>
+            </div>
+            <button
+              type="button"
+              class="ghost-btn diff-preview-btn"
+              :disabled="row.diffPreview?.loading"
+              @click="previewDiff(index)"
+            >
+              {{ row.diffPreview?.loading ? '对比中…' : '预览差异' }}
+            </button>
+            <p v-if="row.diffPreview?.error" class="diff-preview-error">
+              {{ row.diffPreview.error }}
+            </p>
+            <div v-else-if="row.diffPreview?.result" class="diff-preview-result">
+              <div class="diff-preview-summary">
+                对比 {{ row.diffPreview.result.baseline }}…{{ row.diffPreview.result.target }}：新增
+                {{ row.diffPreview.result.added.length }} · 修改
+                {{ row.diffPreview.result.modified.length }} · 删除
+                {{ row.diffPreview.result.removed.length }}
+              </div>
+              <ul v-if="row.diffPreview.result.added.length" class="diff-file-list">
+                <li
+                  v-for="f in row.diffPreview.result.added.slice(0, 50)"
+                  :key="f"
+                  class="diff-file added"
+                >
+                  {{ f }}
+                </li>
+              </ul>
+              <ul v-if="row.diffPreview.result.modified.length" class="diff-file-list">
+                <li
+                  v-for="f in row.diffPreview.result.modified.slice(0, 50)"
+                  :key="f"
+                  class="diff-file modified"
+                >
+                  {{ f }}
+                </li>
+              </ul>
+              <ul v-if="row.diffPreview.result.removed.length" class="diff-file-list">
+                <li
+                  v-for="f in row.diffPreview.result.removed.slice(0, 50)"
+                  :key="f"
+                  class="diff-file removed"
+                >
+                  {{ f }}
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <details class="repo-advanced">
+            <summary>高级设置（语言 · 提交号 · 访问令牌 · 兜底 · 接口服务地址）</summary>
+            <div class="repo-advanced-grid">
+              <label class="field">
+                <span class="field-label">语言</span>
+                <select v-model="row.language" class="mono" :aria-label="`仓库 ${index + 1} 语言`">
+                  <option value="java">Java</option>
+                  <option value="python">Python</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">提交号（可选）</span>
+                <input
+                  v-model="row.commit"
+                  type="text"
+                  class="mono"
+                  placeholder="固定版本复跑"
+                  :aria-label="`仓库 ${index + 1} 提交号`"
+                />
+              </label>
+              <label class="field">
+                <span class="field-label">访问令牌（可选）</span>
+                <input
+                  v-model="row.accessToken"
+                  type="password"
+                  class="mono"
+                  :placeholder="row.accessTokenConfigured ? '已配置，留空复用' : '访问令牌（可选）'"
+                  :aria-label="`仓库 ${index + 1} 访问令牌`"
+                />
+              </label>
+              <label class="field">
+                <span class="field-label">接口服务地址（可选）</span>
+                <input
+                  v-model="row.serviceBaseUrl"
+                  type="url"
+                  class="mono"
+                  placeholder="http://127.0.0.1:9000（留空使用任务级 REST 地址）"
+                  :aria-label="`仓库 ${index + 1} 接口服务地址（可选）`"
+                />
+              </label>
+              <label class="switch-row repo-fallback">
+                <input v-model="row.isFallback" type="checkbox" />
+                <span>兜底仓库</span>
+              </label>
+            </div>
+          </details>
         </div>
 
         <button class="ghost-btn" type="button" @click="addRepo">+ 添加仓库</button>
         <p v-if="!reposValid" class="field-error">
-          每个仓库需有名称，并填写本地绝对路径或合法 Git 地址；接口服务地址如填写须为
+          每个仓库需有名称和地址；地址为本地绝对路径或合法 Git 地址；接口服务地址如填写须为
           http(s)；仓库数 ≥ 1。
         </p>
         <p class="switch-note">
-          基线分支（可选）用于 Code Review
-          变更范围；提交号优先于分支，适合固定版本复跑。远程仓库会按地址+版本建立缓存，后续重跑复用同一检出结果。
-          接口服务地址（可选）用于多仓库/多服务任务：接口按扫描结果中的仓库归属路由到对应地址；留空则使用下方任务级
-          REST 地址。语言：Java 走 java-parser；Python 走内置 AST 扫描。
+          填「基线分支」后，Code Review 和用例生成只针对 git diff 出的差异代码（新增/修改/删除）；
+          留空则按全仓处理。提交号优先于分支，适合固定版本复跑。远程仓库会按地址+版本建立缓存，
+          后续重跑复用同一检出结果。接口服务地址用于多仓库/多服务任务，留空则使用任务级 REST 地址。
         </p>
       </section>
 
@@ -1339,7 +1453,11 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             <label class="field">
               <span class="field-label">调用协议</span>
               <select v-model="llm.protocol">
-                <option v-for="option in LLM_PROTOCOL_OPTIONS" :key="option.value" :value="option.value">
+                <option
+                  v-for="option in LLM_PROTOCOL_OPTIONS"
+                  :key="option.value"
+                  :value="option.value"
+                >
                   {{ option.label }}
                 </option>
               </select>
@@ -1352,7 +1470,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                 </option>
                 <optgroup v-for="group in LLM_MODEL_GROUPS" :key="group.label" :label="group.label">
                   <option v-for="option in group.options" :key="option.value" :value="option.value">
-                    {{ option.label }}
+                    {{ option.value }} · {{ option.label }}
                   </option>
                 </optgroup>
               </select>
@@ -1381,18 +1499,21 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             {{ selectedLlmModelWarning }}
           </p>
           <p v-if="!llmValid" class="field-error">
-            请填写调用协议、模型别名、Base URL 和 1024–16384 的 Token 上限；API Key 留空时复用服务级或已有任务密钥。
+            请填写调用协议、模型别名、Base URL 和 1024–16384 的 Token 上限；API Key
+            留空时复用服务级或已有任务密钥。
           </p>
           <p v-if="editingJobId && !llm.apiKey && existingLlmKey" class="switch-note">
             未重新填写 API Key，将复用服务端安全存储中的密钥。
           </p>
           <p class="switch-note">
-            当前默认复用部署服务器的 LLM 中转站配置；需要临时切换模型别名或 API Key 时再开启本次任务配置。
+            当前默认复用部署服务器的 LLM 中转站配置；需要临时切换模型别名或 API Key
+            时再开启本次任务配置。
           </p>
           <p class="switch-note">
-            浏览器只保存协议、模型、地址和 Token 上限；API Key 不进入浏览器持久化存储，提交后由服务端
-            SecretStore 安全复用。重跑已有任务时留空即可复用服务端密钥。需求解析、接口还原、Code
-            Review、 用例生成会按章节或实体分批调用，再由程序校验并合并。
+            浏览器只保存协议、模型、地址和 Token 上限；API Key
+            不进入浏览器持久化存储，提交后由服务端 SecretStore
+            安全复用。重跑已有任务时留空即可复用服务端密钥。需求解析、接口还原、Code Review、
+            用例生成会按章节或实体分批调用，再由程序校验并合并。
           </p>
         </template>
         <div class="inline-action-row">
@@ -1402,14 +1523,24 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             :disabled="verifyingLlm || (llmEnabled && !llmValid)"
             @click="verifyLlmBeforeSave"
           >
-            {{ verifyingLlm ? '正在测试中转站…' : llmEnabled ? '测试本次中转站配置' : '测试服务级中转站' }}
+            {{
+              verifyingLlm
+                ? '正在测试中转站…'
+                : llmEnabled
+                  ? '测试本次中转站配置'
+                  : '测试服务级中转站'
+            }}
           </button>
-          <span v-if="llmVerificationMessage" :class="llmVerificationOk ? 'inline-success' : 'field-error'">
+          <span
+            v-if="llmVerificationMessage"
+            :class="llmVerificationOk ? 'inline-success' : 'field-error'"
+          >
             {{ llmVerificationMessage }}
           </span>
         </div>
         <p class="switch-note">
-          测试只发送固定的无业务提示，单次最多等待 30 秒、无自动重试；不会创建任务、保存模型正文或暴露 API Key。
+          测试只发送固定的无业务提示，单次最多等待 30
+          秒、无自动重试；不会创建任务、保存模型正文或暴露 API Key。
         </p>
       </section>
 
@@ -1836,14 +1967,76 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   background: var(--surface);
 }
 
-.repo-path-picker {
-  display: flex;
-  gap: var(--space-1);
-  min-width: 0;
+/* 对比分支面板 */
+.diff-branch-panel {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 
-.repo-path-picker input {
-  min-width: 0;
+.diff-branch-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.diff-branch-hint {
+  margin: var(--space-1) 0 var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+.diff-preview-btn {
+  margin-bottom: var(--space-2);
+}
+
+.diff-preview-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--danger);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.diff-preview-result {
+  font-size: var(--text-xs);
+}
+
+.diff-preview-summary {
+  margin-bottom: var(--space-2);
+  color: var(--text-2);
+}
+
+.diff-file-list {
+  list-style: none;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.diff-file {
+  padding: 2px var(--space-2);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diff-file.added {
+  color: var(--success);
+}
+
+.diff-file.modified {
+  color: var(--warning);
+}
+
+.diff-file.removed {
+  color: var(--danger);
 }
 
 .doc-upload:hover,
@@ -1888,52 +2081,31 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   color: var(--text-3);
 }
 
-/* 仓库表格 */
-.repo-head,
-.repo-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
-  align-items: center;
-}
-
-.repo-head {
-  display: none;
-}
-
-.repo-row {
-  padding: var(--space-2) var(--space-1);
-  margin-bottom: var(--space-2);
+/* 仓库卡片 */
+.repo-card {
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
 }
 
-.repo-row input[type='text'],
-.repo-row input[type='url'],
-.repo-row input[type='password'],
-.repo-row select {
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-1);
-  font-size: var(--text-sm);
-}
-
-.repo-service-field {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+.repo-card-head {
+  display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding-top: var(--space-1);
-  color: var(--text-3);
-  font-size: var(--text-xs);
+  margin-bottom: var(--space-2);
 }
 
-.repo-service-field input {
+.repo-card-head .repo-name {
+  flex: 1;
+  font-weight: 600;
+}
+
+.repo-card input[type='text'],
+.repo-card input[type='url'],
+.repo-card input[type='password'],
+.repo-card select {
   width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-elev);
@@ -1943,48 +2115,46 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   font-size: var(--text-sm);
 }
 
-.repo-service-field input:focus {
+.repo-card input[type='text']:focus,
+.repo-card input[type='url']:focus,
+.repo-card input[type='password']:focus,
+.repo-card select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-dim);
   outline: none;
 }
 
-.repo-row input[type='text']:focus,
-.repo-row input[type='url']:focus,
-.repo-row input[type='password']:focus,
-.repo-row select:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-dim);
-  outline: none;
-}
-
-.repo-row input[type='checkbox'] {
+.repo-card input[type='checkbox'] {
   accent-color: var(--warning);
 }
 
-.repo-row .repo-path-picker {
-  grid-column: 1 / -1;
+/* 高级设置折叠 */
+.repo-advanced {
+  margin-top: var(--space-1);
 }
 
-.repo-token-placeholder {
-  display: none;
-}
-
-/* C-13：语言选择（与文本框同视觉口径） */
-.repo-language {
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-1);
+.repo-advanced summary {
+  cursor: pointer;
   font-size: var(--text-sm);
+  color: var(--text-2);
 }
 
-.repo-language:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-dim);
-  outline: none;
+.repo-advanced[open] summary {
+  margin-bottom: var(--space-2);
+}
+
+.repo-advanced-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2) var(--space-3);
+}
+
+.repo-advanced-grid .field {
+  margin-bottom: 0;
+}
+
+.repo-fallback {
+  align-self: end;
 }
 
 @media (max-width: 860px) {
@@ -1992,7 +2162,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .repo-service-field {
+  .repo-advanced-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -2010,7 +2180,12 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
     width: 100%;
   }
 
-  .repo-row {
+  .repo-card-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .diff-branch-panel .two-col {
     grid-template-columns: 1fr;
   }
 

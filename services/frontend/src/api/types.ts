@@ -136,6 +136,17 @@ export interface RepoConfig {
   access_token_configured?: boolean
 }
 
+/** 分支差异预览结果（POST /api/v1/repos/diff-preview） */
+export interface DiffPreviewResponse {
+  name: string
+  baseline: string | null
+  target: string
+  added: string[]
+  modified: string[]
+  removed: string[]
+  error?: string
+}
+
 // C-10：多需求文档（docs 列表；后端兼容旧单文档字段，前端统一走新口径）
 export interface DocInput {
   doc_name: string

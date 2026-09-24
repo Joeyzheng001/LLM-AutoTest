@@ -313,3 +313,110 @@ def _release_lock(lock: Path) -> None:
         lock.rmdir()
     except OSError:
         pass
+
+
+def preview_branch_diff(
+    repo: dict[str, Any],
+    *,
+    cache_root: Path,
+    access_token: str | None = None,
+) -> dict[str, Any]:
+    """预览仓库「基线 → 当前」分支的差异文件清单（不创建 job、不写产物）。
+
+    仅执行 ``git diff --name-status``（merge-base 口径），与 java-parser 扫描侧
+    ``ScanJobRunner.diffBranches`` 的分类规则一致。remote 仓库复用
+    ``_checkout_remote`` 的版本化缓存；失败时返回带 ``error`` 字段的结构而非抛异常，
+    供配置页直接展示。
+    """
+    name = str(repo.get("name") or "").strip()
+    source = str(repo.get("source") or "local").strip().lower()
+    branch = str(repo.get("branch") or "main").strip() or "main"
+    baseline = str(repo.get("baseline_branch") or "").strip() or None
+    target = str(repo.get("commit") or "").strip() or branch
+
+    def _error(message: str) -> dict[str, Any]:
+        return {
+            "name": name,
+            "baseline": baseline,
+            "target": branch,
+            "added": [],
+            "modified": [],
+            "removed": [],
+            "error": message,
+        }
+
+    if not baseline:
+        return _error("未指定基线分支，无法对比差异")
+
+    if source == "local":
+        workspace = Path(str(repo.get("path") or ""))
+        if not workspace.is_absolute() or not workspace.is_dir():
+            return _error("本地路径不存在或不是绝对目录")
+    elif source == "git":
+        remote_url = str(repo.get("remote_url") or "").strip()
+        commit = str(repo.get("commit") or "").strip() or None
+        if not _is_supported_remote(remote_url):
+            return _error("remote_url 不是支持的 Git 地址")
+        try:
+            workspace, _ = _checkout_remote(
+                name=name,
+                remote_url=remote_url,
+                branch=branch,
+                commit=commit,
+                cache_root=cache_root,
+                access_token=access_token,
+            )
+        except RepositoryResolutionError as exc:
+            return _error(exc.message)
+    else:
+        return _error("source 仅支持 local/git")
+
+    try:
+        result = _run_git(
+            ["diff", "--name-status", f"{baseline}...{target}"],
+            cwd=workspace,
+            access_token=access_token,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return _error(f"分支比对失败（非 Git 仓库或 ref 不存在）：{baseline}...{target}")
+
+    added, modified, removed = _classify_name_status(result.stdout)
+    return {
+        "name": name,
+        "baseline": baseline,
+        "target": branch,
+        "added": added,
+        "modified": modified,
+        "removed": removed,
+    }
+
+
+def _classify_name_status(stdout: str) -> tuple[list[str], list[str], list[str]]:
+    """把 ``git diff --name-status`` 输出拆成 added/modified/removed 三组。
+
+    与 java-parser 的 diffBranches 规则一致：A/C→added；M/T→modified；
+    D→removed；R→旧路径 removed + 新路径 added；未知状态码保守归 modified。
+    """
+    added: list[str] = []
+    modified: list[str] = []
+    removed: list[str] = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        kind = parts[0][:1]
+        if kind in ("A", "C"):
+            added.append(parts[1])
+        elif kind in ("M", "T"):
+            modified.append(parts[1])
+        elif kind == "D":
+            removed.append(parts[1])
+        elif kind == "R":
+            removed.append(parts[1])
+            if len(parts) >= 3:
+                added.append(parts[2])
+        else:
+            modified.append(parts[1])
+    return added, modified, removed

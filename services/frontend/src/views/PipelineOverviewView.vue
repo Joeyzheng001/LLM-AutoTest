@@ -494,12 +494,16 @@ function runtimeErrorMessage(value: JobStatus['runtime_error']): string {
               </option>
               <optgroup v-for="group in LLM_MODEL_GROUPS" :key="group.label" :label="group.label">
                 <option v-for="option in group.options" :key="option.value" :value="option.value">
-                  {{ option.label }}
+                  {{ option.value }} · {{ option.label }}
                 </option>
               </optgroup>
             </select>
             <select v-model="rerunProtocol" class="rerun-select" aria-label="重跑模型调用协议">
-              <option v-for="option in LLM_PROTOCOL_OPTIONS" :key="option.value" :value="option.value">
+              <option
+                v-for="option in LLM_PROTOCOL_OPTIONS"
+                :key="option.value"
+                :value="option.value"
+              >
                 {{ option.label }}
               </option>
             </select>
