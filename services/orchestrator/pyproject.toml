@@ -17,10 +17,12 @@ dependencies = [
     "cryptography>=43.0",
     "boto3>=1.35",
     "llm-autotest-common",
+    "test-executor",
 ]
 
 [tool.uv.sources]
 llm-autotest-common = { path = "../common", editable = true }
+test-executor = { path = "../test-executor", editable = true }
 
 [dependency-groups]
 dev = [

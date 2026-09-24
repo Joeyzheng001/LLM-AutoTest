@@ -1445,7 +1445,7 @@ def _merge_legacy_mappings(
 def _parse_review_json(text: str) -> Any:
     """从模型输出中读取首个完整 JSON 值（对象或数组）。
 
-    通用 ``_strip_code_fence`` 只提取 JSON 对象，遇到模型错误地返回裸数组时会
+    通用 ``strip_code_fence`` 只提取 JSON 对象，遇到模型错误地返回裸数组时会
     丢失数组外层；Code Review 在此单独保留数组，以便无损归一后继续执行严格校验。
     """
     stripped = text.strip()

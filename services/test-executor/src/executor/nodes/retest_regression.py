@@ -33,7 +33,7 @@ from common.case_validation import blocking_parameter_messages
 from common.engine import Engine, JobState
 from common.errors import X_ORCH_01, PipelineError
 
-from orchestrator.nodes.auto_execute import (
+from executor.nodes.auto_execute import (
     InvokeRequest,
     MockDemoRunner,
     RestRunner,

@@ -24,7 +24,7 @@ from common.artifacts import ArtifactStore
 from common.engine import Engine, JobState
 from common.errors import X_ORCH_01, PipelineError
 
-from orchestrator.nodes.auto_execute import _expected_statuses
+from executor.nodes.auto_execute import _expected_statuses
 
 NODE_NAME = "defect_list"
 

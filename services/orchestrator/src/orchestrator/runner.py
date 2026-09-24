@@ -34,17 +34,22 @@ from common.llm.client import LlmClient
 from common.pipeline import NODE_ORDER, NodeStatus
 from common.security import redact_secrets
 
+# 丙泳道节点（GEN/EXEC/DEF/REG）已迁至 test-executor 包；单体过渡期本地 import 驱动，
+# 服务拆分后改为远程调用（docs/19）。
+from executor.nodes import (
+    run_auto_execute,
+    run_defect_list,
+    run_retest_regression,
+    run_testcase_generate,
+)
+
 from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
 from orchestrator.nodes import (
-    run_auto_execute,
     run_code_review,
     run_code_scan,
-    run_defect_list,
     run_interface_reconstruct,
     run_req_parse,
-    run_retest_regression,
     run_test_report,
-    run_testcase_generate,
 )
 from orchestrator.nodes.test_report import build_final_metrics
 from orchestrator.persistence import Database

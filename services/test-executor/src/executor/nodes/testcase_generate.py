@@ -41,11 +41,10 @@ from common.errors import X_LLM_02, X_ORCH_01, PipelineError
 from common.llm import LlmResult
 from common.llm_batch import chunk_json_items
 from common.llm_repair import complete_with_json_repair
+from common.llm_text import strip_code_fence
 from common.prompts_loader import PromptSpec, load_prompt
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
-
-from orchestrator.nodes.req_parse import _strip_code_fence
 
 NODE_NAME = "testcase_generate"
 
@@ -727,7 +726,7 @@ def _looks_like_cross_node_payload(
 ) -> bool:
     """识别跨节点产物或请求参数对象误串到用例节点的常见形态。"""
     try:
-        payload = json.loads(_strip_code_fence(text))
+        payload = json.loads(strip_code_fence(text))
     except json.JSONDecodeError:
         return False
     if not isinstance(payload, dict) or any(
@@ -1014,7 +1013,7 @@ def _parse_e2e_cases(
 ) -> list[dict[str, Any]]:
     """严格收敛 E2E 动作白名单，避免模型产生任意 JS 或危险浏览器操作。"""
     try:
-        payload = json.loads(_strip_code_fence(text))
+        payload = json.loads(strip_code_fence(text))
     except json.JSONDecodeError as exc:
         raise PipelineError(
             code=X_LLM_02, message=f"E2E 用例输出不是合法 JSON：{exc}", node_id=NODE_NAME
@@ -1123,7 +1122,7 @@ def _parse_llm_cases(text: str, interfaces: list[dict[str, Any]]) -> list[dict[s
     Raises:
         PipelineError: X-LLM-02——不可解析 / 缺 cases / 虚构 interface_id / 非法 category。
     """
-    cleaned = _strip_code_fence(text)
+    cleaned = strip_code_fence(text)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
@@ -1224,7 +1223,7 @@ def _decode_wrapper(value: Any) -> dict[str, Any] | list[Any] | None:
     if not isinstance(value, str):
         return None
     try:
-        parsed = json.loads(_strip_code_fence(value))
+        parsed = json.loads(strip_code_fence(value))
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, (dict, list)) else None

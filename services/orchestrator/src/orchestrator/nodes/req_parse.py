@@ -25,6 +25,7 @@ from common.errors import X_LLM_02, X_ORCH_01, PipelineError
 from common.llm import LlmResult
 from common.llm_batch import chunk_json_items, chunk_text
 from common.llm_repair import complete_with_json_repair
+from common.llm_text import strip_code_fence
 from common.prompts_loader import PromptSpec, load_prompt
 
 from orchestrator.doc_loader import load_document_text
@@ -446,7 +447,7 @@ def _source_catalog_previews(source_catalog: list[dict[str, Any]]) -> list[dict[
 
 def _extract_diff(text: str) -> dict[str, Any]:
     """解析差异 Prompt 输出；字段和值域由 Schema 前的形状检查约束。"""
-    cleaned = _strip_code_fence(text)
+    cleaned = strip_code_fence(text)
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
@@ -965,7 +966,7 @@ def _extract_items(text: str) -> list[dict[str, Any]]:
     Raises:
         PipelineError: X-LLM-02——输出不可解析为 JSON 或缺 items。
     """
-    cleaned = _strip_code_fence(text)
+    cleaned = strip_code_fence(text)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
@@ -1063,7 +1064,7 @@ async def _review_requirement_batches(
 
 def _extract_review_result(text: str) -> dict[str, Any]:
     """解析 findings；旧版完整评审对象仅走明确兼容分支。"""
-    cleaned = _strip_code_fence(text)
+    cleaned = strip_code_fence(text)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
@@ -1089,7 +1090,7 @@ def _validate_review_result(
 
 def _extract_review_findings(text: str) -> list[dict[str, Any]]:
     """解析新 finding 契约，并兼容旧评审响应中的 issues 数组。"""
-    cleaned = _strip_code_fence(text)
+    cleaned = strip_code_fence(text)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
@@ -1181,7 +1182,7 @@ def _extract_review(text: str) -> dict[str, Any]:
     ``dimension_scores`` 的维度数组，以及思维导图叶子字符串。这里仅将这两种
     等价表示归一为产物契约；业务字段、枚举和值域仍完全交由 Schema 拒绝。
     """
-    cleaned = _strip_code_fence(text)
+    cleaned = strip_code_fence(text)
     try:
         review = json.loads(cleaned)
     except json.JSONDecodeError as exc:
@@ -1423,65 +1424,3 @@ def _normalize_mindmap_node(node: Any) -> Any:
     return normalized
 
 
-def _strip_code_fence(text: str) -> str:
-    """剥掉围栏，并从模型附带的思考/解释中提取一个完整 JSON 对象。"""
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        # 去首行围栏（``` 或 ```json）
-        first_newline = stripped.find("\n")
-        if first_newline == -1:
-            return stripped.removeprefix("```").strip()
-        body = stripped[first_newline + 1 :]
-        if body.rstrip().endswith("```"):
-            body = body.rstrip()[:-3]
-        stripped = body.strip()
-    return _extract_complete_json_object(stripped)
-
-
-def _extract_complete_json_object(text: str) -> str:
-    """返回文本中的首个完整 JSON 对象；找不到时保留原文交由 json.loads 报错。
-
-    仅接受花括号、字符串转义和嵌套结构都闭合的对象，不拼接或猜测残缺 JSON。
-    整体就是完整 JSON 数组时原样返回（裸数组是已登记容器形态，
-    截取首个元素会丢失其余条目）。
-    """
-    stripped = text.strip()
-    if stripped.startswith("["):
-        try:
-            whole = json.loads(stripped)
-        except json.JSONDecodeError:
-            whole = None
-        if isinstance(whole, list):
-            return stripped
-    for start, char in enumerate(text):
-        if char != "{":
-            continue
-        depth = 0
-        quoted = False
-        escaped = False
-        for end in range(start, len(text)):
-            current = text[end]
-            if quoted:
-                if escaped:
-                    escaped = False
-                elif current == "\\":
-                    escaped = True
-                elif current == '"':
-                    quoted = False
-                continue
-            if current == '"':
-                quoted = True
-            elif current == "{":
-                depth += 1
-            elif current == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start : end + 1]
-                    try:
-                        data = json.loads(candidate)
-                    except json.JSONDecodeError:
-                        break
-                    if isinstance(data, dict):
-                        return candidate
-                    break
-    return text

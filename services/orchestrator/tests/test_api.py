@@ -1578,7 +1578,7 @@ async def test_retest_full_and_single(
     async def _probe_unreachable(*args: Any, **kwargs: Any) -> bool:
         return False
 
-    monkeypatch.setattr("orchestrator.nodes.retest_regression.probe_rest", _probe_unreachable)
+    monkeypatch.setattr("executor.nodes.retest_regression.probe_rest", _probe_unreachable)
     body = _submit_body(repo_dir, "job-api-0004")
     body["rest_url"] = "http://127.0.0.1:1"
     await client.post("/api/v1/jobs", json=body)

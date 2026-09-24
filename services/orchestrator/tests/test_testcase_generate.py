@@ -16,16 +16,16 @@ from common.errors import X_ORCH_02, PipelineError
 from common.llm import LlmResult
 from common.pipeline import NodeStatus
 from common.prompts_loader import PromptSpec
-
-from helpers import requirement_review_payload
-from orchestrator.nodes import run_testcase_generate
-from orchestrator.nodes.testcase_generate import (
+from executor.nodes import run_testcase_generate
+from executor.nodes.testcase_generate import (
     _filter_param_violations,
     _parse_e2e_cases,
     _parse_llm_cases,
     _synthesize_fallback_cases,
     _validate_batch_coverage,
 )
+
+from helpers import requirement_review_payload
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 _PROMPTS = Path(__file__).resolve().parents[3] / "prompts"

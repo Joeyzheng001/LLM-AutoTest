@@ -241,16 +241,19 @@ class _ScriptedRunner(PipelineRunner):
         auth=None, auth_headers=None, e2e=None, document_pairs=None, rest_insecure_tls=True,
     ):
         """覆写：给 auto_execute/retest 注入 MockTransport（auth 透传 C-15）。"""
-        from orchestrator.nodes import (
+        from executor.nodes import (
             run_auto_execute,
+            run_defect_list,
+            run_retest_regression,
+            run_testcase_generate,
+        )
+
+        from orchestrator.nodes import (
             run_code_review,
             run_code_scan,
-            run_defect_list,
             run_interface_reconstruct,
             run_req_parse,
-            run_retest_regression,
             run_test_report,
-            run_testcase_generate,
         )
 
         if node_name == "req_parse":

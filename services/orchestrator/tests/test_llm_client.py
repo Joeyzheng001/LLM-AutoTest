@@ -217,7 +217,7 @@ async def test_think_blocks_stripped(tmp_path: Path) -> None:
         _settings(), "job-abc12345-def-6", trace, transport=httpx.MockTransport(handler)
     )
     result = await client.complete("req_parse", _PROMPT, "内容")
-    # 思考块已剥离，仅剩正文（代码围栏由节点层 _strip_code_fence 处理）
+    # 思考块已剥离，仅剩正文（代码围栏由节点层 strip_code_fence 处理）
     assert result.text == '```json\n{"cases": []}\n```'
     # 诚实红线：留痕 output_digest 取原始输出（含思考块）
     import hashlib

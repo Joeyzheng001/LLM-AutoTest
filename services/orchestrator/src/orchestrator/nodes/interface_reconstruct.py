@@ -32,10 +32,10 @@ from common.errors import X_LLM_02, X_ORCH_01, PipelineError
 from common.llm import LlmResult
 from common.llm_batch import chunk_json_items
 from common.llm_repair import complete_with_json_repair
+from common.llm_text import strip_code_fence
 from common.prompts_loader import PromptSpec, load_prompt
 
 from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
-from orchestrator.nodes.req_parse import _strip_code_fence
 from orchestrator.python_scan import scan_repository
 
 NODE_NAME = "interface_reconstruct"
@@ -203,7 +203,7 @@ def _merge_llm_output(text: str, candidates: list[dict[str, Any]]) -> list[dict[
     Raises:
         PipelineError: X-LLM-02——输出不可解析 / 引用虚构或重复候选。
     """
-    cleaned = _strip_code_fence(text)
+    cleaned = strip_code_fence(text)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:

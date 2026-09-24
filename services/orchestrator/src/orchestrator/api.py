@@ -50,6 +50,8 @@ from common.security import (
     redact_secrets,
     write_private_json,
 )
+from executor.nodes.auto_execute import login_for_headers
+from executor.nodes.retest_regression import retest_defects
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
@@ -58,8 +60,6 @@ from orchestrator.artifact_lifecycle import find_expired_jobs, purge_quarantine,
 from orchestrator.javaparser_client import JavaParserClient
 from orchestrator.job_queue import LocalJobQueue, QueueConflict
 from orchestrator.metrics import MetricsRegistry
-from orchestrator.nodes.auto_execute import login_for_headers
-from orchestrator.nodes.retest_regression import retest_defects
 from orchestrator.persistence import Database
 from orchestrator.repository_resolver import preview_branch_diff, resolve_repository_inputs
 from orchestrator.runner import PipelineOutcome, PipelineRunner
