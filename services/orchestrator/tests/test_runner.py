@@ -116,10 +116,15 @@ class StubLlm:
         self.prompt_refs: list[str] = []
 
     async def complete(
-        self, node: str, prompt: PromptSpec, user_content: str
+        self,
+        node: str,
+        prompt: PromptSpec,
+        user_content: str,
+        max_attempts: int | None = None,
     ) -> LlmResult:
-        """返回该节点的预置输出。"""
+        """返回该节点的预置输出；max_attempts 由节点按调用场景下传，本桩忽略。"""
         _ = user_content
+        _ = max_attempts
         self.calls.append(node)
         self.prompt_refs.append(prompt.ref)
         key = prompt.name if prompt.name == "requirement_review" else node
@@ -373,11 +378,21 @@ async def test_runner_full_pipeline_e2e(tmp_path: Path) -> None:
     assert "requirement_items.json" in manifest_paths
     assert any(path.endswith("/test_TC_001.py") for path in manifest_paths)
     assert ".job-credentials.enc" not in manifest_paths
-    # 需求节点包含评审与条目提取两个子阶段，LLM 共调用 5 次。
+    # 需求节点包含评审与条目提取两个子阶段；用例生成前另有一次测试点拆分维度补全。
+    # LLM 共调用 6 次。
     assert llm.calls == [
-        "req_parse", "requirement_review", "interface_reconstruct", "code_review", "testcase_generate"
+        "req_parse",
+        "requirement_review",
+        "interface_reconstruct",
+        "code_review",
+        "testpoint_derive",
+        "testcase_generate",
     ]
-    assert llm.prompt_refs[:2] == ["req_parse@2.0", "requirement_review@2.0"]
+    # 只断言前两个 Prompt 的节点口径，不锁版本号：Prompt 内容迭代不应误报此测试。
+    assert [ref.split("@", 1)[0] for ref in llm.prompt_refs[:2]] == [
+        "req_parse",
+        "requirement_review",
+    ]
     # 收尾刷新（docs/13 P-10）：metrics.json 为九节点终态版，自动化率 9/9
     metrics = json.loads((job_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["automation_rate"] == {
@@ -439,8 +454,8 @@ async def test_runner_resume_skips_completed(tmp_path: Path) -> None:
     runner.llm = llm2
     outcome = await runner.run(_JOB, [_doc(tmp_path)], _repos(), "http://rest:9000")
 
-    # 产物在的前 4 节点跳过（LLM 只被 testcase_generate 调用）
-    assert llm2.calls == ["testcase_generate"]
+    # 产物在的前 4 节点跳过（LLM 只被用例生成及其拆分维度补全子阶段调用）
+    assert llm2.calls == ["testpoint_derive", "testcase_generate"]
     assert outcome.ok
     assert outcome.completed[:4] == [
         "req_parse", "code_scan", "interface_reconstruct", "code_review"

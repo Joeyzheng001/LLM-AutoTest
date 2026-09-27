@@ -118,8 +118,21 @@ class LlmClient:
         self._run_id = run_id
         self._seq = self._count_trace_lines() + 1
 
-    async def complete(self, node: str, prompt: PromptSpec, user_content: str) -> LlmResult:
+    async def complete(
+        self,
+        node: str,
+        prompt: PromptSpec,
+        user_content: str,
+        max_attempts: int | None = None,
+    ) -> LlmResult:
         """执行一次对话补全并留痕。
+
+        Args:
+            max_attempts: 覆盖本实例的重试上限；None 表示沿用实例默认值。
+                供「失败可优雅退化」的子调用收窄最坏等待——例如测试点拆分维度补全
+                失败即退回模板 hints，非正确性问题，却会按默认 3 次尝试白等
+                3×超时+25s 退避。docs/12 §三 口径是「最多 2 次重试」（上限），
+                取更小值仍在该口径内。
 
         Raises:
             PipelineError: X-LLM-01——重试耗尽仍失败（网络/超时类）。
@@ -139,7 +152,7 @@ class LlmClient:
         text: str | None = None
         tokens: int | None = None
         try:
-            text, tokens = await self._request(system, user_content)
+            text, tokens = await self._request(system, user_content, max_attempts)
         except PipelineError as exc:
             error = exc
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -170,10 +183,15 @@ class LlmClient:
         # C-17：思考块剥离在留痕之后（digest 取原始输出，返回体取规范化正文）
         return LlmResult(text=strip_think_blocks(text), tokens=tokens, call_id=call_id)
 
-    async def _request(self, system: str, user_content: str) -> tuple[str, int | None]:
+    async def _request(
+        self, system: str, user_content: str, max_attempts: int | None = None
+    ) -> tuple[str, int | None]:
         """带重试的 HTTP 调用；仅网络/超时类失败重试（docs/12 §三）。"""
+        attempts = self._max_attempts if max_attempts is None else max_attempts
+        if attempts < 1:
+            raise ValueError("max_attempts 必须大于 0")
         last_error: PipelineError | None = None
-        for attempt in range(self._max_attempts):
+        for attempt in range(attempts):
             if attempt > 0:
                 backoff_index = min(attempt - 1, len(self._retry_backoff) - 1)
                 await asyncio.sleep(self._retry_backoff[backoff_index])

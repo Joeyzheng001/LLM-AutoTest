@@ -23,8 +23,11 @@ mark_degraded（manual_intervention，D1：不阻塞下游）。零用例 → X-
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
+import re
 from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
@@ -46,11 +49,49 @@ from common.prompts_loader import PromptSpec, load_prompt
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
+logger = logging.getLogger(__name__)
+
 NODE_NAME = "testcase_generate"
 
 _VALID_CATEGORIES = ("normal", "boundary", "exception")
 _MAX_CASE_INTERFACES_PER_BATCH = 3
 _CHECKPOINT_FILENAME = "testcase_generate_checkpoint.json"
+# 参数一致性违规明细：内部排查文件（非产物契约）。原有的 X-GEN-02 告警只有接口号，
+# 参数名与违规原因只活在内存与检查点里，而检查点成功后即被清除——真机排查时无从
+# 判断是「清单外参数」「缺必填」还是「body 不是具体 JSON 对象」，只能靠探针反推。
+_VIOLATIONS_FILENAME = "case_param_violations.json"
+# 测试点拆分维度补全：按字符预算分批，避免单批测试点过多导致长 JSON 截断。
+# 12k 字符/批实测单批推理 250~780s，直接顶穿 LLM_TIMEOUT_S（300s）——11 批里 6 批
+# 三次尝试全部超时、白等 926s，55% 测试点退回模板 hints。故两步收紧：
+#   ① 单批降到 4k（约 8 个测试点），把单批思考时长压到超时线以内；
+#   ② 批次间有界并发，串行会让墙钟等于各批之和（实测 11 批串行 1h59m）。
+_TP_HINTS_PROMPT = "testpoint_derive"
+_TP_HINTS_MAX_CHARS = 4_000
+# 中转站对同一 job 的瞬时并发有限，并发度过高会让各批互相挤占、集体超时。
+_TP_HINTS_CONCURRENCY = 4
+# 本子调用失败即退化为模板 hints（非正确性问题），故收窄重试上限：
+# 3 次尝试最坏要 3×超时+25s，在 4 并发下会把一个并发槽占满 15 分钟，而收益仅是
+# 少数批次被救回；1 次重试把最坏等待砍到 2×超时+5s。
+_TP_HINTS_MAX_ATTEMPTS = 2
+
+# 「超长字符串」紧凑记号：模型只写 __LONG_<n>__，由 _expand_long_markers 展开成真实长度。
+# 背景：既有的 boundary 口径要求「字符串取超长（>1024）」，于是模型逐字符去数字面量
+# （实测原始输出里出现 `"xxx…x" - that's maybe 256? Need 1025` 的自问自答），推理量爆炸
+# 并撞生成长度上限——8 批里 6 批整批作废。把「数 1025 个字符」这种非语言任务移回程序，
+# 是这个节点拿回输出稳定性的关键。
+_LONG_MARKER_RE = re.compile(r"^__LONG_(\d{1,7})__$")
+# 展开上限：防模型写错位数（如 __LONG_9999999__）把产物撑爆
+_LONG_MARKER_MAX = 65_536
+
+# 实现片段注入：按 code_location 读接口方法体交给模型，让 normal 用例的 expected
+# 落在真实分支/字段/返回值上，而不是只凭 signature + params 编。上限既保上下文预算，
+# 也避免把整个类塞进请求（单批 3 个接口 × 60 行 ≈ 可控）。
+_MAX_IMPLEMENTATION_LINES = 60
+_MAX_IMPLEMENTATION_CHARS = 4_000
+# 源码里可能带示例口令；与 code_review 的证据采集同一口径先脱敏再给模型。
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)\b(password|passwd|secret|token|api[_-]?key)\b(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;)]+)"
+)
 
 # 模型常把同一集合命名为 testcases/items/results，或包进 data/result/output，
 # 或把「只输出 cases 数组」误解为裸数组（drift 登记表 testcase 行已验证）。
@@ -90,8 +131,14 @@ def {func_name}(run_context):
 class SupportsComplete(Protocol):
     """LLM 客户端协议（生产为 LlmClient，测试可注入桩）。"""
 
-    async def complete(self, node: str, prompt: PromptSpec, user_content: str) -> LlmResult:
-        """按协议执行一次补全。"""
+    async def complete(
+        self,
+        node: str,
+        prompt: PromptSpec,
+        user_content: str,
+        max_attempts: int | None = None,
+    ) -> LlmResult:
+        """按协议执行一次补全；max_attempts 覆盖重试上限（None 用客户端默认）。"""
         ...
 
 
@@ -122,20 +169,42 @@ async def run_testcase_generate(
         interfaces = _load_json_array(store, state.job_id, "interfaces.json", "interfaces")
         mappings = _load_json_array(store, state.job_id, "review_mapping.json", "mappings")
         # 测试点是用例设计的中间证据，而不是另一次不稳定的长 JSON 模型输出。
-        # 它按需求、接口映射及评审风险程序化派生，随后随同批上下文交给模型扩展成可执行案例。
+        # 结构（编号/溯源/场景）由程序按需求、接口映射及评审风险确定性派生，
+        # 拆分维度（case_split_hints）再由一次轻量模型调用按需求原文与接口字段补全：
+        # 通用模板 hints 会让用例退化成「每接口三类」的门禁下限，模型只凑数不展开。
         testpoints = _derive_testpoints(requirements, interfaces, mappings)
 
         prompt = load_prompt(prompts_dir, NODE_NAME)
         # 以接口为分批边界：每批只携带相关需求与映射，避免用例 JSON 随接口数线性膨胀。
         valid: list[dict[str, Any]] = []
         retry_feedback: list[dict[str, Any]] = []
+        # 违规明细按「批次 × 轮次」留痕：两轮都收，既能看出模型第二轮改没改好，
+        # 也能在告警复现不出来时区分「模型输出漂移」与「代码路径不同」。
+        param_violation_rounds: list[dict[str, Any]] = []
+        # F-GEN-04 溯源覆盖缺口（接口, 未覆盖测试点数）：补产后仍缺则记告警，
+        # 不中断批次——兜底用例不携带 testpoint_id，硬失败会让兜底路径无法收敛。
+        coverage_gaps: list[tuple[str, int]] = []
         # 用例输出随接口数 × 三类场景增长。最多三个接口一批，避免模型只回答
         # 批次首项而把其余接口静默漏掉。
         interface_batches = _chunk_case_interfaces(interfaces)
+        # 实现片段（按 code_location 读源码）在构造批上下文时按需注入，不进指纹：
+        # 它由仓库文件派生且只读本批接口，纳入指纹需要全量预读，收益不足。
+        repo_roots = _load_repo_roots(store, state.job_id)
+        # 指纹只覆盖程序确定性的输入（不含模型补全的 hints）：拆分维度每次调用本就
+        # 不同，纳入指纹会让任何续跑都判定「输入已变更」而重头生成。
         checkpoint_fingerprint = _generation_fingerprint(
             requirements, interfaces, mappings, testpoints
         )
         checkpoint = _load_generation_checkpoint(store, state.job_id, checkpoint_fingerprint)
+        # 续跑复用检查点中的 hints：拆分维度由模型生成、每次调用结果不同，重算会让
+        # 已生成批次与新批次基于不同依据，也多付一轮调用成本。
+        checkpoint_points = checkpoint.get("testpoints")
+        if isinstance(checkpoint_points, list) and checkpoint_points:
+            testpoints = [dict(item) for item in checkpoint_points if isinstance(item, dict)]
+        else:
+            testpoints = await _enrich_testpoint_hints(
+                llm, prompts_dir, testpoints, requirements, interfaces
+            )
         completed_batches = {
             int(str(item.get("index")))
             for item in checkpoint.get("batches", [])
@@ -159,12 +228,23 @@ async def run_testcase_generate(
             if index in completed_batches:
                 continue
             user_content = _build_batch_context(
-                batch, requirements, mappings, testpoints, auth, index, len(interface_batches)
+                batch,
+                requirements,
+                mappings,
+                testpoints,
+                auth,
+                index,
+                len(interface_batches),
+                repo_roots,
             )
             raw_cases = await _complete_cases_with_coverage_recovery(
                 llm, prompt, user_content, batch
             )
             batch_valid, violations = _filter_param_violations(raw_cases, batch)
+            if violations:
+                param_violation_rounds.append(
+                    {"batch": index, "round": 1, "violations": violations}
+                )
             violations2: list[dict[str, Any]] = []
             if violations:
                 feedback = json.dumps(
@@ -184,11 +264,44 @@ async def run_testcase_generate(
                     prompt,
                     f"{user_content}\n\n{feedback}",
                     partial(_parse_llm_cases, interfaces=batch),
-                    validate=partial(_validate_batch_coverage, interfaces=batch),
+                    # 不做覆盖硬门禁：覆盖缺口由下方 _synthesize_fallback_cases 确定性补齐，
+                    # 不因重生成漏产而中断整批流程。
                 )
                 valid2, violations2 = _filter_param_violations(raw_cases2, batch)
                 batch_valid = _merge_rounds(batch_valid, valid2)
+                # 空 violations2 也记：表示该批第二轮已修好（与被放弃的接口区分开）。
+                param_violation_rounds.append(
+                    {"batch": index, "round": 2, "violations": violations2}
+                )
                 retry_feedback.extend(violations2)
+            # 参数校验可能过滤掉 LLM 生成但参数违规的用例，导致覆盖再次缺失。
+            # 这里用程序确定性兜底补齐，不再把覆盖缺口交回给不稳定的 LLM 重生成。
+            missing = _missing_categories(batch_valid, batch)
+            if missing:
+                batch_valid = _merge_case_entries(
+                    batch_valid, _synthesize_fallback_cases(missing)
+                )
+            # F-GEN-04 溯源覆盖：REQ 测试点未被任何用例引用时做一次定向补产。
+            # 仅在本批确有 testpoint_id 时启用：模型完全未采用该字段（旧模型/未支持）
+            # 时再调用一次同样产不出编号，只会白付一轮推理成本；且「完全未采用」属
+            # 功能未启用，不该伪装成覆盖缺口刷告警。补产只做一次，仍缺则记告警不中断
+            # ——程序兜底用例不携带 testpoint_id，做成硬门禁会让兜底路径无法收敛。
+            if any(str(case.get("testpoint_id", "")) for case in batch_valid):
+                uncovered = _uncovered_req_testpoints(batch_valid, testpoints, batch)
+                if uncovered:
+                    batch_valid = await _recover_uncovered_testpoints(
+                        llm, prompt, user_content, batch, batch_valid, uncovered
+                    )
+                    uncovered = _uncovered_req_testpoints(
+                        batch_valid, testpoints, batch
+                    )
+                if uncovered:
+                    coverage_gaps.append(
+                        (
+                            ", ".join(sorted({str(b.get("id", "")) for b in batch})),
+                            len(uncovered),
+                        )
+                    )
             valid.extend(batch_valid)
             checkpoint_batches = [
                 item for item in checkpoint_batches if int(item.get("index", 0)) != index
@@ -203,20 +316,34 @@ async def run_testcase_generate(
                     "schema_version": "1.0",
                     "fingerprint": checkpoint_fingerprint,
                     "batch_count": len(interface_batches),
+                    # 连同批次一起固化拆分依据，供续跑复用同一份 hints。
+                    "testpoints": testpoints,
                     "batches": sorted(checkpoint_batches, key=lambda item: int(item["index"])),
                 },
             )
 
         warnings: list[str] = []
-        # X-GEN-02：二次仍违规的接口——整接口用例放弃（非部分保留）
+        # F-GEN-04 溯源覆盖缺口：补产后仍未引用的 REQ 测试点如实告警（分母不缩减）。
+        for interface_ids, count in coverage_gaps:
+            warnings.append(
+                f"F-GEN-04: 接口 {interface_ids} 有 {count} 个 REQ 测试点未被任何用例"
+                "引用（已定向补产一次仍未覆盖，需人工确认该测试点设计）"
+            )
+        # X-GEN-02：二次仍违规的接口——整接口用例放弃（非部分保留）。
+        # 告警必须带具体原因：只有接口号时，排查者无法区分是「清单外参数」「缺必填」
+        # 还是「body 不是具体 JSON 对象」，只能写探针重新调模型反推。
         abandoned = sorted({v["interface_id"] for v in retry_feedback})
         for interface_id in abandoned:
+            detail = _summarize_violations(retry_feedback, interface_id)
             warnings.append(
                 f"X-GEN-02: 接口 {interface_id} 参数一致性连续 2 次不通过，"
-                "该接口用例放弃（生成质量告警）"
+                f"该接口用例放弃（生成质量告警）：{detail}"
             )
         if abandoned:
             valid = [c for c in valid if c["interface_id"] not in set(abandoned)]
+        # 明细落盘放在 raise 之前：失败路径反而最需要它，而检查点会被成功路径清除，
+        # 只在检查点里留明细等于「成功时被删、失败时才可能看到」。
+        _save_param_violations(store, state.job_id, param_violation_rounds, abandoned)
         if not valid:
             raise PipelineError(
                 code="X-GEN-02",
@@ -226,23 +353,32 @@ async def run_testcase_generate(
             )
 
         # 元数据补全 + 脚本渲染（TC-### 编号、模板脚本、loadable、low_confidence）
-        cases, any_unloadable = _finalize_cases(valid, state.job_id, store, interfaces)
+        cases, any_unloadable = _finalize_cases(
+            valid, state.job_id, store, interfaces, testpoints
+        )
         e2e_cases: list[dict[str, Any]] = []
         if e2e and bool(e2e.get("generate_cases")):
-            surface = await _inspect_e2e_surface(
-                str(e2e.get("base_url", "")), bool(e2e.get("insecure_tls", True)), auth
-            )
-            if surface["routes"]:
-                e2e_cases = await _generate_e2e_cases(
-                    llm,
-                    prompts_dir,
-                    requirements,
-                    testpoints,
-                    surface,
-                    auth_mode=str(e2e.get("auth_mode", "browser")),
+            # E2E 是可选产物：接口用例已在上方定型，探测或生成失败一律降级为告警，
+            # 不让它把本节点打成失败并连带打断下游（曾因一条坏用例导致 4 节点降级）。
+            try:
+                surface = await _inspect_e2e_surface(
+                    str(e2e.get("base_url", "")), bool(e2e.get("insecure_tls", True)), auth
                 )
-            else:
-                warnings.append("X-E2E-01: 未探测到可操作的前端页面，跳过 E2E 用例生成")
+                if surface["routes"]:
+                    e2e_cases, e2e_warnings = await _generate_e2e_cases(
+                        llm,
+                        prompts_dir,
+                        requirements,
+                        testpoints,
+                        surface,
+                        auth_mode=str(e2e.get("auth_mode", "browser")),
+                    )
+                    warnings.extend(e2e_warnings)
+                else:
+                    warnings.append("X-E2E-01: 未探测到可操作的前端页面，跳过 E2E 用例生成")
+            except PipelineError as exc:
+                logger.warning("E2E 用例生成失败，跳过（不影响接口用例）：%s", exc.message)
+                warnings.append(f"X-E2E-02: E2E 用例生成失败已跳过（{exc.code}）：{exc.message}")
         if any_unloadable:
             warnings.append("R-GEN-03: 存在不可加载脚本（loadable=false），详见用例清单")
 
@@ -312,7 +448,9 @@ def _load_generation_checkpoint(
     batches = payload.get("batches")
     if not isinstance(batches, list):
         return {}
-    return {"batches": batches}
+    points = payload.get("testpoints")
+    # 老检查点没有 testpoints：留空让上层重新补全，不因缺字段整体判为不可用。
+    return {"batches": batches, "testpoints": points if isinstance(points, list) else []}
 
 
 def _save_generation_checkpoint(
@@ -332,6 +470,65 @@ def _clear_generation_checkpoint(store: ArtifactStore, job_id: str) -> None:
         (store.job_dir(job_id) / _CHECKPOINT_FILENAME).unlink()
     except FileNotFoundError:
         pass
+
+
+def _summarize_violations(
+    violations: list[dict[str, Any]], interface_id: str, *, max_chars: int = 300
+) -> str:
+    """把某接口的违规记录压成一行可读原因（按分句去重、保序）。
+
+    `message` 是「；」连接的复合文本（如「清单外参数：foo；缺少必填参数：bar」），
+    同一接口两轮往往重复，去重后告警才不会又长又重复。
+    """
+    seen: list[str] = []
+    for item in violations:
+        if str(item.get("interface_id", "")) != interface_id:
+            continue
+        text = str(item.get("message", "")).replace("；", ";")
+        for part in text.split(";"):
+            fragment = part.strip()
+            if fragment and fragment not in seen:
+                seen.append(fragment)
+    if not seen:
+        return "（无明细）"
+    summary = "；".join(seen)
+    return summary if len(summary) <= max_chars else summary[:max_chars] + "…"
+
+
+def _save_param_violations(
+    store: ArtifactStore,
+    job_id: str,
+    rounds: list[dict[str, Any]],
+    abandoned: list[str],
+) -> None:
+    """原子写参数一致性违规明细（内部排查文件，不进产物契约与节点完成判据）。
+
+    无任何违规时不留文件——「文件不存在」本身就是「本节点无参数违规」的明确信号，
+    不给每个 job 增加一个空文件。写入失败只告警：告警文本里已带原因，此处是补充。
+    """
+    if not rounds:
+        return
+    payload = {
+        "schema_version": "1.0",
+        "job_id": job_id,
+        "note": (
+            "内部排查文件（非产物契约）：参数一致性校验（R-GEN-02）的违规明细。"
+            "testcases.json 的 X-GEN-02 告警只给接口号，具体原因看这里的 message；"
+            "params 是归一化后（含程序补的默认值）的实际入参快照。"
+        ),
+        "abandoned_interfaces": abandoned,
+        "rounds": rounds,
+    }
+    path = store.job_dir(job_id) / _VIOLATIONS_FILENAME
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        temporary.replace(path)
+    except OSError as exc:  # 明细是排查辅助，写不进去不该让整个节点失败
+        logger.warning("参数违规明细写入失败（不影响产物）：%s", exc)
 
 
 def _load_json_array(
@@ -356,6 +553,80 @@ def _load_json_array(
     return [dict(entry) for entry in entries]
 
 
+def _load_repo_roots(store: ArtifactStore, job_id: str) -> dict[str, Path]:
+    """从 code_inventory.json 取「仓库名 → 本地根目录」，供按 code_location 读源码。
+
+    code_scan 是本节点的前置节点、产物必然存在；但读失败仍只告警不中断——实现片段是
+    增强输入，缺了退化为「无代码依据」的既有行为，不该让节点失败。
+    """
+    try:
+        inventory = store.read_json(job_id, "code_inventory.json")
+    except (FileNotFoundError, PipelineError) as exc:
+        logger.warning("读取 code_inventory.json 失败，本批不注入实现片段：%s", exc)
+        return {}
+    roots: dict[str, Path] = {}
+    for repo in inventory.get("repositories") or []:
+        if not isinstance(repo, dict):
+            continue
+        name = str(repo.get("name", ""))
+        raw_path = str(repo.get("path", ""))
+        if name and raw_path:
+            roots[name] = Path(raw_path)
+    return roots
+
+
+def _implementation_excerpt(
+    interface: dict[str, Any], repo_roots: dict[str, Path]
+) -> dict[str, Any] | None:
+    """按 code_location 读接口实现片段（方法体），带行数/字符上限与脱敏。
+
+    越出仓库根、文件不存在、编码不可解、行号越界都返回 None——宁可不注入，也不猜实现。
+    """
+    location = interface.get("code_location") or {}
+    repo = str(location.get("repo", ""))
+    relative = str(location.get("file", ""))
+    raw_root = repo_roots.get(repo)
+    if raw_root is None or not relative:
+        return None
+    try:
+        root = raw_root.resolve()
+        path = (root / relative).resolve()
+    except OSError:
+        return None
+    # 与 code_review 的证据采集同一防线：只读仓库根之内的文件
+    if root not in path.parents or not path.is_file():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    try:
+        start = int(location.get("start_line", 0))
+        raw_end = int(location.get("end_line", start))
+    except (TypeError, ValueError):
+        return None
+    if start < 1 or start > len(lines):
+        return None
+    end = min(max(raw_end, start), len(lines))
+    truncated = False
+    if end - start + 1 > _MAX_IMPLEMENTATION_LINES:
+        end = start + _MAX_IMPLEMENTATION_LINES - 1
+        truncated = True
+    excerpt = _SECRET_VALUE_RE.sub(r"\1\2<redacted>", "\n".join(lines[start - 1 : end]))
+    if len(excerpt) > _MAX_IMPLEMENTATION_CHARS:
+        excerpt = excerpt[:_MAX_IMPLEMENTATION_CHARS]
+        truncated = True
+    if not excerpt.strip():
+        return None
+    return {
+        "file": relative,
+        "start_line": start,
+        "end_line": end,
+        "excerpt": excerpt,
+        "truncated": truncated,
+    }
+
+
 def _build_batch_context(
     interfaces: list[dict[str, Any]],
     requirements: list[dict[str, Any]],
@@ -364,8 +635,13 @@ def _build_batch_context(
     auth: dict[str, Any] | None,
     index: int,
     total: int,
+    repo_roots: dict[str, Path] | None = None,
 ) -> str:
-    """构造一批用例生成上下文，只携带本批接口相关的需求。"""
+    """构造一批用例生成上下文，只携带本批接口相关的需求。
+
+    每个接口额外带 `implementation`（按 code_location 读到的实现片段）——正常用例的
+    expected 必须落在实现逻辑上，不能只凭 signature 编。读不到就不带该字段。
+    """
     interface_ids = {str(item.get("id", "")) for item in interfaces}
     batch_mappings = [
         {
@@ -377,9 +653,16 @@ def _build_batch_context(
         if str(mapping.get("interface_id", "")) in interface_ids
     ]
     requirement_ids = {str(mapping.get("requirement_id", "")) for mapping in batch_mappings}
+    interfaces_payload: list[dict[str, Any]] = []
+    for interface in interfaces:
+        entry = dict(interface)
+        excerpt = _implementation_excerpt(interface, repo_roots or {})
+        if excerpt is not None:
+            entry["implementation"] = excerpt
+        interfaces_payload.append(entry)
     context: dict[str, Any] = {
         "batch": {"index": index, "total": total},
-        "interfaces": interfaces,
+        "interfaces": interfaces_payload,
         "requirements": [
             item for item in requirements if str(item.get("id", "")) in requirement_ids
         ],
@@ -495,6 +778,22 @@ async def _complete_cases_with_coverage_recovery(
                         return third_cases
                     except PipelineError:
                         pass
+                # 修复轮输出结构损坏：退回首轮用例 + 程序确定性兜底补齐覆盖，
+                # 不因模型输出漂移直接降级。
+                # 判据必须是 `is not None` 而非真值：首轮「能解析但零用例」时
+                # first_cases == []，用真值判定会把它当成「首轮结构损坏」而跳过兜底，
+                # 随后 raise second_error 让整个节点失败（线上实测 IF-REST-003 独占一批）。
+                if first_cases is not None:
+                    missing = _missing_categories(first_cases, interfaces)
+                    if missing:
+                        recovered = _merge_case_entries(
+                            first_cases, _synthesize_fallback_cases(missing)
+                        )
+                        try:
+                            _validate_batch_coverage(recovered, interfaces)
+                            return recovered
+                        except PipelineError:
+                            pass
                 raise second_error from first_error
             merged = _merge_case_entries(first_cases or [], second_cases)
             fallback_missing: list[tuple[dict[str, Any], list[str]]] = []
@@ -509,20 +808,39 @@ async def _complete_cases_with_coverage_recovery(
                     '"title":"...","params":{},"expected":"status=..."}]}。'
                 )
                 targeted = await llm.complete(NODE_NAME, prompt, targeted_content)
-                additions = _parse_llm_cases(targeted.text, [interface])
-                wanted = [
-                    case for case in additions if str(case.get("category", "")) in categories
-                ]
-                if {str(case.get("category", "")) for case in wanted} == set(categories):
+                try:
+                    additions = _parse_llm_cases(targeted.text, [interface])
+                    wanted = [
+                        case
+                        for case in additions
+                        if str(case.get("category", "")) in categories
+                    ]
+                    covered = {
+                        str(case.get("category", "")) for case in wanted
+                    } == set(categories)
+                except PipelineError:
+                    # 定向补产输出损坏/非法类别：同样交由程序确定性兜底，不因模型输出漂移降级
+                    wanted = []
+                    covered = False
+                if covered:
                     merged = _merge_case_entries(merged, wanted)
                 else:
                     # 定向补产仍缺：交由程序确定性兜底，不让模型不稳定性导致漏产降级
                     fallback_missing.append((interface, categories))
             if fallback_missing:
+                logger.info(
+                    "覆盖兜底：%d 个接口缺场景 %s",
+                    len(fallback_missing),
+                    [(str(i.get("id", "")), c) for i, c in fallback_missing],
+                )
                 merged = _merge_case_entries(
                     merged, _synthesize_fallback_cases(fallback_missing)
                 )
-            _validate_batch_coverage(merged, interfaces)
+            try:
+                _validate_batch_coverage(merged, interfaces)
+            except PipelineError as exc:
+                logger.warning("兜底后仍漏产：%s", exc.message)
+                raise
             return merged
 
 
@@ -548,14 +866,96 @@ def _missing_categories(
     return result
 
 
+def _case_dedup_key(case: dict[str, Any]) -> tuple[str, str, str]:
+    """去重键：接口 + 类别 + 测试点。
+
+    逐点展开后同一接口同一类别可以合法地有多条用例（不同测试点验证不同业务规则），
+    故必须把 testpoint_id 并入键，否则修复轮合并会把展开结果塌缩回每接口三类。
+    无 testpoint_id 的条目（程序兜底）退化为「接口 + 类别」，保持原有去重语义。
+    """
+    return (
+        str(case.get("interface_id", "")),
+        str(case.get("category", "")),
+        str(case.get("testpoint_id", "")),
+    )
+
+
+def _uncovered_req_testpoints(
+    cases: list[dict[str, Any]],
+    testpoints: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """返回本批内有接口归属、但没有任何用例回填其编号的 REQ 测试点。
+
+    只统计 `source=REQ`：RISK 点是同一需求下机械派生的同构场景（prompt 明确要求
+    按需求归并），对它们做逐点覆盖会逼迫模型产出雷同用例。无接口归属的测试点属
+    E2E/人工范畴，不在本节点覆盖面内。
+    """
+    interface_ids = {str(item.get("id", "")) for item in interfaces}
+    referenced = {
+        str(case.get("testpoint_id", ""))
+        for case in cases
+        if str(case.get("testpoint_id", ""))
+    }
+    return [
+        point
+        for point in testpoints
+        if str(point.get("source", "")) == "REQ"
+        and str(point.get("interface_id", "")) in interface_ids
+        and str(point.get("id", "")) not in referenced
+    ]
+
+
+async def _recover_uncovered_testpoints(
+    llm: SupportsComplete,
+    prompt: PromptSpec,
+    user_content: str,
+    interfaces: list[dict[str, Any]],
+    cases: list[dict[str, Any]],
+    uncovered: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """为未被引用的 REQ 测试点做一次定向补产，失败时原样返回。
+
+    只补产缺失测试点、只接受参数合规的用例；任何解析/校验失败都不让整批失败
+    （覆盖缺口最终以告警形式出现在产物 warnings，交由人工判断）。
+    """
+    targeted_content = (
+        f"{user_content}\n\n"
+        "这是测试点覆盖补充请求。下列 REQ 测试点尚无对应用例，请每个测试点各产出"
+        "至少一条用例，并在用例中回填其 testpoint_id；同时仍需满足每个接口"
+        "normal/boundary/exception 三类各 ≥1。只为下面列出的测试点与接口输出，"
+        "禁止输出其它接口：\n"
+        f"未覆盖测试点：{json.dumps(uncovered, ensure_ascii=False)}\n"
+        '输出格式：{"cases":[{"interface_id":"...","requirement_id":"...",'
+        '"testpoint_id":"...","category":"normal|boundary|exception","title":"...",'
+        '"params":{},"expected":"status=..."}]}。'
+    )
+    try:
+        result = await llm.complete(NODE_NAME, prompt, targeted_content)
+        additions = _parse_llm_cases(result.text, interfaces)
+    except PipelineError as exc:
+        # 补产是增强路径：模型输出损坏或接口引用非法时保留已有用例，不中断批次。
+        logger.warning("测试点覆盖补产调用失败，保留已有用例：%s", exc.message)
+        return cases
+    accepted, _ = _filter_param_violations(additions, interfaces)
+    # 只接受确实覆盖了缺失测试点的条目，避免把无关用例混入产物。
+    wanted = {str(point.get("id", "")) for point in uncovered}
+    accepted = [
+        case for case in accepted if str(case.get("testpoint_id", "")) in wanted
+    ]
+    if not accepted:
+        return cases
+    return _merge_case_entries(cases, accepted)
+
+
 def _merge_case_entries(
     existing: list[dict[str, Any]], additions: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """按接口+类别去重合并，补产结果不覆盖已有完整场景。"""
-    seen = {(str(item.get("interface_id", "")), str(item.get("category", ""))) for item in existing}
+    """按接口+类别+测试点去重合并，补产结果不覆盖已有完整场景。"""
+    seen = {_case_dedup_key(item) for item in existing}
     merged = list(existing)
     for item in additions:
-        key = (str(item.get("interface_id", "")), str(item.get("category", "")))
+        key = _case_dedup_key(item)
         if key not in seen:
             merged.append(item)
             seen.add(key)
@@ -592,7 +992,7 @@ def _synthesize_fallback_case(
     if_id: str, category: str, params_defs: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
     """为单个接口的单个缺失场景构造一条确定性兜底用例；无法推导返回 None。"""
-    body = next((p for p in params_defs if str(p.get("in", "")) == "body"), None)
+    bodies = [p for p in params_defs if str(p.get("in", "")) == "body"]
     simple = next(
         (p for p in params_defs if str(p.get("in", "")) in {"query", "path"}), None
     )
@@ -601,10 +1001,35 @@ def _synthesize_fallback_case(
         for p in params_defs
         if str(p.get("in", "")) == "path"
     }
+    # normal 兜底 expected 为 2xx、不豁免缺参校验，须补齐所有必填的非 body 参数。
+    required_extra = [
+        p
+        for p in params_defs
+        if p.get("required") is True
+        and str(p.get("in", "")) in {"query", "path", "header"}
+    ]
+
+    def _body_fields(body: dict[str, Any]) -> list[dict[str, Any]]:
+        return [f for f in body.get("fields", []) if isinstance(f, dict)]
+
+    def _body_default(body: dict[str, Any]) -> dict[str, Any]:
+        return {
+            str(f.get("name")): _type_default_value(
+                str(f.get("type", "")), str(f.get("name", ""))
+            )
+            for f in _body_fields(body)
+        }
+
+    def _fill_required_extra(params: dict[str, Any]) -> dict[str, Any]:
+        for p in required_extra:
+            pname = str(p.get("name"))
+            if pname not in params:
+                params[pname] = _type_default_value(str(p.get("type", "")), pname)
+        return params
 
     if category == "exception":
         # 缺必填 body（若存在）；无 body 则缺必填 path/query，由 4xx 豁免缺参校验
-        if body is not None:
+        if bodies:
             params: dict[str, Any] = dict(path_placeholder)
             title = f"{if_id} 异常用例（必填 body 缺失，程序兜底）"
         else:
@@ -622,40 +1047,36 @@ def _synthesize_fallback_case(
     if category not in {"normal", "boundary"}:
         return None
 
-    if body is not None:
-        # body 复杂对象：字段级或空对象
-        name = str(body.get("name"))
-        fields = [f for f in body.get("fields", []) if isinstance(f, dict)]
-        if category == "normal":
-            if fields:
-                body_value = {
-                    str(f.get("name")): _type_default_value(
-                        str(f.get("type", "")), str(f.get("name", ""))
-                    )
-                    for f in fields
+    if bodies:
+        # 多个 body 参数（如 response + request）都要给值，避免缺必填被判违规
+        params = dict(path_placeholder)
+        boundary_applied = False
+        for body in bodies:
+            name = str(body.get("name"))
+            fields = _body_fields(body)
+            if category == "boundary" and fields and not boundary_applied:
+                first = fields[0]
+                params[name] = {
+                    str(first.get("name")): _type_boundary_value(str(first.get("type", "")))
                 }
-                params = {**path_placeholder, name: body_value}
-                title = f"{if_id} 正常用例（字段默认值，程序兜底）"
+                boundary_applied = True
             else:
-                params = {**path_placeholder, name: {}}
-                title = f"{if_id} 正常用例（空 body，程序兜底）"
+                params[name] = _body_default(body)
+        params = _fill_required_extra(params)
+        if category == "normal":
+            title = f"{if_id} 正常用例（字段默认值，程序兜底）"
             expected = "status_class=2xx"
-        else:  # boundary
-            if fields:
-                field = fields[0]
-                value = _type_boundary_value(str(field.get("type", "")))
-                params = {**path_placeholder, name: {str(field.get("name")): value}}
-                title = f"{if_id} 边界用例（字段 {field.get('name')} 边界值，程序兜底）"
-            else:
-                params = {**path_placeholder, name: {}}
-                title = f"{if_id} 边界用例（空 body，程序兜底）"
+        else:
+            title = f"{if_id} 边界用例（字段边界值，程序兜底）"
             expected = "status_class=4xx"
     elif simple is not None:
         # 无 body：用简单参数（query/path）给类型默认值/边界值
         sname = str(simple.get("name"))
         stype = str(simple.get("type", ""))
         if category == "normal":
-            params = {**path_placeholder, sname: _type_default_value(stype, sname)}
+            params = _fill_required_extra(
+                {**path_placeholder, sname: _type_default_value(stype, sname)}
+            )
             title = f"{if_id} 正常用例（最小请求，程序兜底）"
             expected = "status_class=2xx"
         else:  # boundary
@@ -843,6 +1264,167 @@ def _derive_testpoints(
     return points
 
 
+def _testpoint_context(
+    points: list[dict[str, Any]],
+    requirements: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """构造补全 hints 用的最小上下文：需求原文 + 接口定义（含 fields）。
+
+    只带模型判断拆分维度必需的信息：需求描述说明「验证什么」，接口参数说明
+    「用什么取值测」。刻意不含用例字段，避免模型越界直接生成用例。
+    """
+    requirement_by_id = {str(item.get("id", "")): item for item in requirements}
+    interface_by_id = {str(item.get("id", "")): item for item in interfaces}
+    context: list[dict[str, Any]] = []
+    for point in points:
+        requirement = requirement_by_id.get(str(point.get("requirement_id", "")), {})
+        interface = interface_by_id.get(str(point.get("interface_id") or ""))
+        context.append(
+            {
+                "testpoint_id": str(point.get("id", "")),
+                "source": str(point.get("source", "")),
+                "requirement": {
+                    "id": str(requirement.get("id", point.get("requirement_id", ""))),
+                    "title": str(requirement.get("title", "")),
+                    "description": str(requirement.get("description", "")),
+                },
+                "interface": (
+                    {
+                        "id": str(interface.get("id", "")),
+                        "signature": interface.get("signature", {}),
+                        "params": interface.get("params") or [],
+                    }
+                    if interface
+                    else None
+                ),
+                "scenario": str(point.get("scenario", "")),
+            }
+        )
+    return context
+
+
+async def _enrich_hints_batch(
+    llm: SupportsComplete,
+    prompt: PromptSpec,
+    batch: list[dict[str, Any]],
+    limiter: asyncio.Semaphore,
+) -> dict[str, list[str]]:
+    """补全单批测试点的拆分维度；本批失败返回空 dict（该批退回模板 hints）。
+
+    失败绝不上抛：拆分维度是增强项，任何一批失败都只影响本批测试点，不得中断节点。
+    收窄重试上限为 `_TP_HINTS_MAX_ATTEMPTS`——本调用失败即优雅退化，按默认 3 次
+    尝试白等 3×超时+25s 不划算（见常量注释）。
+
+    除 PipelineError 外还兜住任意异常：`LlmClient._request_once` 只把
+    TimeoutException/TransportError 包装成 PipelineError，其余 httpx 异常会原样上抛；
+    而 `asyncio.gather` 默认不隔离失败，一批抛出会让其他批已补全的 hints 一起丢失。
+    与「辅助调用绝不拖垮节点」的契约对齐，这里统一收敛为「本批退回模板 hints」。
+    """
+    async with limiter:
+        try:
+            # 以子阶段名留痕（同 requirement_review 之于 req_parse 的先例）：
+            # 让 llm_calls.jsonl 能区分「拆分维度补全」与「用例生成」两类调用。
+            result = await llm.complete(
+                _TP_HINTS_PROMPT,
+                prompt,
+                json.dumps({"batch": {"count": len(batch)}, "items": batch}, ensure_ascii=False),
+                max_attempts=_TP_HINTS_MAX_ATTEMPTS,
+            )
+            return _parse_testpoint_hints(result.text, batch)
+        except PipelineError as exc:
+            logger.warning(
+                "测试点拆分维度补全调用失败，本批 %d 个测试点沿用模板 hints：%s",
+                len(batch),
+                exc.message,
+            )
+        except Exception:
+            # 非预期异常也退化为模板 hints，但带栈输出以便定位（不静默吞掉）。
+            logger.warning(
+                "测试点拆分维度补全本批异常，%d 个测试点沿用模板 hints",
+                len(batch),
+                exc_info=True,
+            )
+        return {}
+
+
+async def _enrich_testpoint_hints(
+    llm: SupportsComplete,
+    prompts_dir: Path,
+    points: list[dict[str, Any]],
+    requirements: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """用模型为每个测试点补全专属拆分维度，失败时保留程序模板 hints。
+
+    拆分维度是纯输入侧细化，不参与产物 Schema：任何批次失败都退化为模板 hints，
+    绝不能因为这一次调用失败让整个用例生成节点失败或产出为空。
+
+    批次之间互不依赖（各批只按自己的 testpoint_id 回填），故有界并发执行：串行会让
+    墙钟等于各批之和（实测 11 批串行 1h59m）。并发度用信号量兜住，不做无上限并发，
+    避免中转站限流导致各批互相挤占、集体超时。
+    """
+    if not points:
+        return points
+    try:
+        prompt = load_prompt(prompts_dir, _TP_HINTS_PROMPT)
+    except PipelineError as exc:
+        logger.warning("测试点拆分维度 Prompt 加载失败，沿用模板 hints：%s", exc.message)
+        return points
+
+    context = _testpoint_context(points, requirements, interfaces)
+    batches = chunk_json_items(context, _TP_HINTS_MAX_CHARS)
+    limiter = asyncio.Semaphore(_TP_HINTS_CONCURRENCY)
+    parsed_batches = await asyncio.gather(
+        *(_enrich_hints_batch(llm, prompt, batch, limiter) for batch in batches)
+    )
+    hints_by_id: dict[str, list[str]] = {}
+    for parsed in parsed_batches:
+        hints_by_id.update(parsed)
+    if not hints_by_id:
+        logger.warning(
+            "测试点拆分维度补全全部失败（%d 批），%d 个测试点沿用模板 hints",
+            len(batches),
+            len(points),
+        )
+        return points
+    enriched: list[dict[str, Any]] = []
+    for point in points:
+        hints = hints_by_id.get(str(point.get("id", "")))
+        enriched.append({**point, "case_split_hints": hints} if hints else point)
+    return enriched
+
+
+def _parse_testpoint_hints(text: str, batch: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """解析补齐结果：只接受本批 testpoint_id 的合法字符串数组，其余静默丢弃。
+
+    模型漏项、改号或返回空数组时该测试点保留模板 hints——拆分维度是增强项，
+    不因模型输出残缺而中断节点，故这里对不合格条目逐个忽略而非整体报错。
+    """
+    try:
+        data = json.loads(strip_code_fence(text))
+    except json.JSONDecodeError:
+        return {}
+    entries = data.get("hints") if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        return {}
+    allowed = {str(item["testpoint_id"]) for item in batch}
+    parsed: dict[str, list[str]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        point_id = str(entry.get("testpoint_id", ""))
+        if point_id not in allowed or point_id in parsed:
+            continue
+        raw_hints = entry.get("case_split_hints")
+        if not isinstance(raw_hints, list):
+            continue
+        hints = [hint.strip() for hint in raw_hints if isinstance(hint, str) and hint.strip()]
+        if hints:
+            parsed[point_id] = hints
+    return parsed
+
+
 async def _generate_e2e_cases(
     llm: SupportsComplete,
     prompts_dir: Path,
@@ -850,8 +1432,12 @@ async def _generate_e2e_cases(
     testpoints: list[dict[str, Any]],
     surface: dict[str, Any],
     auth_mode: str = "browser",
-) -> list[dict[str, Any]]:
-    """基于真实页面探测结果生成，禁止模型杜撰路由或 selector。"""
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """基于真实页面探测结果生成，禁止模型杜撰路由或 selector。
+
+    未通过白名单校验的单条用例会被丢弃并汇总为告警，不影响其余用例与本节点成败：
+    E2E 是可选产物，接口用例已在调用前定型。
+    """
     prompt = load_prompt(prompts_dir, "e2e_testcase_generate")
     allowed_selectors = {selector for route in surface["routes"] for selector in route["selectors"]}
     allowed_paths = {route["path"] for route in surface["routes"]}
@@ -865,7 +1451,7 @@ async def _generate_e2e_cases(
         },
         ensure_ascii=False,
     )
-    raw_cases = await complete_with_json_repair(
+    raw_cases, dropped = await complete_with_json_repair(
         llm,
         "testcase_generate",
         prompt,
@@ -884,7 +1470,13 @@ async def _generate_e2e_cases(
             "expected": str(case["expected"]),
         }
         result.append(entry)
-    return result
+    warnings: list[str] = []
+    if dropped:
+        preview = "；".join(dropped[:5]) + ("…" if len(dropped) > 5 else "")
+        warnings.append(
+            f"X-E2E-02: {len(dropped)} 条 E2E 用例未通过白名单校验已丢弃：{preview}"
+        )
+    return result, warnings
 
 
 async def _inspect_e2e_surface(
@@ -932,7 +1524,19 @@ async def _inspect_e2e_surface(
     if auth:
         routes.extend(await _inspect_authenticated_routes(base_url, ignore_https_errors, auth))
     unique = {str(route["path"]): route for route in routes}
-    return {"base_url": base_url.rstrip("/"), "routes": list(unique.values())}
+    normalized_base = base_url.rstrip("/")
+    return {
+        "base_url": normalized_base,
+        # goto.value 由执行端**字符串拼接**在 base_url 之后（见 auto_execute._run_e2e_step），
+        # 所以 routes[].path 是「相对 base_url」的路径，不是站内绝对路径。
+        # base_url 自带路径前缀时（如 http://host:6080/home），首页对应 path 是 "/"，
+        # 而不是 "/home"——不写清楚模型会按站内绝对路径写，全部被白名单拒绝。
+        "path_basis": (
+            f"goto/expect_url 的 value 相对 {normalized_base} 拼接；"
+            f"例如 value=\"/\" 打开 {normalized_base}/"
+        ),
+        "routes": list(unique.values()),
+    }
 
 
 async def _inspect_authenticated_routes(
@@ -1020,8 +1624,21 @@ def _parse_e2e_cases(
     text: str,
     allowed_selectors: set[str] | None = None,
     allowed_paths: set[str] | None = None,
-) -> list[dict[str, Any]]:
-    """严格收敛 E2E 动作白名单，避免模型产生任意 JS 或危险浏览器操作。"""
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """严格收敛 E2E 动作白名单，避免模型产生任意 JS 或危险浏览器操作。
+
+    校验分两级，粒度不同：
+
+    - **整体结构**错误（非 JSON、定位不到 cases 数组）→ 抛 X-LLM-02，交修复轮重出；
+    - **单条用例**问题（缺字段、动作不在白名单、selector/路由未探测到）→ **丢弃该条**
+      并记录原因。
+
+    白名单的语义是「不执行未验证的动作」，丢弃该条即已达成；为一条坏用例让整个节点
+    失败会连带打断下游全部节点（实测：一条 `goto: /home` 使 4 个下游节点降级）。
+
+    Returns:
+        (可用的 E2E 用例, 被丢弃用例的原因列表)
+    """
     try:
         payload = json.loads(strip_code_fence(text))
     except json.JSONDecodeError as exc:
@@ -1062,68 +1679,86 @@ def _parse_e2e_cases(
         )
     allowed_actions = {"goto", "click", "fill", "check", "select", "expect_text", "expect_url"}
     cases: list[dict[str, Any]] = []
-    for entry in entries:
-        if not isinstance(entry, dict) or not all(
-            isinstance(entry.get(key), str) and entry[key].strip()
+    dropped: list[str] = []
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            dropped.append(f"第 {index} 条不是对象")
+            continue
+        missing = [
+            key
             for key in ("requirement_id", "title", "expected")
-        ):
-            raise PipelineError(
-                code=X_LLM_02, message="E2E 用例缺少需求、标题或预期", node_id=NODE_NAME
-            )
+            if not (isinstance(entry.get(key), str) and entry[key].strip())
+        ]
+        if missing:
+            dropped.append(f"第 {index} 条缺少{'/'.join(missing)}")
+            continue
         steps = entry.get("steps")
         if not isinstance(steps, list) or not steps:
-            raise PipelineError(code=X_LLM_02, message="E2E 用例缺少步骤", node_id=NODE_NAME)
+            dropped.append(f"第 {index} 条缺少步骤")
+            continue
         normalized_steps: list[dict[str, str]] = []
+        rejection = ""
         for step in steps:
             if not isinstance(step, dict) or str(step.get("action", "")) not in allowed_actions:
-                raise PipelineError(
-                    code=X_LLM_02, message="E2E 用例含不支持的浏览器动作", node_id=NODE_NAME
-                )
+                rejection = "含不支持的浏览器动作"
+                break
             action = str(step["action"])
             value = step.get("value")
             selector = step.get("selector")
             if action == "goto":
                 if not isinstance(value, str) or not value.startswith("/"):
-                    raise PipelineError(
-                        code=X_LLM_02,
-                        message="E2E goto 仅允许站内相对路径",
-                        node_id=NODE_NAME,
-                    )
+                    rejection = "goto 仅允许站内相对路径"
+                    break
                 if allowed_paths is not None and value not in allowed_paths:
-                    raise PipelineError(
-                        code=X_LLM_02,
-                        message=f"E2E goto 不是已探测路由：{value}",
-                        node_id=NODE_NAME,
-                    )
+                    rejection = f"goto 不是已探测路由：{value}"
+                    break
                 normalized_steps.append({"action": action, "value": value})
             elif action == "expect_url":
                 # URL 断言不定位单个元素；Prompt 明确允许 selector 为空。
                 if not isinstance(value, str) or not value.startswith("/"):
-                    raise PipelineError(
-                        code=X_LLM_02,
-                        message="E2E expect_url 仅允许站内相对路径",
-                        node_id=NODE_NAME,
-                    )
+                    rejection = "expect_url 仅允许站内相对路径"
+                    break
                 normalized_steps.append({"action": action, "value": value})
             elif not isinstance(selector, str) or not selector.strip():
-                raise PipelineError(
-                    code=X_LLM_02, message="E2E 步骤缺少 selector", node_id=NODE_NAME
-                )
+                rejection = "步骤缺少 selector"
+                break
+            elif allowed_selectors is not None and selector not in allowed_selectors:
+                rejection = f"selector 未在真实页面探测结果中出现：{selector}"
+                break
             else:
-                if allowed_selectors is not None and selector not in allowed_selectors:
-                    raise PipelineError(
-                        code=X_LLM_02,
-                        message=f"E2E selector 未在真实页面探测结果中出现：{selector}",
-                        node_id=NODE_NAME,
-                    )
                 normalized = {"action": action, "selector": selector}
                 if value is not None:
                     normalized["value"] = str(value)
                 normalized_steps.append(normalized)
+        if rejection:
+            title = str(entry.get("title", "")).strip()
+            prefix = f"第 {index} 条（{title}）" if title else f"第 {index} 条"
+            dropped.append(f"{prefix}：{rejection}")
+            continue
         copied = dict(entry)
         copied["steps"] = normalized_steps
         cases.append(copied)
-    return cases
+    return cases, dropped
+
+
+def _expand_long_markers(value: Any) -> Any:
+    """递归展开 `__LONG_<n>__` 紧凑记号为真实长度的字符串。
+
+    只认「整个值恰好是记号」的形态（前后不留别的文本），避免把普通字符串误伤；
+    n 超出 `_LONG_MARKER_MAX` 时原样保留（宁可不展开，也不让产物被撑爆）。
+    展开结果用固定填充字符 `x`——边界用例校验的是「长度超限」这一契约，不是具体内容。
+    """
+    if isinstance(value, str):
+        match = _LONG_MARKER_RE.match(value.strip())
+        if match is None:
+            return value
+        length = int(match.group(1))
+        return "x" * length if 0 < length <= _LONG_MARKER_MAX else value
+    if isinstance(value, dict):
+        return {key: _expand_long_markers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand_long_markers(item) for item in value]
+    return value
 
 
 def _parse_llm_cases(text: str, interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1171,7 +1806,20 @@ def _parse_llm_cases(text: str, interfaces: list[dict[str, Any]]) -> list[dict[s
                 message=f"LLM 输出了非法 category：{category}（三类之外）",
                 node_id=NODE_NAME,
             )
-        cases.append(dict(raw))
+        entry = dict(raw)
+        # F-GEN-04 溯源扩展：testpoint_id 为可选增强字段。虚构编号由下游
+        # _referenced_testpoint_ids 按本批 testpoints 过滤，此处只做归一化，
+        # 不因可选字段异常而中断整批（与 interface_id 的硬校验分层）。
+        testpoint_id = str(raw.get("testpoint_id", "") or "").strip()
+        if testpoint_id:
+            entry["testpoint_id"] = testpoint_id
+        else:
+            entry.pop("testpoint_id", None)
+        # 超长字符串记号展开：把「数 1025 个字符」从模型侧移回程序侧（见 _LONG_MARKER_RE 注释）。
+        # 放在参数一致性校验之前，确保后续校验/渲染/执行拿到的是真实字面量而非记号。
+        if "params" in entry:
+            entry["params"] = _expand_long_markers(entry["params"])
+        cases.append(entry)
     return cases
 
 
@@ -1291,11 +1939,15 @@ def _filter_param_violations(
 def _merge_rounds(
     first: list[dict[str, Any]], second: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """合并两轮通过校验的用例（同接口同类目去重，第一轮优先）。"""
-    seen: set[tuple[str, str]] = set()
+    """合并两轮通过校验的用例（同接口+类别+测试点去重，第一轮优先）。
+
+    去重键含 testpoint_id：两轮可能各覆盖同一接口同一类别下的不同测试点，
+    若只按接口+类别去重会把第二轮展开出的用例整体丢弃。
+    """
+    seen: set[tuple[str, str, str]] = set()
     merged: list[dict[str, Any]] = []
     for case in first + second:
-        key = (str(case.get("interface_id", "")), str(case.get("category", "")))
+        key = _case_dedup_key(case)
         if key in seen:
             continue
         seen.add(key)
@@ -1303,11 +1955,21 @@ def _merge_rounds(
     return merged
 
 
+def _valid_testpoint_ids(testpoints: list[dict[str, Any]]) -> set[str]:
+    """本批合法测试点编号集合，用于过滤模型虚构的溯源引用。
+
+    testpoint_id 是可选增强字段：只保留确实存在于输入 testpoints 的编号，
+    虚构/越批引用一律剥离（不中断批次），保持与 F-GEN-04「禁止虚构」一致而不误伤。
+    """
+    return {str(item.get("id", "")) for item in testpoints if item.get("id")}
+
+
 def _finalize_cases(
     cases: list[dict[str, Any]],
     job_id: str,
     store: ArtifactStore,
     interfaces: list[dict[str, Any]],
+    testpoints: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """补全元数据并渲染脚本：TC-### / script_path / loadable / low_confidence。
 
@@ -1320,6 +1982,7 @@ def _finalize_cases(
         for interface in interfaces
         if any(str(p.get("type")) == "unknown" for p in interface.get("params") or [])
     }
+    known_points = _valid_testpoint_ids(testpoints or [])
     finalized: list[dict[str, Any]] = []
     any_unloadable = False
     for seq, case in enumerate(cases, start=1):
@@ -1333,6 +1996,11 @@ def _finalize_cases(
         }
         if case.get("requirement_id"):
             entry["requirement_id"] = str(case["requirement_id"])
+        # F-GEN-04 溯源扩展：只保留合法测试点编号。程序兜底用例天然没有该字段（不伪造）；
+        # 模型虚构或跨批引用（不在本批 testpoints 内）在此剥离，不使整批失败。
+        testpoint_id = str(case.get("testpoint_id", "") or "")
+        if testpoint_id and testpoint_id in known_points:
+            entry["testpoint_id"] = testpoint_id
         if isinstance(case.get("params"), dict):
             entry["params"] = case["params"]
         if str(case.get("auth_mode", "")) in {"inherit", "missing", "invalid"}:
