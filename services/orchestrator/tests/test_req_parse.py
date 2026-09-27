@@ -126,7 +126,11 @@ async def test_req_parse_success(env: tuple[Engine, ArtifactStore], doc: Path) -
     assert review["quality_grade"] == "B"
     assert review["source_files"] == [str(doc)]
     # 两个 Prompt 均为真实文件，且使用同一份已文本化的需求文档。
-    assert [ref for ref, _content in llm.received] == ["req_parse@2.0", "requirement_review@2.0"]
+    # 只断言用了哪些 Prompt（节点口径），不锁版本号：Prompt 内容迭代不应误报此测试。
+    assert [ref.split("@", 1)[0] for ref, _content in llm.received] == [
+        "req_parse",
+        "requirement_review",
+    ]
     assert all("按 ID 查询用户" in content for _ref, content in llm.received)
 
 
