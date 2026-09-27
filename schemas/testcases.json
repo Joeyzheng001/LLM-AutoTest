@@ -16,6 +16,7 @@
           "id": { "type": "string", "pattern": "^TC-\\d{3}$" },
           "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$", "description": "F-GEN-04 溯源" },
           "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$", "description": "F-GEN-04 溯源（可追溯即携带）" },
+          "testpoint_id": { "type": "string", "pattern": "^TP-\\d{3}$", "description": "F-GEN-04 溯源扩展：本条用例主要覆盖的测试点编号；程序兜底用例可省略" },
           "category": { "type": "string", "enum": ["normal", "boundary", "exception"], "description": "F-GEN-01：每接口三类各 ≥1" },
           "title": { "type": "string", "minLength": 1 },
           "params": {

@@ -1,8 +1,10 @@
 ---
-version: 1.1
+version: 1.3
 spec: K-GEN-02
 owner: QA
 changelog:
+  - 1.3 | 2026-09-24 | 展开加收敛点（每 REQ 点 1~2 条、整批封顶 40 条）；引入 __LONG_<n>__ 超长字符串记号
+  - 1.2 | 2026-09-24 | 明确每个 REQ 测试点须有对应用例并回填 testpoint_id；用例数不得停在接口数×3
   - 1.0 | 2026-09-18 | 用例生成节点的末尾 JSON 输出契约
   - 1.1 | 2026-09-21 | 明确批次覆盖与单对象兼容边界
 sampling:
@@ -17,14 +19,25 @@ sampling:
 正确形态：
 
 ```json
-{"cases":[{"interface_id":"输入中存在的 IF-...","category":"normal","title":"...","params":{},"expected":"status=200"}]}
+{"cases":[{"interface_id":"输入中存在的 IF-...","category":"normal","title":"...","testpoint_id":"TP-001","params":{},"expected":"status=200"}]}
 ```
 
 禁止输出 `body`、`data`、`response`、`content`、`result`、`test_cases`、`testcases`、
 `analysis`、`message` 或任何展示/解释包装。不要把 JSON 再编码为字符串；`cases` 必须是
 真正的数组。生成前在内部检查：每个 `interface_id` 都来自当前批次，`category` 只能为
-`normal`、`boundary`、`exception`，`params` 是对象。
+`normal`、`boundary`、`exception`，`params` 是对象，`testpoint_id` 必须来自本批 `testpoints`。
 
 即使当前批次只有一条用例，也必须输出 `{"cases":[...]}`；服务端只对字段完整的单对象做兼容提升，
 不会替模型补标题、参数或预期。必须覆盖输入批次声明的每个接口及 `normal`、`boundary`、
 `exception` 三类场景；无法完成某条用例时，宁可触发修复/人工介入，也不能用其它接口复制或改变顶层结构。
+
+**数量要求（本批硬约束）**：输入 `testpoints` 中 `source=REQ` 的每一个测试点都必须至少被一条
+用例的 `testpoint_id` 引用（每点 1 条，业务规则确实复杂时最多 2 条）。只输出「接口数 × 3」条
+（每接口恰好 normal/boundary/exception 各一条）视为未完成展开。但**展开必须有收敛点**：
+`case_split_hints` 只用来挑最具代表性的 1~2 个维度，**不要**为每条 hint 各造一条用例；
+整批用例 **封顶 40 条**——输出过长会撞上生成长度上限被截断，整批作废。
+`source=RISK` 的测试点按需求归并，不要逐条复制。
+
+**超长字符串记号**：字符串的「超长」边界**不要写字面量**，写紧凑记号 `__LONG_<n>__`
+（`<n>` 为目标字符数，如 `__LONG_1025__`），程序会展开成真实长度的字符串。
+逐字符手写 1025 个字符会耗尽生成长度，是本节点整批输出作废的主要原因。

@@ -98,6 +98,13 @@ _NODE_KNOWLEDGE: dict[str, tuple[str, ...]] = {
         "memory/failure-triage.md",
         "skills/code-review-output-contract.md",
     ),
+    "testpoint_derive": (
+        "skills/functional-test-design.md",
+        "skills/structured-output-compatibility.md",
+        "memory/test-design-lessons.md",
+        # 必须最后注入：将本节点唯一允许的顶层 JSON 结构置于模型上下文末尾。
+        "skills/testpoint-output-contract.md",
+    ),
     "testcase_generate": (
         "skills/functional-test-design.md",
         "skills/structured-output-compatibility.md",

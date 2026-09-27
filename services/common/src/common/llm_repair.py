@@ -38,6 +38,11 @@ _REPAIR_CONTRACTS: dict[str, str] = {
         '只输出 {"assessments":[...]}；当前批每个 claim_id 恰好出现一次。'
         '只引用当前批提供的 interface_id/evidence_id，禁止输出旧版 mappings、body/data/result/content。'
     ),
+    "testpoint_derive": (
+        '只输出 {"hints":[...]}，hints 必须是真正的数组；本批每个输入 testpoint_id 恰好出现'
+        '一次，case_split_hints 为带具体条件的字符串数组。禁止输出 cases、category、params、'
+        'expected 等用例字段或 body/data/result/content。'
+    ),
     "testcase_generate": (
         '只输出 {"cases":[...]}，cases 必须是真正的数组；每个接口覆盖 normal、'
         'boundary、exception，禁止输出 body/data/result/content 或跨节点字段。'

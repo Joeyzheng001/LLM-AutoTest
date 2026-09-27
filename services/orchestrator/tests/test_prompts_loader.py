@@ -75,7 +75,8 @@ def test_load_prompt_appends_testcase_output_contract_last() -> None:
     """用例生成的唯一顶层结构契约必须位于模型上下文末尾。"""
     prompts = Path(__file__).resolve().parents[3] / "prompts"
     spec = load_prompt(prompts, "testcase_generate")
-    assert spec.knowledge_refs[-1] == "skills/testcase-output-contract@1.1"
+    # 只断言不变式（契约文件位于末尾），不锁定版本号：契约内容迭代不应误报此测试。
+    assert spec.knowledge_refs[-1].startswith("skills/testcase-output-contract@")
     assert "顶层只能有一个键：`cases`" in spec.body
 
 

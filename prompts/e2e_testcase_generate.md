@@ -1,9 +1,12 @@
 <!-- 可选 E2E 用例生成：需求级测试点 → 受限浏览器动作。 -->
 
 ---
-version: 1.0
+version: 1.1
 spec: F-GEN-E2E-01
 owner: 甲
+changelog:
+  - 1.1 | 2026-09-27 | 明确 goto.value 相对 surface.base_url 拼接（base_url 自带路径时首页是 /，不是 /home）
+  - 1.0 | 2026-09-22 | 初版：基于真实页面探测的路由/selector 白名单
 sampling:
   temperature: 0.2
   top_p: 0.9
@@ -37,6 +40,7 @@ sampling:
 - 只为输入中的 `requirements` 和 `testpoints` 生成；`requirement_id` 必须原样引用输入，禁止虚构。
 - 每个需求优先覆盖主业务路径；`source=RISK` 的测试点补充异常、权限、空状态或关键提示的可见行为。
 - 输入 `surface.routes` 是浏览器刚刚真实探测到的页面。`goto.value` 只能使用其中的 `path`；每个 selector 必须逐字使用其中的 `selectors`，禁止凭需求猜测路由、控件或文案。
+- **`path` 是相对 `surface.base_url` 的路径**（见输入里的 `surface.path_basis`），执行端把它直接接在 `base_url` 之后。所以当 `base_url` 自带路径前缀（如 `http://host:6080/home`）时，首页对应的 `path` 是 `/`（拼成 `http://host:6080/home/`），**不要写 `/home`**——那会拼成 `/home/home` 并被白名单拒绝。判断依据：以 `routes[].path` 的字面值为准，不要从 `base_url` 反推页面路径。
 - `goto` 的 `value` 只能是站内相对路径（以 `/` 开头），不能填写完整 URL。
 - 仅允许动作：`goto`、`click`、`fill`、`check`、`select`、`expect_text`、`expect_url`。不得输出 JavaScript、shell、下载、上传、等待或任意代码。
 - selector 优先按可访问语义写：`role=button[name=保存]`、`label=用户名`、`placeholder=用户名`、`text=提交成功`、`testid=save-button`。页面结构不确定时，不要猜测 CSS class、XPath、路由或控件。
