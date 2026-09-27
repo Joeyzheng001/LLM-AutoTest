@@ -33,7 +33,11 @@ from urllib.parse import urlparse
 
 import httpx
 from common.artifacts import ArtifactStore
-from common.case_validation import blocking_parameter_messages, materialize_declared_defaults
+from common.case_validation import (
+    blocking_parameter_messages,
+    is_runtime_injected_param,
+    materialize_declared_defaults,
+)
 from common.engine import Engine, JobState
 from common.errors import X_ORCH_01, PipelineError
 from common.security import redact_secrets
@@ -244,6 +248,10 @@ class RestRunner:
         headers: dict[str, str] = {}
         for name, value in request.params.items():
             param_def = param_defs.get(name) or {}
+            # 框架运行时注入的容器参数不是请求参数：`in=unknown` 会落到下面的 else 分支
+            # 变成 query，实测会把 `response=unknown` 发给被测服务。直接跳过。
+            if is_runtime_injected_param(param_def):
+                continue
             position = str(param_def.get("in", "query"))
             # 扫描器无法展开 serializer 时，会留下 account_data/filter_params 等
             # unknown 包装参数。LLM 可能给对象或 JSON 字符串，均应展开真实请求体。

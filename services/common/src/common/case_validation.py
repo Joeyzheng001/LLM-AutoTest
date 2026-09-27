@@ -49,12 +49,54 @@ def expected_client_error(expected: str) -> bool:
     )
 
 
+# 由容器/MVC 框架在运行时注入的参数（Servlet 请求响应对象、Spring MVC 绑定对象等）。
+# 业务用例既不需要、也不应该提供它们的值：
+# - 当作必填会逼模型编造占位值；
+# - 兜底/默认值一旦填进去，会被当作真实请求参数发出去——实测 `response: "unknown"`
+#   最终进了 query（`in=unknown` 在 auto_execute 里落进 else 分支）。
+# 按类型**简单名**匹配，容忍包名前缀（javax.servlet.http.HttpServletResponse）。
+_RUNTIME_INJECTED_TYPES = frozenset(
+    {
+        "HttpServletRequest",
+        "HttpServletResponse",
+        "ServletRequest",
+        "ServletResponse",
+        "HttpSession",
+        "ServletContext",
+        "MultipartHttpServletRequest",
+        "OutputStream",
+        "ServletOutputStream",
+        "PrintWriter",
+        "Model",
+        "ModelAndView",
+        "BindingResult",
+        "Errors",
+        "RedirectAttributes",
+        "UriComponentsBuilder",
+        "WebRequest",
+        "NativeWebRequest",
+        "Principal",
+        "Authentication",
+    }
+)
+
+
+def is_runtime_injected_param(definition: dict[str, Any]) -> bool:
+    """参数是否由框架运行时注入（容器对象），业务用例不提供其值。"""
+    raw_type = str(definition.get("type", "")).strip()
+    if not raw_type:
+        return False
+    return raw_type.rsplit(".", 1)[-1] in _RUNTIME_INJECTED_TYPES
+
+
 def materialize_declared_defaults(
     case: dict[str, Any], interface: dict[str, Any]
 ) -> dict[str, Any]:
     """仅填充接口定义中明确声明的默认值，不为业务字段猜值。
 
     错误分支若明确期待 4xx，保留缺参状态，确保能验证后端必填校验。
+    框架运行时注入的容器参数（HttpServletResponse 等）一律不填：它们没有业务值，
+    填出来的占位串会被 auto_execute 当作真实请求参数发出去。
     """
     normalized = dict(case)
     raw_params = case.get("params")
@@ -62,6 +104,8 @@ def materialize_declared_defaults(
     if not expected_client_error(str(case.get("expected", ""))):
         for definition in interface.get("params") or []:
             if not isinstance(definition, dict):
+                continue
+            if is_runtime_injected_param(definition):
                 continue
             name = str(definition.get("name", ""))
             if not name or name in params or definition.get("required") is not True:
@@ -94,6 +138,8 @@ def inspect_case_parameters(
             for item in definitions
             if item.get("required") is True
             and item.get("name")
+            # 框架运行时注入的容器参数不算缺失：用例无从提供、也不需要提供。
+            and not is_runtime_injected_param(item)
             and (str(item["name"]) not in params or params[str(item["name"])] is None)
         )
     )

@@ -419,6 +419,48 @@ async def test_auto_execute_skips_missing_required_before_http_call(
     assert business_calls == 1  # 仅探活请求
 
 
+async def test_auto_execute_skips_runtime_injected_params(
+    env: tuple[Engine, ArtifactStore, ArtifactStore],
+) -> None:
+    """框架运行时注入的容器参数不得作为请求参数发出。
+
+    回归护栏：`in=unknown` 会在参数装配里落进 else 分支变成 query，实测会把
+    `response=unknown` 发给被测服务（IF-REST-042 合同审核下载就是这种接口）。
+    """
+    engine, te_store, orch_store = env
+    state = engine.open_job(_JOB)
+    interfaces = orch_store.read_json(_JOB, "interfaces.json")
+    interfaces["interfaces"][0]["params"].append(
+        {
+            "name": "response",
+            "type": "HttpServletResponse",
+            "required": True,
+            "in": "unknown",
+            "default": "unknown",
+        }
+    )
+    orch_store.write(_JOB, "interfaces.json", interfaces)
+    testcases = te_store.read_json(_JOB, "testcases.json")
+    testcases["cases"][0]["params"]["response"] = "unknown"
+    testcases["cases"][0]["expected"] = "status=200"
+    te_store.write(_JOB, "testcases.json", testcases)
+    seen: list[str] = []
+
+    def service(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"id": 1})
+
+    await run_auto_execute(
+        engine, state, te_store, "http://mock:9000", httpx.MockTransport(service)
+    )
+
+    assert seen, "业务请求未发出"
+    assert all("response" not in url for url in seen)
+    assert any("id=1" in url for url in seen)
+
+
 async def test_auto_execute_allows_missing_required_for_negative_case(
     env: tuple[Engine, ArtifactStore, ArtifactStore],
 ) -> None:
