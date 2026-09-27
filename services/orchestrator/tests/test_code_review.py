@@ -20,7 +20,12 @@ from common.prompts_loader import PromptSpec
 
 from helpers import requirement_review_payload
 from orchestrator.nodes import run_code_review
-from orchestrator.nodes.code_review import _select_interfaces_for_claims
+from orchestrator.nodes.code_review import (
+    _content_tokens,
+    _select_evidence_for_claims,
+    _select_evidence_with_llm,
+    _select_interfaces_for_claims,
+)
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 _PROMPTS = Path(__file__).resolve().parents[3] / "prompts"
@@ -558,3 +563,107 @@ def test_select_interfaces_lexical_prefilter_when_many_interfaces() -> None:
     result = _select_interfaces_for_claims(claims, interfaces)
     assert len(result) <= 40
     assert result[0]["id"] == "IF-000"
+
+
+_EVIDENCE_SAMPLE: list[dict[str, Any]] = [
+    {
+        "evidence_id": "EVD-0001",
+        "category": "interface_implementation",
+        "repo": "riskwkb",
+        "file": "src/main/java/RiskApprovalRuleServiceImpl.java",
+        "start_line": 10,
+        "end_line": 12,
+        "excerpt": "public RiskApprovalRule query(String businessType) {",
+        "interface_ids": ["IF-REST-006"],
+    },
+    {
+        "evidence_id": "EVD-0002",
+        "category": "cache",
+        "repo": "riskwkb",
+        "file": "src/main/java/RedisCacheManager.java",
+        "start_line": 3,
+        "end_line": 5,
+        "excerpt": "redisTemplate()",
+        "interface_ids": [],
+    },
+]
+_APPROVAL_CLAIM: list[dict[str, Any]] = [
+    {
+        "claim_id": "CLM-0001",
+        "requirement_title": "自动审批设置",
+        "statement": "审批规则列表支持按业务类型搜索",
+        "acceptance_criteria": [],
+    }
+]
+
+
+class _EvidenceSelectStub:
+    """只回答证据召回调用的桩（按 Prompt 名分流）。"""
+
+    def __init__(self, selection: str) -> None:
+        self._selection = selection
+        self.calls: list[str] = []
+
+    async def complete(
+        self, node: str, prompt: PromptSpec, user_content: str
+    ) -> LlmResult:
+        """记录被调用的 prompt 名并返回预设文本。"""
+        self.calls.append(prompt.name)
+        return LlmResult(text=self._selection, tokens=16, call_id="LLM-ev-001")
+
+
+def test_content_tokens_split_camel_case_identifiers() -> None:
+    """词法层：标识符按 camelCase 拆开，中文 claim 才可能命中 Java 类名。"""
+    assert {"risk", "approval", "rule", "service", "impl"} <= _content_tokens(
+        "RiskApprovalRuleServiceImpl"
+    )
+
+
+def test_lexical_recall_finds_evidence_after_camel_split() -> None:
+    """词法层：拆词 + 别名表后，「审批规则」类 claim 能召回 RiskApprovalRule* 证据。"""
+    chosen = _select_evidence_for_claims(_APPROVAL_CLAIM, _EVIDENCE_SAMPLE)
+    assert [item["evidence_id"] for item in chosen] == ["EVD-0001"]
+
+
+async def test_semantic_recall_adopts_llm_picked_evidence() -> None:
+    """语义层：采纳模型给出的编号，虚构与重复编号一律忽略。"""
+    llm = _EvidenceSelectStub('{"evidence_ids": ["EVD-0002", "EVD-9999", "EVD-0002"]}')
+    chosen = await _select_evidence_with_llm(
+        llm, _PROMPTS, _APPROVAL_CLAIM, _EVIDENCE_SAMPLE, set()
+    )
+    assert chosen is not None
+    assert [item["evidence_id"] for item in chosen] == ["EVD-0002"]
+    assert llm.calls == ["code_review_evidence_select"]
+
+
+async def test_semantic_recall_falls_back_when_llm_output_unusable() -> None:
+    """语义层：非 JSON / 缺字段 / 全虚构编号一律返回 None，交给词面召回兜底。"""
+    for bad in ("不是 JSON", '{"items": []}', '{"evidence_ids": ["EVD-9999"]}'):
+        assert (
+            await _select_evidence_with_llm(
+                _EvidenceSelectStub(bad), _PROMPTS, _APPROVAL_CLAIM, _EVIDENCE_SAMPLE, set()
+            )
+            is None
+        )
+    # 目录为空时直接返回空数组，不调用模型
+    llm = _EvidenceSelectStub('{"evidence_ids": []}')
+    assert await _select_evidence_with_llm(llm, _PROMPTS, _APPROVAL_CLAIM, [], set()) == []
+    assert llm.calls == []
+
+
+async def test_semantic_recall_falls_back_on_llm_failure() -> None:
+    """语义层：调用失败退回词面召回，不让评审因召回失败而中断。"""
+
+    class _Boom:
+        async def complete(
+            self, node: str, prompt: PromptSpec, user_content: str
+        ) -> LlmResult:
+            """恒抛网络类失败。"""
+            raise PipelineError(code="X-LLM-01", message="网关超时", node_id=node)
+
+    assert (
+        await _select_evidence_with_llm(
+            _Boom(), _PROMPTS, _APPROVAL_CLAIM, _EVIDENCE_SAMPLE, set()
+        )
+        is None
+    )

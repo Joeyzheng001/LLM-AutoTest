@@ -28,6 +28,7 @@ code_inventory.json 无 changed_files 键（未配基线分支）时两视图为
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from functools import partial
@@ -40,9 +41,11 @@ from common.errors import X_LLM_02, X_ORCH_01, PipelineError
 from common.llm import LlmResult
 from common.llm_batch import chunk_json_items
 from common.llm_repair import complete_with_json_repair
+from common.llm_text import strip_code_fence
 from common.prompts_loader import PromptSpec, load_prompt
 
 NODE_NAME = "code_review"
+logger = logging.getLogger(__name__)
 
 _VALID_STATUSES = ("implemented", "partial", "missing", "undetermined")
 # 模型偶尔会把「只输出 mappings 数组」误解为裸数组，或套入常见的 result/data
@@ -89,8 +92,18 @@ _REVIEWABLE_SUFFIXES = {
     ".py", ".java", ".kt", ".js", ".ts", ".yml", ".yaml", ".properties", ".xml"
 }
 _MAX_EVIDENCE_FILES = 160
-_MAX_EVIDENCE_ITEMS = 72
+# 证据池容量：真机上 72 条被瞬间打满（实测 evidence_catalog 恰好 72 条、且
+# scan_coverage.review_evidence_limited=True），后面的候选文件根本轮不到被采。
+# 池子太小会让「语义召回」无米下锅，所以先放开容量，再做检索质量。
+_MAX_EVIDENCE_ITEMS = 240
+# 接口实现证据的条数上限（按变更文件优先排序后截断）。原先是硬截 interfaces[:36]，
+# 113 个接口里 77 个连一条接口证据都没有。
+_MAX_INTERFACE_EVIDENCE = 140
 _MAX_EVIDENCE_CHARS = 520
+# 语义召回（LLM 重排）用的子提示词与选入上限。中转站没有 embedding 接口
+# （`/v1/embeddings` → 401 key_model_access_denied），语义只能交给模型判断。
+_EVIDENCE_SELECT_PROMPT = "code_review_evidence_select"
+_MAX_LLM_SELECTED_EVIDENCE = 24
 _SECRET_VALUE = re.compile(
     r"(?i)(password|secret|api[_-]?key|access[_-]?token)\s*([:=])\s*(['\"]?)[^\s,'\"}]+"
 )
@@ -174,11 +187,21 @@ async def run_code_review(
             # 接口清单是否完整：全量召回时 LLM 可确信「这些就是全部接口」，
             # 从而对无匹配的 claim 给出更明确的 missing 判定而非一律 undetermined。
             interfaces_complete = len(batch_interfaces) == len(interface_index)
-            selected_evidence = _select_evidence_for_claims(
+            # 先按语义召回（LLM 重排），无效再退回词面重合。词面召回对「中文 claim
+            # vs Java 标识符」基本失效（overlap == 0 直接丢弃），语义层是本节点的关键。
+            selected_evidence = await _select_evidence_with_llm(
+                llm,
+                prompts_dir,
                 batch,
                 code_evidence,
-                preferred_interface_ids=batch_interface_ids,
+                batch_interface_ids,
             )
+            if selected_evidence is None:
+                selected_evidence = _select_evidence_for_claims(
+                    batch,
+                    code_evidence,
+                    preferred_interface_ids=batch_interface_ids,
+                )
             selected_locations = {
                 (str(item.get("repo", "")), str(item.get("file", "")))
                 for item in selected_evidence
@@ -432,9 +455,30 @@ def _collect_code_evidence(
         if isinstance(repo, dict)
     }
     seen_locations: set[tuple[str, str, int]] = set()
+    # 变更文件优先：本节点评审的是「本次改动」，先把变更文件里的接口证据收进来再截断。
+    # 原先是按输入顺序硬截前 36 个接口——113 个接口时 77 个连一条接口证据都没有。
+    changed: dict[str, set[str]] = {}
+    for repo in inventory.get("repositories") or []:
+        if not isinstance(repo, dict):
+            continue
+        changed_files = repo.get("changed_files")
+        if not isinstance(changed_files, dict):
+            continue
+        changed[str(repo.get("name", ""))] = {
+            value
+            for key in ("added", "modified")
+            for value in (changed_files.get(key) or [])
+            if isinstance(value, str)
+        }
+
+    def _is_changed(interface: dict[str, Any]) -> bool:
+        location = interface.get("code_location") or {}
+        return str(location.get("file", "")) in changed.get(str(location.get("repo", "")), set())
+
+    ordered_interfaces = sorted(interfaces or [], key=lambda item: not _is_changed(item))
     # 普通业务声明也需要代码证据；先为接口实现位置建立有限的直接证据入口，
     # 再补充跨接口的安全、配置、事务等服务端行为片段。
-    for interface in (interfaces or [])[:36]:
+    for interface in ordered_interfaces[:_MAX_INTERFACE_EVIDENCE]:
         location = interface.get("code_location") or {}
         repo_name = str(location.get("repo", ""))
         relative_path = str(location.get("file", ""))
@@ -693,7 +737,7 @@ def _content_tokens(value: str) -> set[str]:
         "过期": ("expires", "expiry", "ttl"),
         "鉴权": ("auth", "authorize", "permission"),
         "权限": ("permission", "authorize", "role"),
-        "授权": ("authorize", "permission", "role"),
+        "授权": ("authorize", "permission", "role", "authorization"),
         "事务": ("transaction", "atomic"),
         "回滚": ("rollback", "transaction"),
         "幂等": ("idempotency", "duplicate"),
@@ -717,14 +761,57 @@ def _content_tokens(value: str) -> set[str]:
         "金额": ("amount", "money"),
         "份额": ("share", "volume"),
         "密码": ("password", "credential"),
+        # 风控/审批域补充：真机上「审批/豁免/备注/权重/分级授权」类 claim 一条证据都
+        # 召回不到，正因为这些词原先不在表里（`overlap == 0` 会被直接丢弃）。
+        "审批": ("approval", "approve", "audit", "review"),
+        "审核": ("audit", "review", "approval"),
+        "豁免": ("exempt", "exemption", "waive"),
+        "备注": ("remark", "comment", "note"),
+        "权重": ("weight", "priority", "score"),
+        "时点": ("timing", "timepoint", "stage"),
+        "投标": ("bid", "bidding", "tender"),
+        "中标": ("award", "winbid"),
+        "分级": ("grade", "level", "tier", "hierarchy"),
+        "债项": ("bond", "debt", "issue"),
+        "债券": ("bond", "debt"),
+        "内评": ("rating", "internal"),
+        "规则": ("rule", "config", "setting"),
+        "设置": ("setting", "config", "configure"),
+        "配置": ("config", "configuration", "property"),
+        "节点": ("node", "stage", "step"),
+        "场景": ("scene", "scenario", "case"),
+        "开关": ("switch", "toggle", "flag", "enable"),
+        "风控": ("risk", "control"),
+        "编号": ("serial", "code", "no"),
+        "序号": ("index", "serial", "no"),
+        "列表": ("list", "page"),
+        "搜索": ("search", "query", "filter"),
+        "保存": ("save", "store", "persist"),
+        "提交": ("submit", "commit"),
+        "字段": ("field", "column", "property"),
+        "结果": ("result", "outcome"),
+        "异常": ("exception", "error", "fail"),
+        "合规": ("compliance", "regulatory"),
+        "中心": ("center", "centre"),
+        "投管": ("investment", "manage"),
+        "固收": ("fixedincome", "bond"),
+        "触发": ("trigger", "hit"),
+        "生效": ("effective", "apply"),
+        "优先级": ("priority", "level"),
+        "明细": ("detail", "detailitem"),
     }
     tokens: set[str] = set()
     for match in re.finditer(r"[A-Za-z][A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", value):
-        token = match.group(0).lower()
+        raw = match.group(0)
+        token = raw.lower()
         tokens.add(token)
         if re.fullmatch(r"[\u4e00-\u9fff]+", token):
             tokens.update(token[index : index + 2] for index in range(len(token) - 1))
             tokens.update(token[index : index + 3] for index in range(len(token) - 2))
+        else:
+            # 标识符按 camelCase/下划线拆开：不拆的话 `RiskApprovalRuleServiceImpl`
+            # 只产出整串，与「审批/规则」永远零重合，该 claim 的证据会被直接丢掉。
+            tokens.update(_split_identifier(raw))
     for token in tuple(tokens):
         tokens.update(part.lower() for part in token.split("_") if len(part) >= 3)
     lowered = value.lower()
@@ -732,6 +819,105 @@ def _content_tokens(value: str) -> set[str]:
         if term in lowered:
             tokens.update(translated)
     return tokens
+
+
+_CAMEL_PIECE_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+
+
+def _split_identifier(raw: str) -> set[str]:
+    """拆 ASCII 标识符（camelCase 与下划线），只保留长度 ≥3 的片段以压噪声。"""
+    pieces: set[str] = set()
+    for chunk in raw.split("_"):
+        if not chunk:
+            continue
+        pieces.update(
+            piece.lower() for piece in _CAMEL_PIECE_RE.findall(chunk) if len(piece) >= 3
+        )
+    return pieces
+
+
+async def _select_evidence_with_llm(
+    llm: SupportsComplete,
+    prompts_dir: Path,
+    claims: list[dict[str, Any]],
+    code_evidence: list[dict[str, Any]],
+    preferred_interface_ids: set[str] | None = None,
+) -> list[dict[str, Any]] | None:
+    """用一次轻量模型调用按语义挑证据；失败/无效一律返回 None 交由词面召回兜底。
+
+    中转站没有 embedding 接口（`/v1/embeddings` → 401 key_model_access_denied），
+    语义召回只能交给模型：程序提供证据目录（编号 + 文件 + 片段摘要）并按编号取回
+    完整片段，判断权在模型。这正是纯词面召回做不到的地方——中文 claim 里的「审批
+    规则」与 `RiskApprovalRuleServiceImpl` 字面零重合，会被 `overlap == 0` 丢掉。
+    """
+    if not code_evidence:
+        return []
+    try:
+        prompt = load_prompt(prompts_dir, _EVIDENCE_SELECT_PROMPT)
+    except PipelineError as exc:
+        logger.warning("证据语义召回 Prompt 加载失败，退回词面召回：%s", exc.message)
+        return None
+    catalog = [
+        {
+            "evidence_id": str(item.get("evidence_id", "")),
+            "category": str(item.get("category", "")),
+            "repo": str(item.get("repo", "")),
+            "file": str(item.get("file", "")),
+            "start_line": item.get("start_line"),
+            "interface_ids": list(item.get("interface_ids") or []),
+            "preview": str(item.get("excerpt", ""))[:160],
+        }
+        for item in code_evidence
+        if item.get("evidence_id")
+    ]
+    user_content = json.dumps(
+        {
+            "claims": [
+                {
+                    "claim_id": claim.get("claim_id"),
+                    "requirement_title": claim.get("requirement_title"),
+                    "statement": claim.get("statement"),
+                    "acceptance_criteria": claim.get("acceptance_criteria") or [],
+                }
+                for claim in claims
+            ],
+            "preferred_interface_ids": sorted(preferred_interface_ids or []),
+            "catalog": catalog,
+        },
+        ensure_ascii=False,
+    )
+    try:
+        result = await llm.complete(_EVIDENCE_SELECT_PROMPT, prompt, user_content)
+    except PipelineError as exc:
+        logger.warning("证据语义召回调用失败，退回词面召回：%s", exc.message)
+        return None
+    try:
+        data = json.loads(strip_code_fence(result.text))
+    except json.JSONDecodeError:
+        logger.warning("证据语义召回输出不是合法 JSON，退回词面召回")
+        return None
+    raw_ids = data.get("evidence_ids") if isinstance(data, dict) else None
+    if not isinstance(raw_ids, list):
+        logger.warning("证据语义召回输出缺 evidence_ids 数组，退回词面召回")
+        return None
+    by_id = {str(item.get("evidence_id", "")): item for item in code_evidence}
+    chosen: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in raw_ids:
+        evidence_id = str(value)
+        item = by_id.get(evidence_id)
+        # 只认目录里存在的编号，虚构/重复一律忽略（与其它节点的溯源硬校验同口径）
+        if item is None or evidence_id in seen:
+            continue
+        seen.add(evidence_id)
+        chosen.append(item)
+        if len(chosen) >= _MAX_LLM_SELECTED_EVIDENCE:
+            break
+    if not chosen:
+        # 模型说「都不相关」或编号全虚构：退回词面召回，避免整批无证据可判。
+        logger.warning("证据语义召回未命中任何证据，退回词面召回")
+        return None
+    return chosen
 
 
 def _select_evidence_for_claims(
