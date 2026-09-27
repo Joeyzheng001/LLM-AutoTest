@@ -11,6 +11,7 @@ C-13 语言分流：Java 仓库走 java-parser；Python 仓库走内置 AST 扫�
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,9 @@ from common.errors import X_ORCH_01, PipelineError
 
 from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
 from orchestrator.python_scan import scan_repository
+from orchestrator.repository_resolver import workspace_scope_warnings
+
+logger = logging.getLogger(__name__)
 
 NODE_NAME = "code_scan"
 
@@ -56,6 +60,12 @@ async def run_code_scan(
             "repositories": repository_entries,
         }
         _check_repo_errors(inventory)
+        # 工作区与配置分支脱节时如实告警：接口候选是扫工作区得到的，扫错分支会静默少接口。
+        scope_warnings = workspace_scope_warnings(repositories)
+        if scope_warnings:
+            inventory["warnings"] = scope_warnings
+            for message in scope_warnings:
+                logger.warning("%s", message)
         path = store.write(state.job_id, "code_inventory.json", inventory)
         engine.mark_completed(state, NODE_NAME)
         return path

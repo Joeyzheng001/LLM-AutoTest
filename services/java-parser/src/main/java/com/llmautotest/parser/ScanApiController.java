@@ -37,7 +37,14 @@ public class ScanApiController {
         if (request.repositories() == null || request.repositories().isEmpty()) {
             throw new InvalidRequestException("repositories 不能为空");
         }
-        JobAccepted accepted = jobs.submit(JobManager.JobKind.SCAN, request.job_id(), () -> runner.run(request));
+        // 指纹取整个请求体：任一输入（提交号/基线/仓库路径）变化即视为新请求，
+        // 覆盖旧记录并重新扫描，避免重跑拿到上一次的产物。
+        JobAccepted accepted =
+                jobs.submit(
+                        JobManager.JobKind.SCAN,
+                        request.job_id(),
+                        JobManager.fingerprintOf(request),
+                        () -> runner.run(request));
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(accepted);
     }
 

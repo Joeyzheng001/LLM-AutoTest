@@ -37,7 +37,13 @@ public class ExtractApiController {
         if (request.repositories() == null || request.repositories().isEmpty()) {
             throw new ScanApiController.InvalidRequestException("repositories 不能为空");
         }
-        JobAccepted accepted = jobs.submit(JobManager.JobKind.EXTRACT, request.job_id(), () -> runner.run(request));
+        // 指纹取整个请求体：任一输入（仓库/协议）变化即视为新请求，覆盖旧记录并重新提取。
+        JobAccepted accepted =
+                jobs.submit(
+                        JobManager.JobKind.EXTRACT,
+                        request.job_id(),
+                        JobManager.fingerprintOf(request),
+                        () -> runner.run(request));
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(accepted);
     }
 

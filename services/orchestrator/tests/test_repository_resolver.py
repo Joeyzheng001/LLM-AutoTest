@@ -12,6 +12,7 @@ from orchestrator.repository_resolver import (
     _parse_commits,
     preview_branch_diff,
     resolve_repository_inputs,
+    workspace_scope_warnings,
 )
 
 _GIT_BINARY = "git"
@@ -21,6 +22,115 @@ def _git(cwd: Path, *args: str) -> None:
     subprocess.run(  # noqa: S603 - tests invoke a fixed local git executable
         [_GIT_BINARY, *args], cwd=cwd, check=True, capture_output=True, text=True
     )
+
+
+def _head_sha(repo: Path) -> str:
+    """读取工作区 HEAD 提交号（测试内断言用）。"""
+    return subprocess.run(  # noqa: S603 - tests invoke a fixed local git executable
+        [_GIT_BINARY, "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _init_repo(path: Path, message: str) -> None:
+    """建一个只含一个提交的本地仓库。"""
+    path.mkdir(parents=True, exist_ok=True)
+    _git(path, "init", "-b", "main")
+    _git(path, "config", "user.email", "test@example.com")
+    _git(path, "config", "user.name", "test")
+    (path / "README.md").write_text(f"{message}\n", encoding="utf-8")
+    _git(path, "add", ".")
+    _git(path, "commit", "-m", message)
+
+
+def test_local_repo_carries_workspace_revision_into_payload(tmp_path: Path) -> None:
+    """工作区 HEAD 必须进 java-parser 请求体。
+
+    回归护栏：payload 里的 branch/commits 是「配置想要什么」，而扫描读的是**工作区
+    文件**——两者会脱节（切分支 / pull 后 payload 一个字不变）。脱节时 java-parser
+    的幂等指纹不变化，会直接返回切分支之前的候选，症状是**静默少接口**。
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo, "v1")
+
+    inputs = resolve_repository_inputs(
+        [{"name": "demo", "source": "local", "path": str(repo), "branch": "main"}],
+        cache_root=tmp_path / "artifacts",
+    )
+
+    assert inputs[0].workspace_revision == _head_sha(repo)
+    assert inputs[0].to_dict()["workspace_revision"] == _head_sha(repo)
+
+
+def test_workspace_revision_follows_checkout(tmp_path: Path) -> None:
+    """同一份配置、工作区切到另一个提交 → 修订号必须变（这正是缓存失效的判据）。"""
+    repo = tmp_path / "repo"
+    _init_repo(repo, "v1")
+    first = resolve_repository_inputs(
+        [{"name": "demo", "source": "local", "path": str(repo), "branch": "main"}],
+        cache_root=tmp_path / "artifacts",
+    )[0].workspace_revision
+
+    (repo / "README.md").write_text("v2\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "v2")
+    second = resolve_repository_inputs(
+        [{"name": "demo", "source": "local", "path": str(repo), "branch": "main"}],
+        cache_root=tmp_path / "artifacts",
+    )[0].workspace_revision
+
+    assert first != second
+
+
+def test_non_git_local_dir_has_no_workspace_revision(tmp_path: Path) -> None:
+    """非 Git 目录不编造修订号：字段留空，序列化时不出现在请求体里。"""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    inputs = resolve_repository_inputs(
+        [{"name": "plain", "source": "local", "path": str(plain), "branch": "main"}],
+        cache_root=tmp_path / "artifacts",
+    )
+
+    assert inputs[0].workspace_revision is None
+    assert "workspace_revision" not in inputs[0].to_dict()
+
+
+def test_workspace_scope_warns_when_checkout_differs_from_configured_branch(
+    tmp_path: Path,
+) -> None:
+    """工作区不在配置分支上 → 告警（不阻断），防住「静默扫错分支」。
+
+    回归护栏：真机上工作区停在 dev、配置写 feature，接口候选扫的是 dev 的工作区，
+    结果只剩 1 个接口，排查花了两轮。
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo, "v1")
+    _git(repo, "branch", "feature")  # feature 停在 v1
+    (repo / "README.md").write_text("v2\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "v2")  # main 前进到 v2，工作区 HEAD 在 v2
+
+    inputs = resolve_repository_inputs(
+        [{"name": "demo", "source": "local", "path": str(repo), "branch": "feature"}],
+        cache_root=tmp_path / "artifacts",
+    )
+    warnings = workspace_scope_warnings(inputs)
+
+    assert len(warnings) == 1
+    assert "工作区不在配置的分支上" in warnings[0]
+
+
+def test_workspace_scope_is_silent_when_checkout_matches_branch(tmp_path: Path) -> None:
+    """工作区就在配置的分支上 → 无告警（不误报）。"""
+    repo = tmp_path / "repo"
+    _init_repo(repo, "v1")
+
+    inputs = resolve_repository_inputs(
+        [{"name": "demo", "source": "local", "path": str(repo), "branch": "main"}],
+        cache_root=tmp_path / "artifacts",
+    )
+
+    assert workspace_scope_warnings(inputs) == []
 
 
 def test_remote_repository_is_cached_at_requested_commit(tmp_path: Path) -> None:

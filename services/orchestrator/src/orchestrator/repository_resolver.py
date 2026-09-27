@@ -69,6 +69,9 @@ def resolve_repository_inputs(
                 raise RepositoryResolutionError(
                     f"仓库 {name} 的本地路径不存在或不是绝对目录：{path}"
                 )
+            # 工作区 HEAD 同时用于两处：快照留痕，以及 java-parser 的幂等指纹
+            # （见 RepositoryInput.workspace_revision）。只算一次——git 子进程不该为一个值跑两遍。
+            workspace_revision = _git_revision(path, "HEAD")
             resolved_input = RepositoryInput(
                 name=name,
                 path=str(path),
@@ -79,6 +82,9 @@ def resolve_repository_inputs(
                 language=language,
                 service_base_url=service_base_url,
                 commits=commits,
+                workspace_revision=workspace_revision,
+                # 配置分支指向的提交：与工作区 HEAD 比对可发现「工作区不在配置分支上」。
+                declared_revision=_git_revision(path, branch),
             )
             resolved.append(resolved_input)
             _register_snapshot(
@@ -89,7 +95,7 @@ def resolve_repository_inputs(
                 source_url=None,
                 target_ref=branch,
                 baseline_ref=baseline,
-                target_sha=_git_revision(path, "HEAD"),
+                target_sha=workspace_revision,
                 baseline_sha=_git_revision(path, baseline) if baseline else None,
                 workspace_path=path,
                 cache_hit=False,
@@ -112,6 +118,8 @@ def resolve_repository_inputs(
             cache_root=cache_root,
             access_token=access_token,
         )
+        # 同上：检出目录的 HEAD 既进快照，也进 java-parser 幂等指纹。
+        workspace_revision = _git_revision(checkout, "HEAD", access_token=access_token)
         resolved_input = RepositoryInput(
             name=name,
             path=str(checkout),
@@ -122,6 +130,11 @@ def resolve_repository_inputs(
             language=language,
             service_base_url=service_base_url,
             commits=commits,
+            workspace_revision=workspace_revision,
+            declared_revision=(
+                _git_revision(checkout, branch, access_token=access_token)
+                or workspace_revision  # git 源按 branch 检出，取不到时视为一致
+            ),
         )
         resolved.append(resolved_input)
         _register_snapshot(
@@ -132,7 +145,7 @@ def resolve_repository_inputs(
             source_url=remote_url,
             target_ref=commit or branch,
             baseline_ref=baseline,
-            target_sha=_git_revision(checkout, "HEAD", access_token=access_token),
+            target_sha=workspace_revision,
             baseline_sha=(
                 _git_revision(checkout, baseline, access_token=access_token)
                 if baseline
@@ -239,6 +252,27 @@ def _git_revision(
         return None
     value = result.stdout.strip()
     return value or None
+
+
+def workspace_scope_warnings(repositories: list[RepositoryInput]) -> list[str]:
+    """比对「配置分支指向的提交」与「工作区实际 HEAD」，不一致即告警（不阻断）。
+
+    `source=local` 模式下系统**不 checkout**：配置里的 `branch` 只用于算变更清单，
+    实际扫描读的是**工作区当前内容**。两者脱节时接口候选会静默扫错分支——实测踩过
+    两次（11 个接口只剩 1 个），排查成本很高，所以在扫描产物里如实留痕。
+    """
+    warnings: list[str] = []
+    for repo in repositories:
+        declared = repo.declared_revision
+        actual = repo.workspace_revision
+        if not declared or not actual or declared == actual:
+            continue
+        warnings.append(
+            f"仓库 {repo.name} 的工作区不在配置的分支上：配置 {repo.branch} 指向 "
+            f"{declared[:8]}，工作区 HEAD 是 {actual[:8]}"
+            "——source=local 不会自动 checkout，扫描读到的是工作区当前内容"
+        )
+    return warnings
 
 
 def _register_snapshot(

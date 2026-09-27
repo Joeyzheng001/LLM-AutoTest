@@ -43,6 +43,15 @@ class RepositoryInput:
     service_base_url: str | None = None
     # C-09 扩展：按提交号圈定变更范围（多个提交的 diff 并集）；空 = 不圈定。
     commits: tuple[str, ...] = field(default_factory=tuple)
+    # 工作区实际 HEAD 提交：java-parser 的幂等指纹必须覆盖它。payload 里的
+    # branch/commits 是"配置里想要什么"，而扫描读的是工作区文件——两者会脱节
+    # （切分支 / pull 后 payload 不变）。实测踩过：切分支后重跑，指纹没变 → 命中
+    # 缓存 → 返回切分支之前的候选 → 静默少接口。
+    workspace_revision: str | None = None
+    # 配置里 branch 指向的提交（本地校验用，**不进请求体**）：与 workspace_revision
+    # 不一致说明工作区不在配置的分支上，扫描会读到错误的源码。放在请求体里会导致
+    # 「分支更新但工作区没动」的无谓重扫，所以只做本地比对。
+    declared_revision: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """请求体序列化（可选字段仅在非默认时出现）。"""
@@ -59,6 +68,8 @@ class RepositoryInput:
             payload["include_paths"] = list(self.include_paths)
         if self.commits:
             payload["commits"] = list(self.commits)
+        if self.workspace_revision:
+            payload["workspace_revision"] = self.workspace_revision
         return payload
 
 

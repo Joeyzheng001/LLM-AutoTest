@@ -8,9 +8,27 @@ import java.util.Map;
 /** 单个异步 job 的状态与产物（写方仅 JobManager 执行线程，读方为轮询端点）。 */
 public final class JobRecord {
 
+    /**
+     * 受理时的请求内容指纹。
+     *
+     * 幂等判据不能只看 job_id：同一任务重跑时输入会变（改了提交号/基线/仓库），
+     * 若沿用旧记录就会把上一次的产物当成新结果返回（实测踩过：提交号配好后重跑，
+     * changed_files 仍是首跑的旧值，导致下游判定「仓库未配置变更范围」）。
+     */
+    private final String fingerprint;
+
     private volatile JobStatus status = JobStatus.queued;
     private volatile Map<String, Object> result;
     private volatile ApiError error;
+
+    public JobRecord(String fingerprint) {
+        this.fingerprint = fingerprint;
+    }
+
+    /** 受理时的请求内容指纹（用于判断既有结果是否仍对应当前输入）。 */
+    public String fingerprint() {
+        return fingerprint;
+    }
 
     /** 置运行中。 */
     public void markRunning() {

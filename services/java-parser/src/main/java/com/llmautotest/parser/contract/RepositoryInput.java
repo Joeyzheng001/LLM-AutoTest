@@ -12,19 +12,27 @@ public record RepositoryInput(
         @JsonProperty("baseline_branch") String baselineBranch,
         @JsonProperty("is_fallback") Boolean isFallback,
         @JsonProperty("include_paths") List<String> includePaths,
-        @JsonProperty("commits") List<String> commits) {
+        @JsonProperty("commits") List<String> commits,
+        @JsonProperty("workspace_revision") String workspaceRevision) {
 
     /** 兼容旧 5 参构造（无基线分支，C-09 前调用点）。 */
     public RepositoryInput(
             String name, String path, String branch, Boolean isFallback, List<String> includePaths) {
-        this(name, path, branch, null, isFallback, includePaths, null);
+        this(name, path, branch, null, isFallback, includePaths, null, null);
     }
 
     /** 兼容旧 6 参构造（基线分支，无提交号）。 */
     public RepositoryInput(
             String name, String path, String branch, String baselineBranch,
             Boolean isFallback, List<String> includePaths) {
-        this(name, path, branch, baselineBranch, isFallback, includePaths, null);
+        this(name, path, branch, baselineBranch, isFallback, includePaths, null, null);
+    }
+
+    /** 兼容 7 参构造（提交号，无工作区修订）。 */
+    public RepositoryInput(
+            String name, String path, String branch, String baselineBranch,
+            Boolean isFallback, List<String> includePaths, List<String> commits) {
+        this(name, path, branch, baselineBranch, isFallback, includePaths, commits, null);
     }
 
     /** 基线分支缺省为不比对（null/空白均视为未指定）。 */
