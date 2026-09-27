@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,10 @@ from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
 from orchestrator.nodes import run_interface_reconstruct
 from orchestrator.nodes.interface_reconstruct import (
     _collect_changed_files,
+    _declared_scope_repos,
     _filter_candidates_by_scope,
+    _repos_without_change_scope,
+    _unscoped_report,
 )
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
@@ -163,6 +167,12 @@ def _ready_env(tmp_path: Path) -> tuple[Engine, ArtifactStore]:
                         "is_fallback": False,
                         "status": "ok",
                         "file_count": 1,
+                        # 变更范围必填：候选只取变更文件里的接口（C-09 扩展）
+                        "changed_files": {
+                            "added": ["UserController.java"],
+                            "modified": [],
+                            "removed": [],
+                        },
                     },
                     {
                         "name": "fallback-demo",
@@ -171,6 +181,11 @@ def _ready_env(tmp_path: Path) -> tuple[Engine, ArtifactStore]:
                         "is_fallback": True,
                         "status": "ok",
                         "file_count": 1,
+                        "changed_files": {
+                            "added": ["OrderGrpc.java"],
+                            "modified": [],
+                            "removed": [],
+                        },
                     },
                 ],
             },
@@ -327,9 +342,94 @@ def test_collect_changed_files_groups_added_and_modified_by_repo() -> None:
 
 
 def test_collect_changed_files_returns_empty_without_scope() -> None:
-    """无变更范围（缺 changed_files 或整个 inventory 空）→ 空 dict（全量）。"""
+    """缺 changed_files 键（未配范围）的仓库不登记；整份 inventory 为空同理。"""
     assert _collect_changed_files({}) == {}
     assert _collect_changed_files({"repositories": [{"name": "r", "files": []}]}) == {}
+
+
+def test_collect_changed_files_registers_repo_with_empty_changes() -> None:
+    """「配了范围但本次无变更」（空集）仍要登记——它与「未配范围」是两件事。"""
+    inventory = {"repositories": [{"name": "r", "changed_files": {"added": [], "modified": []}}]}
+    assert _collect_changed_files(inventory) == {"r": set()}
+
+
+def test_repos_without_change_scope_names_only_unconfigured_repos() -> None:
+    """只有「缺 changed_files 键」的仓库算未配范围；空集属已配。"""
+    inventory = {
+        "repositories": [
+            {"name": "scoped", "changed_files": {"added": ["A.java"]}},
+            {"name": "empty", "changed_files": {"added": [], "modified": []}},
+            {"name": "unscoped", "files": []},
+        ]
+    }
+    assert _repos_without_change_scope(inventory) == ["unscoped"]
+    assert _repos_without_change_scope({}) == []
+
+
+def _write_job_input(tmp_path: Path, repos: list[dict[str, Any]]) -> ArtifactStore:
+    """造一个带 job_input.json 的 store（任务配置是报错成因判定的唯一依据）。"""
+    store = ArtifactStore(tmp_path, _SCHEMAS, "orchestrator")
+    job_dir = store.job_dir(_JOB)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "job_input.json").write_text(
+        json.dumps({"repos": repos}, ensure_ascii=False), encoding="utf-8"
+    )
+    return store
+
+
+def test_declared_scope_repos_reads_task_config(tmp_path: Path) -> None:
+    """基线分支、提交号列表、旧单值 commit 都算「已声明范围」。"""
+    store = _write_job_input(
+        tmp_path,
+        [
+            {"name": "by-baseline", "baseline_branch": "origin/master"},
+            {"name": "by-commits", "commits": ["abc123", "def456"]},
+            {"name": "by-legacy", "commit": "abc123"},
+            {"name": "by-nothing", "baseline_branch": None, "commits": []},
+        ],
+    )
+    assert _declared_scope_repos(store, _JOB) == {
+        "by-baseline": True,
+        "by-commits": True,
+        "by-legacy": True,
+        "by-nothing": False,
+    }
+
+
+def test_declared_scope_repos_is_empty_when_config_missing(tmp_path: Path) -> None:
+    """读不到任务配置 → 空 dict：调用方退回笼统报错，不猜成因。"""
+    store = ArtifactStore(tmp_path, _SCHEMAS, "orchestrator")
+    assert _declared_scope_repos(store, _JOB) == {}
+
+
+def test_unscoped_report_separates_missing_config_from_lost_scan_output(
+    tmp_path: Path,
+) -> None:
+    """已配置却拿不到变更清单 → 指向 code_scan，而不是让用户去补配置。
+
+    回归护栏：真机上配好提交号后重跑，仍报「仓库未配置变更范围」，排查被这句
+    文案带偏；真实成因是 java-parser 的 job 幂等缓存命中了上一次结果。
+    """
+    store = _write_job_input(
+        tmp_path,
+        [
+            {"name": "configured", "commits": ["abc123"]},
+            {"name": "not-configured", "baseline_branch": ""},
+        ],
+    )
+    message, details = _unscoped_report(store, _JOB, ["configured", "not-configured"])
+    assert "code_scan" in message
+    assert details["repos_lost_in_scan"] == ["configured"]
+    assert details["repos_missing_config"] == ["not-configured"]
+    assert details["repos_without_scope"] == ["configured", "not-configured"]
+
+
+def test_unscoped_report_does_not_blame_config_when_all_declared(tmp_path: Path) -> None:
+    """全都配了范围时，报错里不能出现「未在任务配置里指定」这种误导措辞。"""
+    store = _write_job_input(tmp_path, [{"name": "only", "commits": ["abc123"]}])
+    message, _ = _unscoped_report(store, _JOB, ["only"])
+    assert "未在任务配置里指定" not in message
+    assert "已配置变更范围但扫描产物没有变更清单" in message
 
 
 def test_filter_candidates_by_scope_keeps_only_changed_files() -> None:
@@ -345,8 +445,12 @@ def test_filter_candidates_by_scope_keeps_only_changed_files() -> None:
     assert [c["candidate_id"] for c in kept] == ["CAND-001", "CAND-002", "CAND-004"]
 
 
-def test_filter_candidates_keeps_repos_without_scope() -> None:
-    """未配变更范围的仓库全保留；配了变更范围的仓库才按文件过滤。"""
+def test_filter_candidates_drops_repos_without_scope() -> None:
+    """未配变更范围的仓库**不再全保留**：接口候选只取本次代码变更涉及的接口。
+
+    回归护栏：旧实现里 `repo not in changed_files → 整仓保留`，正是真机上
+    「113 个候选里 112 个来自未配基线的仓库」的直接原因。
+    """
     candidates: list[dict[str, Any]] = [
         {"candidate_id": "CAND-001", "code_location": {"repo": "scoped", "file": "A.java"}},
         {"candidate_id": "CAND-002", "code_location": {"repo": "scoped", "file": "Other.java"}},
@@ -354,4 +458,86 @@ def test_filter_candidates_keeps_repos_without_scope() -> None:
         {"candidate_id": "CAND-004", "code_location": {"repo": "unscoped", "file": "Y.java"}},
     ]
     kept = _filter_candidates_by_scope(candidates, {"scoped": {"A.java"}})
-    assert [c["candidate_id"] for c in kept] == ["CAND-001", "CAND-003", "CAND-004"]
+    assert [c["candidate_id"] for c in kept] == ["CAND-001"]
+
+
+def test_filter_candidates_keeps_candidate_whose_dependency_changed() -> None:
+    """依赖被改、Controller 文件没改的接口也要保留（行为级口径，R-REV-04②）。
+
+    回归护栏：真机上 `DemandDepositRuleController` 的 6 个端点一度被漏掉——它的
+    Service/DTO/Entity 都在变更清单里，只有 Controller 文件本身没改。
+    """
+    candidates: list[dict[str, Any]] = [
+        {
+            "candidate_id": "CAND-001",
+            "code_location": {
+                "repo": "repo-a",
+                "file": "DemandDepositRuleController.java",
+            },
+            "related_files": [
+                {
+                    "repo": "repo-a",
+                    "file": "DemandDepositRuleController.java",
+                    "role": "controller",
+                },
+                {"repo": "repo-a", "file": "DemandDepositRuleServiceImpl.java", "role": "service"},
+                {"repo": "repo-a", "file": "DemandDepositRuleQuery.java", "role": "dto"},
+            ],
+        },
+    ]
+    changed = {"repo-a": {"DemandDepositRuleServiceImpl.java", "DemandDepositRuleQuery.java"}}
+
+    kept = _filter_candidates_by_scope(candidates, changed)
+
+    assert [c["candidate_id"] for c in kept] == ["CAND-001"]
+
+
+def test_filter_candidates_drops_candidate_with_no_changed_related_file() -> None:
+    """本人与关联文件都没被改 → 丢弃；缺 related_files 时退回「本人被改」判定（向后兼容）。"""
+    candidates: list[dict[str, Any]] = [
+        {
+            "candidate_id": "CAND-001",
+            "code_location": {"repo": "repo-a", "file": "UntouchedController.java"},
+            "related_files": [
+                {"repo": "repo-a", "file": "UntouchedService.java", "role": "service"},
+            ],
+        },
+        {
+            "candidate_id": "CAND-002",
+            "code_location": {"repo": "repo-a", "file": "LegacyController.java"},
+            # 无 related_files：老响应结构
+        },
+    ]
+
+    assert _filter_candidates_by_scope(candidates, {"repo-a": {"SomeOther.java"}}) == []
+
+
+def test_filter_candidates_drops_repo_with_empty_change_scope() -> None:
+    """登记为空集（配了范围但本次无变更）的仓库同样不保留候选。"""
+    candidates = [
+        {"candidate_id": "CAND-001", "code_location": {"repo": "empty", "file": "A.java"}},
+    ]
+    assert _filter_candidates_by_scope(candidates, {"empty": set()}) == []
+
+
+async def test_interface_reconstruct_rejects_repo_without_change_scope(
+    tmp_path: Path,
+) -> None:
+    """未配变更范围的仓库 → X-ORCH-01 直接拦下，不再静默退化成全量还原。"""
+    engine, store = _ready_env(tmp_path)
+    inventory = store.read_json(_JOB, "code_inventory.json")
+    inventory["repositories"][0].pop("changed_files")  # 只让第一个仓库缺变更范围
+    store.write(_JOB, "code_inventory.json", inventory)
+    state = engine.open_job(_JOB)
+    with pytest.raises(PipelineError) as excinfo:
+        await run_interface_reconstruct(
+            engine,
+            state,
+            store,
+            _client(_extract_handler()),
+            _StubLlm(_LLM_GOOD),
+            _PROMPTS,
+            _REPOS,
+        )
+    assert excinfo.value.code == "X-ORCH-01"
+    assert excinfo.value.details["repos_without_scope"] == ["user-service"]

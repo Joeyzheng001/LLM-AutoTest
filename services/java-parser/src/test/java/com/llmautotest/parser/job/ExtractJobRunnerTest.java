@@ -445,6 +445,77 @@ class ExtractJobRunnerTest {
         assertThat(body).extracting(f -> f.get("name")).containsExactly("serialNo", "accountNo");
     }
 
+    @Test
+    void candidateCarriesDependencyFilesForScopeFiltering() throws IOException {
+        Path repo = tempDir.resolve("dep-repo");
+        writeJava(repo, "com/demo/DemandDepositRuleController.java", """
+                package com.demo;
+
+                import org.springframework.beans.factory.annotation.Autowired;
+                import org.springframework.web.bind.annotation.*;
+
+                @RestController
+                @RequestMapping("/demandDepositRule")
+                public class DemandDepositRuleController {
+
+                    @Autowired
+                    private DemandDepositRuleService demandDepositRuleService;
+
+                    @PostMapping("/query")
+                    public Response<List<DemandDepositRule>> query(@RequestBody DemandDepositRuleQuery request) {
+                        return demandDepositRuleService.listRule(request);
+                    }
+                }
+                """);
+        writeJava(repo, "com/demo/DemandDepositRuleService.java",
+                "package com.demo; public interface DemandDepositRuleService {}");
+        writeJava(repo, "com/demo/DemandDepositRuleServiceImpl.java",
+                "package com.demo; public class DemandDepositRuleServiceImpl"
+                        + " implements DemandDepositRuleService {}");
+        writeJava(repo, "com/demo/DemandDepositRuleQuery.java",
+                "package com.demo; public class DemandDepositRuleQuery {}");
+        writeJava(repo, "com/demo/DemandDepositRule.java",
+                "package com.demo; public class DemandDepositRule {}");
+
+        Map<String, Object> payload =
+                runner.run(new ExtractRequest("job-deps", List.of(input(repo, false)), null));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> candidates = (List<Map<String, Object>>) payload.get("candidates");
+        assertThat(candidates).hasSize(1);
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> related =
+                (List<Map<String, Object>>) candidates.get(0).get("related_files");
+        // Controller 自身 + 字段注入（含接口 → 实现类一跳）+ 方法参数 + 返回类型泛型实参，
+        // 都要落成文件路径：调用方据此判定「依赖改了、Controller 没改」的接口也算本次变更。
+        assertThat(related)
+                .extracting(item -> item.get("file"))
+                .contains(
+                        "com/demo/DemandDepositRuleController.java",
+                        "com/demo/DemandDepositRuleService.java",
+                        "com/demo/DemandDepositRuleServiceImpl.java",
+                        "com/demo/DemandDepositRuleQuery.java",
+                        "com/demo/DemandDepositRule.java");
+        // 角色按命名约定判定：实现类是 service，查询对象是 dto
+        assertThat(related)
+                .filteredOn(item -> "service".equals(item.get("role")))
+                .extracting(item -> item.get("file"))
+                .contains("com/demo/DemandDepositRuleServiceImpl.java");
+        assertThat(related)
+                .filteredOn(item -> "dto".equals(item.get("role")))
+                .extracting(item -> item.get("file"))
+                .contains("com/demo/DemandDepositRuleQuery.java");
+        // 仓库外的类型（Response/List）不编造路径
+        assertThat(related)
+                .noneMatch(item -> String.valueOf(item.get("file")).contains("Response.java"));
+    }
+
+    private static void writeJava(Path repo, String relative, String source) throws IOException {
+        Path file = repo.resolve(relative);
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, source);
+    }
+
     private RepositoryInput input(Path repo, boolean fallback) {
         return new RepositoryInput(
                 repo.getFileName().toString(), repo.toString(), "main", fallback, null);

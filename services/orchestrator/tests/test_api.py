@@ -260,12 +260,26 @@ async def test_access_mode_endpoint_defaults_to_single_user(env: tuple[FastAPI, 
     assert response.json() == {"mode": "single_user", "user": ""}
 
 
+def _repo_payload(repo_dir: Path, name: str = "repo-a", **extra: Any) -> dict[str, Any]:
+    """仓库配置载荷；变更范围必填（C-09），测试统一带上基线分支。
+
+    单独成函数是为了让各调用点保持短行——提交必须带变更范围，否则会被 400 拒掉。
+    """
+    return {
+        "name": name,
+        "path": str(repo_dir),
+        "branch": "main",
+        "baseline_branch": "main",
+        **extra,
+    }
+
+
 def _submit_body(repo_dir: Path, job_id: str | None = None, **overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "job_id": job_id,
         "doc_name": "requirements.md",
         "doc_content_b64": base64.b64encode(_DOC.encode()).decode(),
-        "repos": [{"name": "repo-a", "path": str(repo_dir), "branch": "main"}],
+        "repos": [_repo_payload(repo_dir)],
         "rest_url": "http://127.0.0.1:9000",
     }
     body.update(overrides)
@@ -374,7 +388,9 @@ async def test_repository_root_endpoint_and_relative_path_are_server_resolved(
     body = _submit_body(
         repo_dir,
         "job-api-relative-repo",
-        repos=[{"name": "repo-a", "path": "repo-a", "branch": "main"}],
+        repos=[
+            {"name": "repo-a", "path": "repo-a", "branch": "main", "baseline_branch": "main"}
+        ],
     )
     response = await client.post("/api/v1/jobs", json=body)
     assert response.status_code == 202
@@ -406,6 +422,7 @@ async def test_submit_job_remote_git_keeps_token_out_of_job_input(
                 "source": "git",
                 "remote_url": bare.as_uri(),
                 "branch": "main",
+                "baseline_branch": "main",
                 "access_token": "token-should-not-be-persisted",
             }
         ],
@@ -621,7 +638,7 @@ async def test_database_queued_job_is_reenqueued_on_startup(
             {
                 "job_id": job_id,
                 "doc_paths": [str(doc_path)],
-                "repos": [{"name": "repo-a", "path": str(repo_dir), "branch": "main"}],
+                "repos": [_repo_payload(repo_dir)],
                 "rest_url": "http://127.0.0.1:9000",
             },
             ensure_ascii=False,
@@ -1360,7 +1377,14 @@ async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
     update = {
         "docs": [],
         "keep_existing_docs": True,
-        "repos": [{"name": "repo-updated", "path": str(repo_dir), "branch": "feature/x"}],
+        "repos": [
+            {
+                "name": "repo-updated",
+                "path": str(repo_dir),
+                "branch": "feature/x",
+                "baseline_branch": "main",
+            }
+        ],
         "rest_url": "https://example.test:8443",
         "rest_insecure_tls": False,
         "resume": False,
@@ -1410,7 +1434,7 @@ async def test_edit_configuration_can_switch_to_service_level_llm(
         json={
             "docs": [],
             "keep_existing_docs": True,
-            "repos": [{"name": "repo-a", "path": str(repo_dir), "branch": "main"}],
+            "repos": [_repo_payload(repo_dir)],
             "rest_url": "http://127.0.0.1:9000",
             "resume": True,
             "run_after_save": False,
@@ -1444,7 +1468,7 @@ async def test_edit_full_job_configuration_replaces_documents(
     update = {
         "docs": [{"doc_name": "new.md", "doc_content_b64": base64.b64encode(b"# new").decode()}],
         "keep_existing_docs": False,
-        "repos": [{"name": "repo-a", "path": str(repo_dir), "branch": "main"}],
+        "repos": [_repo_payload(repo_dir)],
         "rest_url": "http://127.0.0.1:9001",
         "resume": True,
     }
@@ -1482,7 +1506,7 @@ async def test_edit_configuration_can_save_without_rerun(
         json={
             "docs": [],
             "keep_existing_docs": True,
-            "repos": [{"name": "repo-a", "path": str(repo_dir), "branch": "main"}],
+            "repos": [_repo_payload(repo_dir)],
             "rest_url": "http://127.0.0.1:9002",
             "resume": True,
             "run_after_save": False,

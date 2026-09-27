@@ -25,6 +25,8 @@ import com.github.javaparser.ast.expr.NormalAnnotationExpr;
 import com.github.javaparser.ast.expr.SingleMemberAnnotationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.github.javaparser.ast.expr.ThisExpr;
+import com.github.javaparser.ast.type.ClassOrInterfaceType;
+import com.github.javaparser.ast.type.Type;
 import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration;
 import com.github.javaparser.resolution.types.ResolvedType;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
@@ -44,6 +46,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -194,11 +197,20 @@ public class ExtractJobRunner {
                     .sorted(Comparator.comparing(Path::toString))
                     .toList();
         }
+        // 简单类名 → 仓库内相对路径：候选依赖必须落成文件路径，才能与「变更清单」求交。
+        // 同名类以路径排序最前者为准（够用：依赖判定只需要一个可达位置）。
+        Map<String, String> classIndex = new LinkedHashMap<>();
+        for (Path file : javaFiles) {
+            String fileName = file.getFileName().toString();
+            classIndex.putIfAbsent(
+                    fileName.substring(0, fileName.length() - ".java".length()),
+                    root.relativize(file).toString());
+        }
         for (Path file : javaFiles) {
             String relative = root.relativize(file).toString();
             try {
                 String source = Files.readString(file, StandardCharsets.UTF_8);
-                extractFile(source, repo, relative, candidates, parser);
+                extractFile(source, repo, relative, candidates, parser, classIndex);
             } catch (ParseProblemException ex) {
                 // X-REV-01：单文件解析失败记录跳过 + 原因，不中断整体
                 warnings.add("X-REV-01：" + relative + " 解析失败跳过：" + ex.getMessage());
@@ -210,7 +222,8 @@ public class ExtractJobRunner {
 
     private void extractFile(
             String source, RepositoryInput repo, String relative,
-            List<Map<String, Object>> candidates, JavaParser parser) {
+            List<Map<String, Object>> candidates, JavaParser parser,
+            Map<String, String> classIndex) {
         ParseResult<CompilationUnit> result = parser.parse(source);
         if (!result.isSuccessful() || result.getResult().isEmpty()) {
             // 解析失败路径：转交外层 catch 统一记 X-REV-01 告警（单文件跳过不中断）
@@ -229,8 +242,9 @@ public class ExtractJobRunner {
                 for (Map.Entry<String, String> mapping : MAPPING_ANNOTATIONS.entrySet()) {
                     for (AnnotationExpr ann : annotationsNamed(method, mapping.getKey())) {
                         for (String path : annotationPaths(ann)) {
-                            candidates.add(candidate(repo, relative, method, mapping.getValue(),
-                                    joinPath(prefix, path), unit));
+                            candidates.add(candidate(
+                                    repo, relative, cls, method, mapping.getValue(),
+                                    joinPath(prefix, path), unit, classIndex));
                         }
                     }
                 }
@@ -238,8 +252,9 @@ public class ExtractJobRunner {
                     String httpMethod = requestMappingMethod(ann);
                     if (httpMethod != null) {
                         for (String path : annotationPaths(ann)) {
-                            candidates.add(candidate(repo, relative, method, httpMethod,
-                                    joinPath(prefix, path), unit));
+                            candidates.add(candidate(
+                                    repo, relative, cls, method, httpMethod,
+                                    joinPath(prefix, path), unit, classIndex));
                         }
                     }
                 }
@@ -248,8 +263,9 @@ public class ExtractJobRunner {
     }
 
     private static Map<String, Object> candidate(
-            RepositoryInput repo, String relative, MethodDeclaration method,
-            String httpMethod, String signature, CompilationUnit unit) {
+            RepositoryInput repo, String relative, ClassOrInterfaceDeclaration controller,
+            MethodDeclaration method, String httpMethod, String signature,
+            CompilationUnit unit, Map<String, String> classIndex) {
         Map<String, Object> location = new LinkedHashMap<>();
         location.put("repo", repo.name());
         location.put("file", relative);
@@ -273,11 +289,103 @@ public class ExtractJobRunner {
         // D5 分列标记随候选透传（兜底演示仓库不计入真实结论）
         candidate.put("is_fallback", repo.fallback());
         candidate.put("confidence", STATIC_CONFIDENCE);
+        // R-REV-04②：填充契约既有的 related_files（Controller 自身 + 注入字段 + 本方法
+        // 签名引用的类型）。调用方据此按「本人或其关联文件被改」判定接口归属——依赖
+        // 改了、Controller 文件没改的接口同样算本次变动。
+        candidate.put(
+                "related_files",
+                collectRelatedFiles(repo.name(), relative, controller, method, classIndex));
         List<Map<String, Object>> requestBody = extractRequestBodyFields(method, unit);
         if (requestBody != null) {
             candidate.put("request_body", requestBody);
         }
         return candidate;
+    }
+
+    /** 收集候选的关联文件（R-REV-04②）：Controller 自身 + 注入字段类型 + 本方法参数/返回类型。
+     *
+     * <p>这是「接口是否属于本次变更」的判据之一。变更清单是文件级的，只看 Controller 文件
+     * 会漏掉「依赖（Service/DTO/Entity/Enum）改了、Controller 文件没改」的接口——而这类
+     * 接口的行为确实随依赖一起变了。
+     */
+    private static List<Map<String, Object>> collectRelatedFiles(
+            String repoName, String controllerFile, ClassOrInterfaceDeclaration controller,
+            MethodDeclaration method, Map<String, String> classIndex) {
+        // file → role：去重，Controller 自身先占位（依赖里同名文件不覆盖它的角色）
+        Map<String, String> files = new LinkedHashMap<>();
+        files.put(controllerFile, "controller");
+
+        Set<String> typeNames = new LinkedHashSet<>();
+        for (FieldDeclaration field : controller.getFields()) {
+            if (field.getAnnotationByName("Autowired").isEmpty()
+                    && field.getAnnotationByName("Resource").isEmpty()) {
+                continue;
+            }
+            for (VariableDeclarator variable : field.getVariables()) {
+                typeNames.addAll(simpleTypeNames(variable.getType()));
+            }
+        }
+        for (Parameter param : method.getParameters()) {
+            typeNames.addAll(simpleTypeNames(param.getType()));
+        }
+        typeNames.addAll(simpleTypeNames(method.getType()));
+
+        for (String typeName : typeNames) {
+            addRelated(files, classIndex, typeName);
+            // 注入的是接口（XxxService）时，实现类（XxxServiceImpl）往往才是被改的那个文件。
+            addRelated(files, classIndex, typeName + "Impl");
+        }
+
+        List<Map<String, Object>> related = new ArrayList<>();
+        for (Map.Entry<String, String> entry : files.entrySet()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("repo", repoName);
+            item.put("file", entry.getKey());
+            item.put("role", entry.getValue());
+            related.add(item);
+        }
+        return related;
+    }
+
+    private static void addRelated(
+            Map<String, String> files, Map<String, String> classIndex, String typeName) {
+        String path = classIndex.get(typeName);
+        if (path != null) {
+            files.putIfAbsent(path, roleOf(typeName));
+        }
+    }
+
+    /** 按命名约定判角色（契约枚举 controller/service/dto/proto/wsdl/listener/other）。 */
+    private static String roleOf(String typeName) {
+        if (typeName.endsWith("Service") || typeName.endsWith("ServiceImpl")
+                || typeName.endsWith("Mapper")) {
+            return "service";
+        }
+        if (typeName.endsWith("Query") || typeName.endsWith("Request")
+                || typeName.endsWith("Response") || typeName.endsWith("Dto")
+                || typeName.endsWith("DTO") || typeName.endsWith("Vo")
+                || typeName.endsWith("VO")) {
+            return "dto";
+        }
+        return "other";
+    }
+
+    /** 取类型的简单名（含泛型实参与数组元素）：只做名字级匹配，不需要符号求解。 */
+    private static Set<String> simpleTypeNames(Type type) {
+        Set<String> names = new LinkedHashSet<>();
+        if (type.isClassOrInterfaceType()) {
+            ClassOrInterfaceType declared = type.asClassOrInterfaceType();
+            names.add(declared.getNameAsString());
+            declared.getTypeArguments()
+                    .ifPresent(args -> args.forEach(arg -> names.addAll(simpleTypeNames(arg))));
+        } else if (type.isArrayType()) {
+            names.addAll(simpleTypeNames(type.asArrayType().getComponentType()));
+        } else if (type.isWildcardType()) {
+            type.asWildcardType()
+                    .getExtendedType()
+                    .ifPresent(bound -> names.addAll(simpleTypeNames(bound)));
+        }
+        return names;
     }
 
     /** 提取方法 @RequestBody 参数字段（字段名 + 类型 + 描述）。

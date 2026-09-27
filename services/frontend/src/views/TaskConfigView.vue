@@ -600,10 +600,19 @@ function clearFixtures(): void {
   submitError.value = ''
 }
 
+// 变更范围必填（C-09）：接口候选 = 本次代码变更涉及的接口。没有变更范围就只能
+// 全量还原，那不是本次任务的范围——服务端也会 400 拒绝，这里提前挡住并说明原因。
+const changeScopeValid = computed(() =>
+  repos.every((row) =>
+    row.diffMode === 'commit' ? row.commit.trim() !== '' : row.baselineBranch.trim() !== '',
+  ),
+)
+
 const formValid = computed(
   () =>
     documentsValid.value &&
     reposValid.value &&
+    changeScopeValid.value &&
     restValid.value &&
     authValid.value &&
     llmValid.value &&
@@ -617,6 +626,8 @@ const formInvalidReasons = computed(() => {
     reasons.push('每行至少选择一份被测版本需求文档')
   }
   if (!reposValid.value) reasons.push('每个仓库需填写名称和仓库地址')
+  if (!changeScopeValid.value)
+    reasons.push('每个仓库必须配置变更范围（基线分支或提交号），否则无法圈定本次改动的接口')
   if (!restValid.value) reasons.push('填写合法的 REST 服务地址')
   if (!authValid.value) reasons.push('补全鉴权地址、用户名和密码')
   if (!llmValid.value) {

@@ -157,6 +157,12 @@ def _java_parser_transport() -> httpx.MockTransport:
                 "is_fallback": False,
                 "status": "ok",
                 "file_count": 1,
+                # 变更范围必填：接口候选只取变更文件里的接口（C-09 扩展）
+                "changed_files": {
+                    "added": ["UserController.java"],
+                    "modified": [],
+                    "removed": [],
+                },
             },
             {
                 "name": "order-center",
@@ -165,6 +171,8 @@ def _java_parser_transport() -> httpx.MockTransport:
                 "is_fallback": False,
                 "status": "ok",
                 "file_count": 1,
+                # 该仓库本次无变更 → 空集；但「已配范围」这点必须体现，否则会被拦
+                "changed_files": {"added": [], "modified": [], "removed": []},
             },
         ],
     }

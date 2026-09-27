@@ -101,7 +101,11 @@ class RepoConfig(BaseModel):
     remote_url: str | None = None
     branch: str = "main"
     commit: str | None = None
-    baseline_branch: str | None = None  # C-09：基线分支（可选，指定则产出变更清单）
+    baseline_branch: str | None = None  # C-09：基线分支（变更范围来源之一）
+    # C-09 扩展：提交号 diff 并集（变更范围来源之二，与 baseline_branch 二选一）。
+    # 前端「提交号」模式提交的是该字段——此前 RepoConfig 缺此字段，pydantic 默认
+    # 忽略未知键，会把用户配好的变更范围静默丢掉，任务随即退化为全量还原。
+    commits: list[str] | None = None
     is_fallback: bool = False
     include_paths: list[str] = Field(default_factory=list)
     # C-13：仓库语言（java → java-parser；python → 内置 AST 扫描器）
@@ -417,14 +421,24 @@ def _validate_repo_config(repo: RepoConfig, repositories_root: str | None = None
                 status_code=400,
                 detail=f"仓库 {repo.name} 路径不存在或不是目录：{repo.path}",
             )
-        return
-    if not repo.remote_url or not (
+    elif not repo.remote_url or not (
         repo.remote_url.startswith(("http://", "https://", "ssh://", "git://", "file://"))
         or repo.remote_url.startswith("git@")
     ):
         raise HTTPException(
             status_code=400,
             detail=f"仓库 {repo.name} 需要合法的 Git remote_url（https/ssh/git/file）",
+        )
+    # 变更范围必填（C-09）：接口候选 = 本次代码变更涉及的接口，没有变更范围就只能
+    # 全量还原，那不是本次任务的范围。放在最后校验——先让语言/路径/地址这类更基础的
+    # 配置错误先暴露出来，用户按顺序修。
+    if not (repo.baseline_branch or "").strip() and not (repo.commits or []):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"仓库 {repo.name} 必须配置变更范围（C-09）："
+                "请选择基线分支（baseline_branch），或填写提交号列表（commits）"
+            ),
         )
 
 
