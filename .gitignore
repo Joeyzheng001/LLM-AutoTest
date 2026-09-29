@@ -3,6 +3,9 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+# 沙箱内跑 pytest 必须把 basetemp 指到工作区内（默认 tmp 路径 mkdir 被拦），
+# 这些目录是运行期产物，不入库。
+.pytest-tmp*/
 .mypy_cache/
 .ruff_cache/
 .coverage

@@ -52,6 +52,13 @@ class RepositoryInput:
     # 不一致说明工作区不在配置的分支上，扫描会读到错误的源码。放在请求体里会导致
     # 「分支更新但工作区没动」的无谓重扫，所以只做本地比对。
     declared_revision: str | None = None
+    # 变更范围右端提交号（#50）：java-parser 的 extract 必须按它在**只读快照**上解析
+    # 候选，否则候选行号与 changed_lines 行号不同版本，行级判定与变动代码全错位。
+    target_sha: str | None = None
+    # 变更行区间（#52）：{仓内相对路径: {"added": [[起,止]], "removed": [[起,止]]}}。
+    # 行号是 target 版本，与 target_sha 的快照源码同版本，可直接取变动代码片段。
+    # hash=False：dict 不可哈希，但不能因此让它进不了相等比较（幂等指纹靠 payload 序列化）。
+    changed_lines: dict[str, Any] = field(default_factory=dict, hash=False)
 
     def to_dict(self) -> dict[str, Any]:
         """请求体序列化（可选字段仅在非默认时出现）。"""
@@ -70,6 +77,10 @@ class RepositoryInput:
             payload["commits"] = list(self.commits)
         if self.workspace_revision:
             payload["workspace_revision"] = self.workspace_revision
+        if self.target_sha:
+            payload["target_sha"] = self.target_sha
+        if self.changed_lines:
+            payload["changed_lines"] = self.changed_lines
         return payload
 
 

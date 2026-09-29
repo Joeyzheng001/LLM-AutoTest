@@ -26,7 +26,11 @@ NODE_ARTIFACTS: dict[str, tuple[str, ...]] = {
     # req_parse 内含「需求质量评审 + 条目提取」两个受控子阶段；两份产物均合规才完成。
     "req_parse": ("requirement_review.json", "requirement_items.json"),
     "code_scan": ("code_inventory.json",),
-    "interface_reconstruct": ("interface_candidates.json", "interfaces.json"),
+    "interface_reconstruct": (
+        "interface_candidates.json",
+        "interfaces.json",
+        "change_set.json",
+    ),
     "code_review": ("review_mapping.json",),
     "testcase_generate": ("testcases.json",),
     "auto_execute": ("execution.json",),

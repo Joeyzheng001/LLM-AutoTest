@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 /** 幂等键 = kind + job_id + 请求内容指纹：防重复执行，但绝不复用过期产物。 */
 class JobManagerTest {
 
-    private static final ParserProperties PROPERTIES = new ParserProperties(2, 20000);
+    private static final ParserProperties PROPERTIES = ParserProperties.of(2, 20000);
 
     @Test
     void sameFingerprintReusesRecordWithoutRerun() throws Exception {

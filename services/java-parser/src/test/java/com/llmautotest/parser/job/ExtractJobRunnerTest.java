@@ -3,6 +3,7 @@ package com.llmautotest.parser.job;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.llmautotest.parser.ParserProperties;
 import com.llmautotest.parser.contract.ExtractRequest;
 import com.llmautotest.parser.contract.RepositoryInput;
 import java.io.IOException;
@@ -18,7 +19,7 @@ class ExtractJobRunnerTest {
     @TempDir
     Path tempDir;
 
-    private final ExtractJobRunner runner = new ExtractJobRunner();
+    private final ExtractJobRunner runner = new ExtractJobRunner(ParserProperties.of(2, 20000));
 
     private static final String CONTROLLER_SOURCE = """
             package com.demo.user;
@@ -176,11 +177,10 @@ class ExtractJobRunnerTest {
         Files.writeString(repo.resolve("Plain.java"), "class Plain {}\n");
 
         Map<String, Object> payload = runner.run(new ExtractRequest(
-                "job-1", List.of(input(repo, false)), List.of("rest", "grpc", "mq")));
+                "job-1", List.of(input(repo, false)), List.of("rest", "unknown")));
 
         List<?> warnings = (List<?>) payload.get("warnings");
-        assertThat(warnings).anyMatch(w -> String.valueOf(w).contains("grpc"));
-        assertThat(warnings).anyMatch(w -> String.valueOf(w).contains("mq"));
+        assertThat(warnings).anyMatch(w -> String.valueOf(w).contains("unknown"));
     }
 
     @Test

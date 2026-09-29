@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "llm-autotest/review_mapping",
-  "title": "Code Review 三视图（模块 4 REVIEW，主笔：甲）",
+  "title": "Code Review 四视图（模块 4 REVIEW，主笔：甲）",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "job_id", "mappings", "risks", "missing_features"],
@@ -19,6 +19,19 @@
           "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
           "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
           "interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } },
+          "claim_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^CLM-\\d{3,}$" } },
+          "claim_counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["total", "implemented", "partial", "missing", "undetermined"],
+            "properties": {
+              "total": { "type": "integer", "minimum": 0 },
+              "implemented": { "type": "integer", "minimum": 0 },
+              "partial": { "type": "integer", "minimum": 0 },
+              "missing": { "type": "integer", "minimum": 0 },
+              "undetermined": { "type": "integer", "minimum": 0 }
+            }
+          },
           "status": { "type": "string", "enum": ["implemented", "partial", "missing", "undetermined"] },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
           "evidence_quality": { "type": "string", "enum": ["behavior_path", "interface_only", "insufficient", "none"] },
@@ -76,17 +89,55 @@
           "start_line": { "type": "integer", "minimum": 1 },
           "end_line": { "type": "integer", "minimum": 1 },
           "excerpt": { "type": "string", "maxLength": 520 },
-          "interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } }
+          "interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } },
+          "role": { "type": "string" }
         }
       }
     },
     "scan_coverage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["complete", "repositories", "review_evidence_limited"],
+      "description": "扫描覆盖率：complete=true 表示「仓库扫描完整、你已看到全部接口」。任何截断（证据池/接口证据/调用链）或完整性校验缺失都必须让它是 false，不能只报碰巧检测到的那一项",
+      "required": [
+        "complete",
+        "repositories",
+        "review_evidence_limited",
+        "interface_evidence_truncated",
+        "call_chain_truncated",
+        "scan_integrity_complete"
+      ],
       "properties": {
         "complete": { "type": "boolean" },
-        "review_evidence_limited": { "type": "boolean" },
+        "review_evidence_limited": { "type": "boolean", "description": "证据池触顶（文件数或条目数）" },
+        "interface_evidence_truncated": {
+          "type": "boolean",
+          "description": "接口证据按上限截断（接口数超过 interface_evidence_limit）"
+        },
+        "interface_evidence_limit": { "type": "integer" },
+        "interface_evidence_count": {
+          "type": "integer",
+          "description": "实际拥有接口实现源码证据的接口数"
+        },
+        "interface_evidence_missing": {
+          "type": "array",
+          "description": "没有对应接口实现源码证据的接口 ID；非空时 complete 必须为 false",
+          "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" }
+        },
+        "call_chain_truncated": {
+          "type": "boolean",
+          "description": "调用链分析按上限截断（接口数超过 call_chain_limit）"
+        },
+        "call_chain_limit": { "type": "integer" },
+        "interfaces_total": { "type": "integer" },
+        "scan_integrity_complete": {
+          "type": "boolean",
+          "description": "接口还原阶段的完整性闭环门禁是否通过（发现文件数 == 解析成功数 + 失败数，且与 code_inventory 一致）"
+        },
+        "scan_integrity_reasons": {
+          "type": "array",
+          "description": "未通过的具体原因（照抄接口还原阶段的结论，不改写）",
+          "items": { "type": "string" }
+        },
         "repositories": {
           "type": "array",
           "items": {
@@ -103,6 +154,10 @@
         }
       }
     },
+    "change_scope_available": {
+      "type": "boolean",
+      "description": "是否配置并生成了基线/提交变更清单；false 与‘已配置但无变更’不同"
+    },
     "risks": {
       "type": "array",
       "description": "视图二：风险清单（partial 自动进入，R-REVW-04；程序化派生，R-REVW-02）",
@@ -112,6 +167,8 @@
         "properties": {
           "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
           "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
+          "interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } },
+          "claim_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^CLM-\\d{3,}$" } },
           "kind": { "type": "string", "enum": ["partial_implementation", "evidence_gap"] },
           "severity": { "type": "string", "enum": ["P0", "P1", "P2"] },
           "action": { "type": "string" },
@@ -128,6 +185,11 @@
         "properties": {
           "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
           "title": { "type": "string", "minLength": 1 }
+          ,"claim_id": { "type": "string", "pattern": "^CLM-\\d{3,}$" }
+          ,"claim_statement": { "type": "string" }
+          ,"interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } }
+          ,"evidence_refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^EVD-\\d{4,}$" } }
+          ,"unmet_conditions": { "type": "array", "items": { "type": "string" } }
         }
       }
     },
@@ -150,15 +212,53 @@
     },
     "change_scope": {
       "type": "array",
-      "description": "视图四：变更范围（C-09 双分支 diff；接口按 code_location.file 关联变更文件，程序化派生不经 LLM；无基线分支时为空数组）",
+      "description": "视图四：变更范围（C-09 双分支 diff）。接口命中口径=定义文件被改 **或** 任一 related_files 被改（行为级）；程序化派生不经 LLM；无基线分支时为空数组",
       "items": {
         "type": "object",
         "required": ["interface_id", "repo", "file", "change", "covered_by"],
         "properties": {
           "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
           "repo": { "type": "string" },
-          "file": { "type": "string", "description": "仓内相对路径" },
-          "change": { "type": "string", "enum": ["added", "modified"] },
+          "file": { "type": "string", "description": "接口定义文件（仓内相对路径）" },
+          "change": {
+            "type": "string",
+            "enum": ["added", "modified"],
+            "description": "接口定义文件的变更类型；定义文件未变（仅关联文件变）时取关联文件的变更类型，来源见 matched_via"
+          },
+          "matched_via": {
+            "type": "string",
+            "enum": ["definition", "related_file"],
+            "description": "definition=接口定义文件本身被改；related_file=定义文件没改，但依赖（Service/DTO/Entity/Enum）被改"
+          },
+          "related_changed_files": {
+            "type": "array",
+            "description": "落在变更清单里的关联文件",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": { "type": "string" },
+                "role": { "type": "string" },
+                "change": { "type": "string", "enum": ["added", "modified"] }
+              }
+            }
+          },
+          "covered_claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["requirement_id", "claim_ids", "status"],
+              "properties": {
+                "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
+                "claim_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^CLM-\\d{3,}$" } },
+                "status": { "type": "string", "enum": ["implemented", "partial", "missing", "undetermined"] }
+              }
+            }
+          },
+          "evidence_level": {
+            "type": "string",
+            "enum": ["body", "callee", "file", "related_file", "none"],
+            "description": "行级变更判定等级（来自接口还原的 change_evidence）：body=本体方法被改；callee=调用链上的代码被改；file=本体文件被改但改动行不在跨度内；related_file=仅关联文件被改"
+          },
           "covered_by": {
             "type": "array",
             "description": "映射到该接口的需求条目（空 = 变更接口未被需求覆盖）",
@@ -169,15 +269,48 @@
     },
     "call_chains": {
       "type": "array",
-      "description": "接口实现附近静态提取的一跳调用链；无法提取时为空，不补造",
+      "description": "接口实现的静态递归调用链；新产物使用结构化 callee 节点，旧产物可保留一跳字符串",
       "items": {
         "type": "object",
         "required": ["interface_id", "entry", "callees", "confidence"],
         "properties": {
           "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
-          "entry": { "type": "object" },
-          "callees": { "type": "array", "items": { "type": "string" } },
-          "confidence": { "type": "string", "const": "static_one_hop" }
+          "entry": {
+            "type": "object",
+            "properties": {
+              "repo": { "type": "string" },
+              "file": { "type": "string" }
+            }
+          },
+          "callees": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                { "type": "string" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "file": { "type": "string" },
+                    "role": { "type": "string" },
+                    "start_line": { "type": ["integer", "null"], "minimum": 1 },
+                    "end_line": { "type": ["integer", "null"], "minimum": 1 },
+                    "depth": { "type": ["integer", "null"], "minimum": 1 },
+                    "call_line": { "type": ["integer", "null"], "minimum": 1 }
+                  }
+                }
+              ]
+            }
+          },
+          "status": { "type": "string", "enum": ["complete", "partial"] },
+          "resolved_calls": { "type": "integer", "minimum": 0 },
+          "resolved_nodes": { "type": "integer", "minimum": 0 },
+          "unresolved_calls": { "type": "integer", "minimum": 0 },
+          "unresolved": { "type": "array" },
+          "max_depth": { "type": "integer", "minimum": 0 },
+          "confidence": {
+            "type": "string",
+            "enum": ["static_recursive", "legacy_static_one_hop", "static_one_hop"]
+          }
         }
       }
     },

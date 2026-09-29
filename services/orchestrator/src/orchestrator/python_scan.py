@@ -16,7 +16,9 @@ merge-base，不动工作区；失败（非 Git 仓库/ref 不存在）→ 仓�
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +57,10 @@ class PythonScanResult:
     inventory_entry: dict[str, Any]
     candidates: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    status: str = "ok"
+    files_discovered: int = 0
+    files_parsed: int = 0
+    files_failed: int = 0
 
 
 def scan_repository(repo: RepositoryInput) -> PythonScanResult:
@@ -62,15 +68,32 @@ def scan_repository(repo: RepositoryInput) -> PythonScanResult:
     root = Path(repo.path)
     if not root.is_dir():
         return PythonScanResult(
-            inventory_entry=_error_entry(repo, f"仓库路径不存在或不是目录：{repo.path}")
+            inventory_entry=_error_entry(repo, f"仓库路径不存在或不是目录：{repo.path}"),
+            status="error",
         )
 
-    changed = _git_diff(root, repo.baseline_branch, repo.branch) if repo.baseline_branch else None
-    if isinstance(changed, str):  # diff 失败信息
-        return PythonScanResult(inventory_entry=_error_entry(repo, changed))
-
-    py_files = _collect_py_files(root, repo.include_paths)
     warnings: list[str] = []
+    scan_root = root
+    if repo.target_sha:
+        try:
+            scan_root = _snapshot_at(root, repo.name, repo.target_sha)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            message = f"按 target_sha 检出 Python 快照失败（{repo.target_sha}）：{exc}"
+            return PythonScanResult(
+                inventory_entry=_error_entry(repo, message),
+                warnings=[message],
+                status="error",
+            )
+    if repo.commits:
+        changed = _git_diff_commits(root, repo.commits)
+    elif repo.baseline_branch:
+        changed = _git_diff(root, repo.baseline_branch, repo.branch, repo.target_sha)
+    else:
+        changed = None
+    if isinstance(changed, str):  # diff 失败信息
+        return PythonScanResult(inventory_entry=_error_entry(repo, changed), status="error")
+
+    py_files = _collect_py_files(scan_root, repo.include_paths)
     entry: dict[str, Any] = {
         "name": repo.name,
         "path": repo.path,
@@ -80,8 +103,14 @@ def scan_repository(repo: RepositoryInput) -> PythonScanResult:
         "status": "ok" if py_files else "empty",
         "file_count": len(py_files),
     }
+    if scan_root != root:
+        entry["source_path"] = str(scan_root)
+        entry["target_sha"] = repo.target_sha
+    if repo.commits:
+        entry["commits"] = list(repo.commits)
     if repo.baseline_branch:
         entry["baseline_branch"] = repo.baseline_branch
+    if changed is not None:
         entry["changed_files"] = changed or {"added": [], "modified": [], "removed": []}
     files_list = [
         {
@@ -89,7 +118,7 @@ def scan_repository(repo: RepositoryInput) -> PythonScanResult:
             "module": rel.parts[0] if len(rel.parts) > 1 else ".",
             "path": rel.as_posix(),
         }
-        for rel in (p.relative_to(root) for p in py_files[:_MAX_FILES_LIST])
+        for rel in (p.relative_to(scan_root) for p in py_files[:_MAX_FILES_LIST])
     ]
     if len(py_files) > _MAX_FILES_LIST:
         warnings.append(
@@ -98,8 +127,24 @@ def scan_repository(repo: RepositoryInput) -> PythonScanResult:
         entry["truncated_scope"] = ["<files 清单截断，路由扫描仍为全量>"]
     entry["files"] = files_list
 
-    candidates = _extract_routes(root, py_files, repo, warnings)
-    return PythonScanResult(inventory_entry=entry, candidates=candidates, warnings=warnings)
+    parse_stats: dict[str, int] = {"files_parsed": 0, "files_failed": 0}
+    candidates = _extract_routes(scan_root, py_files, repo, warnings, parse_stats)
+    status = "degraded" if not repo.target_sha else "ok"
+    if not repo.target_sha:
+        warnings.append(
+            "Python 扫描未提供 target_sha：候选在工作区解析，行号与变更版本可能不一致"
+        )
+    entry["files_parsed"] = parse_stats["files_parsed"]
+    entry["files_failed"] = parse_stats["files_failed"]
+    return PythonScanResult(
+        inventory_entry=entry,
+        candidates=candidates,
+        warnings=warnings,
+        status=status,
+        files_discovered=len(py_files),
+        files_parsed=parse_stats["files_parsed"],
+        files_failed=parse_stats["files_failed"],
+    )
 
 
 # ---- 文件收集与解析 ----
@@ -131,13 +176,16 @@ def _parse_ast(path: Path, warnings: list[str]) -> ast.Module | None:
 # ---- 基线 diff（C-09 同口径）----
 
 
-def _git_diff(root: Path, baseline: str, branch: str) -> dict[str, list[str]] | str:
+def _git_diff(
+    root: Path, baseline: str, branch: str, target_sha: str | None = None
+) -> dict[str, list[str]] | str:
     """git diff --name-status <基线>...<被测>（merge-base，不动工作区）。
 
     Returns:
         {"added": [...], "modified": [...], "removed": [...]}；失败时返回错误信息。
     """
-    cmd = ["git", "-C", str(root), "diff", "--name-status", f"{baseline}...{branch}"]
+    target = target_sha or branch
+    cmd = ["git", "-C", str(root), "diff", "--name-status", f"{baseline}...{target}"]
     try:
         completed = subprocess.run(cmd, capture_output=True, text=True, timeout=60)  # noqa: S603
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -145,7 +193,7 @@ def _git_diff(root: Path, baseline: str, branch: str) -> dict[str, list[str]] | 
     if completed.returncode != 0:
         stderr_lines = completed.stderr.strip().splitlines()
         detail = stderr_lines[0] if stderr_lines else "未知原因"
-        return f"基线 diff 失败（X-CODE-01 宁停不猜）：{baseline}...{branch}：{detail}"
+        return f"基线 diff 失败（X-CODE-01 宁停不猜）：{baseline}...{target}：{detail}"
     result: dict[str, list[str]] = {"added": [], "modified": [], "removed": []}
     status_map = {"A": "added", "M": "modified", "D": "removed"}
     for line in completed.stdout.splitlines():
@@ -156,11 +204,83 @@ def _git_diff(root: Path, baseline: str, branch: str) -> dict[str, list[str]] | 
     return result
 
 
+def _git_diff_commits(root: Path, commits: tuple[str, ...]) -> dict[str, list[str]] | str:
+    """汇总提交自身的 diff，和 Java 扫描器保持 ``commits`` 口径一致。"""
+    result: dict[str, list[str]] = {"added": [], "modified": [], "removed": []}
+    status_map = {"A": "added", "M": "modified", "D": "removed"}
+    for commit in commits:
+        try:
+            completed = _run_git(
+                directory=root,
+                args=["diff", "--name-status", f"{commit}^", commit],
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            try:
+                completed = _run_git(
+                    directory=root,
+                    args=["show", "--name-status", "--format=", commit],
+                )
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                return f"提交号 diff 失败（X-CODE-01 宁停不猜）：{commit}：{exc}"
+        for line in completed.stdout.splitlines():
+            parts = line.split("\t", 1)
+            category = status_map.get(parts[0][:1]) if parts else None
+            if not category or len(parts) != 2:
+                continue
+            if parts[1] not in result[category]:
+                result[category].append(parts[1])
+    return result
+
+
+def _snapshot_at(root: Path, repo_name: str, target_sha: str) -> Path:
+    """按 target_sha 建立可复用的 Python worktree，避免 AST 读取工作区错版本。"""
+    target = _git_revision(root, target_sha)
+    if not target:
+        raise subprocess.CalledProcessError(128, ["git", "rev-parse", target_sha])
+    root_key = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:12]
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", repo_name) or "repo"
+    directory = root.parent / f".llm-autotest-python-snapshot-{safe_name}-{root_key}-{target[:12]}"
+    if directory.exists():
+        try:
+            if _git_revision(directory, "HEAD") == target:
+                return directory
+            _run_git(directory=root, args=["worktree", "remove", "--force", str(directory)])
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            shutil.rmtree(directory, ignore_errors=True)
+    _run_git(directory=root, args=["worktree", "add", "--detach", str(directory), target])
+    return directory
+
+
+def _git_revision(root: Path, ref: str) -> str | None:
+    """读取提交号；非 Git 目录或无效 ref 返回 None。"""
+    try:
+        result = _run_git(directory=root, args=["rev-parse", "--verify", f"{ref}^{{commit}}"])
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _run_git(*, directory: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Python 扫描器统一 Git 入口：捕获输出、限时、失败透传。"""
+    return subprocess.run(  # noqa: S603
+        ["git", "-C", str(directory), *args],  # noqa: S607
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+
+
 # ---- 路由提取 ----
 
 
 def _extract_routes(
-    root: Path, py_files: list[Path], repo: RepositoryInput, warnings: list[str]
+    root: Path,
+    py_files: list[Path],
+    repo: RepositoryInput,
+    warnings: list[str],
+    parse_stats: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Django urls 树 + FastAPI/Flask 装饰器 → 候选清单（CAND-### 顺序编号）。"""
     trees: dict[Path, ast.Module] = {}
@@ -168,6 +288,10 @@ def _extract_routes(
         tree = _parse_ast(path, warnings)
         if tree is not None:
             trees[path] = tree
+            if parse_stats is not None:
+                parse_stats["files_parsed"] = parse_stats.get("files_parsed", 0) + 1
+        elif parse_stats is not None:
+            parse_stats["files_failed"] = parse_stats.get("files_failed", 0) + 1
 
     routes: list[dict[str, Any]] = []
     urls_files = [p for p in py_files if p.name == "urls.py"]

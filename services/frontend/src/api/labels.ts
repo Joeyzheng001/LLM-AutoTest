@@ -24,8 +24,15 @@ export const STATUS_LABELS: Record<NodeStatus, string> = {
 export const MAPPING_STATUS_LABELS: Record<string, string> = {
   implemented: '已实现',
   partial: '部分实现',
-  missing: '未实现',
-  undetermined: '无法判断',
+  missing: '已确认未实现',
+  undetermined: '待核查',
+}
+
+export const EVIDENCE_QUALITY_LABELS: Record<string, string> = {
+  behavior_path: '行为链路证据',
+  interface_only: '仅接口证据',
+  insufficient: '证据不足',
+  none: '暂无证据',
 }
 
 export const DEFECT_STATUS_LABELS: Record<string, string> = {

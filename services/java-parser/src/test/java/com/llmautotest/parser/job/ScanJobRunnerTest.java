@@ -10,8 +10,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -21,7 +23,7 @@ class ScanJobRunnerTest {
     @TempDir
     Path tempDir;
 
-    private final ScanJobRunner runner = new ScanJobRunner(new ParserProperties(2, 20000));
+    private final ScanJobRunner runner = new ScanJobRunner(ParserProperties.of(2, 20000));
 
     @Test
     void scansOkRepositoryWithModuleLayout() throws IOException {
@@ -71,7 +73,7 @@ class ScanJobRunnerTest {
 
     @Test
     void overCapBecomesTruncatedWithScope() throws IOException {
-        ScanJobRunner capped = new ScanJobRunner(new ParserProperties(2, 1));
+        ScanJobRunner capped = new ScanJobRunner(ParserProperties.of(2, 1));
         Path repo = Files.createDirectories(tempDir.resolve("big"));
         Files.writeString(repo.resolve("A.java"), "class A {}\n");
         Files.writeString(repo.resolve("B.java"), "class B {}\n");
@@ -223,6 +225,160 @@ class ScanJobRunnerTest {
         assertThat(error.get("code")).isEqualTo("COMMIT_DIFF_FAILED");
     }
 
+    @Test
+    void changedLinesReportTargetVersionRanges() throws Exception {
+        Path repo = gitRepoWithFeatureBranch();
+        RepositoryInput input = new RepositoryInput(
+                "diffed", repo.toString(), "feature", "main", false, null, null);
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-cl", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        assertThat(entry.get("status")).isEqualTo("ok");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> lines = (Map<String, Object>) entry.get("changed_lines");
+        // 改一行 → 两侧各一行；基线模式 base 取 merge-base
+        assertThat(ranges(lines, "A.java", "added")).containsExactly(List.of(1, 1));
+        assertThat(ranges(lines, "A.java", "removed")).containsExactly(List.of(1, 1));
+        assertThat(ranges(lines, "C.java", "added")).containsExactly(List.of(1, 1));
+        // 删除的文件以旧路径登记，新侧无行（仍保留条目，避免被下游读成"没变"）
+        assertThat(ranges(lines, "B.java", "added")).isEmpty();
+        assertThat(ranges(lines, "B.java", "removed")).containsExactly(List.of(1, 1));
+        // 行区间与变更清单的路径口径必须**完全一致**
+        @SuppressWarnings("unchecked")
+        Map<String, Object> changed = (Map<String, Object>) entry.get("changed_files");
+        Set<String> paths = new LinkedHashSet<>();
+        for (String key : List.of("added", "modified", "removed")) {
+            @SuppressWarnings("unchecked")
+            List<String> bucket = (List<String>) changed.get(key);
+            paths.addAll(bucket);
+        }
+        assertThat(lines.keySet()).isEqualTo(paths);
+        assertThat(entry.get("base_ref")).isNotNull();
+        assertThat((String) entry.get("target_ref")).isEqualTo("feature");
+    }
+
+    @Test
+    void changedLinesResolveContiguousCommitsToOneRange() throws Exception {
+        Path repo = gitRepoWithMultipleCommits();
+        RepositoryInput input = new RepositoryInput(
+                "multi", repo.toString(), "main", null, null, null, List.of("HEAD~1", "HEAD"));
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-cl2", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        assertThat(entry.get("status")).isEqualTo("ok");
+        // 根提交无父 → base 退化为空树，两个提交都是整文件新增
+        @SuppressWarnings("unchecked")
+        Map<String, Object> lines = (Map<String, Object>) entry.get("changed_lines");
+        assertThat(ranges(lines, "A.java", "added")).containsExactly(List.of(1, 1));
+        assertThat(ranges(lines, "B.java", "added")).containsExactly(List.of(1, 1));
+    }
+
+    @Test
+    void changedLinesRejectNonContiguousCommits() throws Exception {
+        Path repo = Files.createDirectories(tempDir.resolve("gapped"));
+        runGit(repo, "init", "-b", "main");
+        Files.writeString(repo.resolve("A.java"), "class A {}\n");
+        runGit(repo, "add", "-A");
+        runGit(repo, "commit", "-m", "c1");
+        Files.writeString(repo.resolve("B.java"), "class B {}\n");
+        runGit(repo, "add", "-A");
+        runGit(repo, "commit", "-m", "c2-gap");
+        Files.writeString(repo.resolve("C.java"), "class C {}\n");
+        runGit(repo, "add", "-A");
+        runGit(repo, "commit", "-m", "c3");
+        // 只指定 c1 与 c3：区间里夹着 c2，语义上无法用一个 base..target 表达
+        RepositoryInput input = new RepositoryInput(
+                "gapped", repo.toString(), "main", null, null, null, List.of("HEAD~2", "HEAD"));
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-cl3", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        assertThat(entry.get("status")).isEqualTo("error");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> error = (Map<String, Object>) entry.get("error");
+        assertThat(error.get("code")).isEqualTo("COMMIT_DIFF_FAILED");
+        assertThat((String) error.get("message")).contains("连续区间");
+        assertThat((String) error.get("message")).contains("原因");
+    }
+
+    @Test
+    void largeDiffOutputDoesNotDeadlockOnPipeBuffer() throws Exception {
+        Path repo = Files.createDirectories(tempDir.resolve("big-diff"));
+        runGit(repo, "init", "-b", "main");
+        StringBuilder before = new StringBuilder();
+        for (int i = 0; i < 6000; i++) {
+            before.append("class Line").append(i).append(" {}\n");
+        }
+        Files.writeString(repo.resolve("Big.java"), before.toString());
+        runGit(repo, "add", "-A");
+        runGit(repo, "commit", "-m", "base");
+        runGit(repo, "checkout", "-b", "feature");
+        StringBuilder after = new StringBuilder();
+        for (int i = 0; i < 6000; i++) {
+            after.append("class Line").append(i).append("Changed {}\n");
+        }
+        Files.writeString(repo.resolve("Big.java"), after.toString());
+        runGit(repo, "add", "-A");
+        runGit(repo, "commit", "-m", "feature");
+        RepositoryInput input = new RepositoryInput(
+                "big", repo.toString(), "feature", "main", false, null, null);
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-big", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        // 回归：diff 输出约 200KB，超过管道缓冲。若先 waitFor 再读流，子进程阻塞在写、
+        // 父进程等到 30s 超时 → status 变 error。必须并发排空两条管道。
+        assertThat(entry.get("status")).isEqualTo("ok");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> lines = (Map<String, Object>) entry.get("changed_lines");
+        assertThat(ranges(lines, "Big.java", "added")).containsExactly(List.of(1, 6000));
+    }
+
+    // ---- 路径基数与提交号解析（评审 §5 / #50 前置） ----
+
+    @Test
+    void repoPathMustBeGitTopLevel() throws Exception {
+        Path repo = gitRepoWithFeatureBranch();
+        Path sub = Files.createDirectories(repo.resolve("api"));
+        // 配成仓库的子目录：git diff 的路径以 toplevel 为基准，与源码列表基准不同
+        RepositoryInput input = new RepositoryInput(
+                "sub", sub.toString(), "feature", "main", false, null, null);
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-top", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        assertThat(entry.get("status")).isEqualTo("error");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> error = (Map<String, Object>) entry.get("error");
+        // 不拦的话会静默 0 接口（变更清单永远匹配不上候选）
+        assertThat(error.get("code")).isEqualTo("REPO_PATH_NOT_TOPLEVEL");
+        assertThat((String) error.get("message")).contains("不是 Git 顶层目录");
+    }
+
+    @Test
+    void targetShaAndBaseShaAreResolved() throws Exception {
+        Path repo = gitRepoWithFeatureBranch();
+        String targetSha = runGitCapture(repo, "rev-parse", "feature^{commit}").trim();
+        String baseSha = runGitCapture(repo, "merge-base", "main", "feature").trim();
+        RepositoryInput input = new RepositoryInput(
+                "diffed", repo.toString(), "feature", "main", false, null, null);
+
+        Map<String, Object> inventory = runner.run(new ScanRequest("job-sha", List.of(input)));
+
+        Map<String, Object> entry = onlyRepository(inventory);
+        // extract 要按 target_sha 检出快照解析，行号才能与 changed_lines 同版本
+        assertThat(entry.get("target_sha")).isEqualTo(targetSha);
+        assertThat(entry.get("base_sha")).isEqualTo(baseSha);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<List<Integer>> ranges(Map<String, Object> lines, String path, String side) {
+        Map<String, Object> entry = (Map<String, Object>) lines.get(path);
+        return entry == null ? List.of() : (List<List<Integer>>) entry.get(side);
+    }
+
     /** 建真实 git 仓库：main（A.java + B.java）→ feature（改 A + 删 B + 加 C）。 */
     private Path gitRepoWithFeatureBranch() throws Exception {
         Path repo = Files.createDirectories(tempDir.resolve("diffed"));
@@ -254,6 +410,11 @@ class ScanJobRunnerTest {
     }
 
     private static void runGit(Path repo, String... args) throws Exception {
+        runGitCapture(repo, args);
+    }
+
+    /** 同 runGit，但返回 stdout（需要读提交号时用）。 */
+    private static String runGitCapture(Path repo, String... args) throws Exception {
         List<String> cmd = new ArrayList<>();
         cmd.add("git");
         cmd.add("-C");
@@ -270,6 +431,7 @@ class ScanJobRunnerTest {
         if (!process.waitFor(30, TimeUnit.SECONDS) || process.exitValue() != 0) {
             throw new AssertionError("git 失败：" + String.join(" ", args) + "\n" + output);
         }
+        return output;
     }
 
     private ScanRequest request(Path repo, boolean fallback, List<String> includes) {

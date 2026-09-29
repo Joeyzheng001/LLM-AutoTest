@@ -16,7 +16,7 @@ from common.errors import X_ORCH_01, X_ORCH_02, PipelineError
 from common.pipeline import NodeStatus
 from executor.nodes import run_defect_list, run_retest_regression
 
-from helpers import requirement_review_payload
+from helpers import change_set_payload, requirement_review_payload
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 _JOB = "job-3f2a1b8c-0000-4000-8000-000000000001"
@@ -227,6 +227,7 @@ _ORCH_ARTIFACTS: list[tuple[str, dict[str, Any]]] = [
         },
     ),
     ("interfaces.json", {"schema_version": "1.0", "job_id": _JOB, "interfaces": _INTERFACES}),
+    ("change_set.json", change_set_payload(_JOB)),
     (
         "review_mapping.json",
         {

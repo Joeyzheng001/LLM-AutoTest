@@ -241,7 +241,7 @@ async def retest_defects(
             continue
 
         # 复测重跑（R-DEF-02：重跑关联用例；判定与 auto_execute 同源：
-        # status token > 2xx + 语义等值对；404 归环境失败不判缺陷修复）
+        # 状态码 + 同一套结构化业务断言；404 归环境失败不判缺陷修复）
         runner = rest_runners[route_url] if protocol == "rest" else demo_runner
         params = case.get("params") if isinstance(case.get("params"), dict) else {}
         response = await runner.invoke(
@@ -254,7 +254,10 @@ async def retest_defects(
                 retest_passed = False
             else:
                 retest_passed, _failures = _judge_assertion(
-                    str(case.get("expected", "")), response.status, response.body
+                    str(case.get("expected", "")),
+                    response.status,
+                    response.body,
+                    case.get("assertions"),
                 )
                 if response.status in {401, 403} and _expects_success(
                     str(case.get("expected", ""))
@@ -283,6 +286,16 @@ async def retest_defects(
                         "case_id": case_id,
                         "script_path": target_rel,
                         "requirement_id": requirement_id,
+                        **(
+                            {"claim_id": str(case["claim_id"])}
+                            if case.get("claim_id")
+                            else {}
+                        ),
+                        **(
+                            {"testpoint_id": str(case["testpoint_id"])}
+                            if case.get("testpoint_id")
+                            else {}
+                        ),
                         "interface_id": if_id,
                         "protocol": protocol,
                         "archived_at": now,
@@ -343,6 +356,16 @@ async def retest_defects(
                 "case_id": case_id,
                 "script_path": archived_path,
                 "requirement_id": requirement_id,
+                **(
+                    {"claim_id": str(case["claim_id"])}
+                    if case.get("claim_id")
+                    else {}
+                ),
+                **(
+                    {"testpoint_id": str(case["testpoint_id"])}
+                    if case.get("testpoint_id")
+                    else {}
+                ),
                 "interface_id": interface_id,
                 "protocol": protocol,
                 "archived_at": _now_iso(),

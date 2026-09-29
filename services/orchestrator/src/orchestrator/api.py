@@ -53,7 +53,7 @@ from common.security import (
 from executor.nodes.auto_execute import login_for_headers
 from executor.nodes.retest_regression import retest_defects
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from orchestrator.artifact_lifecycle import find_expired_jobs, purge_quarantine, quarantine_jobs
@@ -1634,6 +1634,21 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 except (FileNotFoundError, OSError, ObjectStorageError, PipelineError):
                     continue
                 archive.writestr(relative_name, local_path.read_bytes())
+            evidence_dir = root / "evidence"
+            evidence_paths = (
+                sorted(evidence_dir.glob("E2E-*.png"))
+                if evidence_dir.is_dir()
+                else []
+            )
+            for path in evidence_paths:
+                relative_name = path.relative_to(root).as_posix()
+                if not re.fullmatch(r"evidence/E2E-\d{3}\.png", relative_name):
+                    continue
+                try:
+                    local_path = orch_store.ensure_local(job_id, relative_name)
+                except (FileNotFoundError, OSError, ObjectStorageError, PipelineError):
+                    continue
+                archive.writestr(relative_name, local_path.read_bytes())
         buffer.seek(0)
         return StreamingResponse(
             buffer,
@@ -1641,10 +1656,16 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             headers={"Content-Disposition": f'attachment; filename="{job_id}-results.zip"'},
         )
 
-    @app.get("/api/v1/jobs/{job_id}/artifacts/{name}")
+    @app.get("/api/v1/jobs/{job_id}/artifacts/{name:path}")
     async def read_artifact(job_id: str, name: str, http_request: Request) -> Any:
-        """读产物（白名单内；JSON 按对象返回，md/jsonl 按纯文本）。"""
+        """读白名单产物与单条 E2E 截图证据。"""
         _require_job_access(app, job_id, http_request)
+        if re.fullmatch(r"evidence/E2E-\d{3}\.png", name):
+            try:
+                path = orch_store.ensure_local(job_id, name)
+            except (FileNotFoundError, OSError, ObjectStorageError, PipelineError) as exc:
+                raise HTTPException(status_code=404, detail=f"执行证据尚未生成：{name}") from exc
+            return FileResponse(path, media_type="image/png", filename=Path(name).name)
         if name not in _ARTIFACT_WHITELIST:
             raise HTTPException(status_code=404, detail=f"产物不在白名单：{name}")
         try:

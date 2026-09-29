@@ -35,3 +35,31 @@ def requirement_review_payload(job_id: str) -> dict[str, Any]:
         "testable_features": ["用户查询"],
         "mindmap": {"主题": "需求评审", "子主题": []},
     }
+
+
+def change_set_payload(job_id: str, *, complete: bool = True) -> dict[str, Any]:
+    """返回可用于构造 interface_reconstruct 完成判据的最小合法 change_set 产物。
+
+    change_set.json 已注册为 interface_reconstruct 的产物（#52），任何"模拟该节点已完成"
+    的夹具都必须一并落盘，否则 mark_completed 会因产物未达标而拒绝。
+    """
+    return {
+        "schema_version": "1.0",
+        "job_id": job_id,
+        "repositories": [],
+        "removed_files": [],
+        "counts": {
+            "candidates": 0,
+            "body": 0,
+            "callee": 0,
+            "file": 0,
+            "related_file": 0,
+            "none": 0,
+            "unresolved": 0,
+        },
+        "interfaces": [],
+        "scan_integrity": {
+            "complete": complete,
+            "reasons": [] if complete else ["夹具：扫描完整性未通过"],
+        },
+    }

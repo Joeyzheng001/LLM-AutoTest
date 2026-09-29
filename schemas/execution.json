@@ -16,6 +16,11 @@
           "case_id": { "type": "string", "pattern": "^(TC|E2E)-\\d{3}$" },
           "interface_id": { "type": "string", "pattern": "^(IF-[A-Z]+|UI-E2E)-\\d{3}$" },
           "case_type": { "type": "string", "enum": ["api", "e2e"] },
+          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
+          "claim_id": { "type": "string", "pattern": "^CLM-\\d{3,}$" },
+          "testpoint_id": { "type": "string", "pattern": "^TP-\\d{3}$" },
+          "title": { "type": "string" },
+          "category": { "type": "string", "enum": ["normal", "boundary", "exception", "e2e"] },
           "passed": { "type": "boolean" },
           "failure_kind": {
             "type": ["string", "null"],
@@ -26,6 +31,37 @@
           "expected": { "type": "string", "description": "用例预期断言，供失败明细对照" },
           "actual_status": { "type": "integer", "minimum": 0, "description": "实际响应状态" },
           "actual_body": { "description": "实际响应体（已脱敏、截断）" },
+          "assertion_scope": { "type": "string", "enum": ["business", "status_only", "ui_steps"] },
+          "assertion_results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "op", "found", "passed"],
+              "properties": {
+                "path": { "type": "string" },
+                "op": { "type": "string" },
+                "expected": {},
+                "actual": {},
+                "found": { "type": "boolean" },
+                "passed": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "kind": { "type": "string", "enum": ["http_response", "browser"] },
+              "method": { "type": "string" },
+              "path": { "type": "string" },
+              "page_url": { "type": "string" },
+              "page_title": { "type": "string" },
+              "screenshot_ref": { "type": "string" },
+              "console_errors": { "type": "array", "items": { "type": "string" } },
+              "request_failures": { "type": "array", "items": { "type": "string" } },
+              "capture_error": { "type": "string" }
+            }
+          },
           "timeout": { "type": "boolean", "description": "X-EXEC-02 执行超时" },
           "skipped": { "type": "boolean", "description": "用例未发起请求，因脚本或前置校验而跳过" },
           "skipped_reason": { "type": "string", "enum": ["前置缺失"], "description": "X-EXEC-05：脚本或请求前置数据无法准备时跳过并记录" },

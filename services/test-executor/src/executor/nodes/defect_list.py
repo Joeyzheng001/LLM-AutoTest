@@ -84,11 +84,19 @@ async def run_defect_list(
                 actual["status"] = result["actual_status"]
             if result.get("actual_body") is not None:
                 actual["body"] = _safe_actual_body(result["actual_body"])
+            if result.get("assertion_results"):
+                actual["assertion_results"] = list(result["assertion_results"])
+            requirement_id = str(case.get("requirement_id") or result.get("requirement_id") or "")
+            claim_id = str(case.get("claim_id") or result.get("claim_id") or "")
+            testpoint_id = str(case.get("testpoint_id") or result.get("testpoint_id") or "")
             defects.append(
                 {
                     "id": f"DEF-{index + 1:03d}",
                     "case_id": case_id,
                     "interface_id": if_id,
+                    **({"requirement_id": requirement_id} if requirement_id else {}),
+                    **({"claim_id": claim_id} if claim_id else {}),
+                    **({"testpoint_id": testpoint_id} if testpoint_id else {}),
                     "failure_reason": str(result.get("failure_reason", "")),
                     "triage": _triage_assertion(result, case, interface),
                     # 缺陷页的定位事实全部从前置产物回填，非 LLM 摘要。
@@ -106,8 +114,15 @@ async def run_defect_list(
                         "title": str(case.get("title", "")),
                         "category": "e2e" if is_e2e else str(case.get("category", "")),
                         "expected": str(case.get("expected", result.get("expected", ""))),
+                        **({"claim_id": claim_id} if claim_id else {}),
+                        **({"testpoint_id": testpoint_id} if testpoint_id else {}),
                     },
                     "actual": actual,
+                    **(
+                        {"evidence": dict(result["evidence"])}
+                        if isinstance(result.get("evidence"), dict)
+                        else {}
+                    ),
                     "reproduce": reproduce,
                     "status": "discovered",
                     # X-DEF-03：演示埋入缺陷标注随接口兜底标记透传

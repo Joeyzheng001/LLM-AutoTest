@@ -21,6 +21,7 @@ sampling:
   "cases": [
     {
       "requirement_id": "REQ-001",
+      "testpoint_id": "TP-001",
       "title": "用户可见的功能场景",
       "preconditions": ["可选前置条件"],
       "steps": [
@@ -37,7 +38,7 @@ sampling:
 
 规则：
 
-- 只为输入中的 `requirements` 和 `testpoints` 生成；`requirement_id` 必须原样引用输入，禁止虚构。
+- 只为输入中的 `requirements` 和 `testpoints` 生成；`requirement_id` 与 `testpoint_id` 必须来自同一条测试点，禁止虚构或跨需求关联。程序会从测试点回填 `claim_id`。
 - 每个需求优先覆盖主业务路径；`source=RISK` 的测试点补充异常、权限、空状态或关键提示的可见行为。
 - 输入 `surface.routes` 是浏览器刚刚真实探测到的页面。`goto.value` 只能使用其中的 `path`；每个 selector 必须逐字使用其中的 `selectors`，禁止凭需求猜测路由、控件或文案。
 - **`path` 是相对 `surface.base_url` 的路径**（见输入里的 `surface.path_basis`），执行端把它直接接在 `base_url` 之后。所以当 `base_url` 自带路径前缀（如 `http://host:6080/home`）时，首页对应的 `path` 是 `/`（拼成 `http://host:6080/home/`），**不要写 `/home`**——那会拼成 `/home/home` 并被白名单拒绝。判断依据：以 `routes[].path` 的字面值为准，不要从 `base_url` 反推页面路径。

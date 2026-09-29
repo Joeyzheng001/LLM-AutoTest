@@ -12,7 +12,7 @@ from common.engine import Engine
 from common.errors import X_ORCH_01, X_ORCH_02, PipelineError
 from common.pipeline import NodeStatus
 
-from helpers import requirement_review_payload
+from helpers import change_set_payload, requirement_review_payload
 from orchestrator.nodes import run_test_report
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
@@ -183,6 +183,7 @@ def env(tmp_path: Path) -> tuple[Engine, ArtifactStore]:
         store.write(_JOB, _filename, payload)
     engine.mark_completed(state, "req_parse")
     engine.mark_completed(state, "code_scan")
+    store.write(_JOB, "change_set.json", change_set_payload(_JOB))
     engine.mark_completed(state, "interface_reconstruct")
     engine.mark_completed(state, "code_review")
     # GEN/EXEC 属丙写：直接经 te 身份落盘，状态由产物判据补齐（open_job 时）

@@ -210,6 +210,37 @@ def _java_parser_transport() -> httpx.MockTransport:
                     "status": "completed",
                     "candidates": candidates,
                     "warnings": [],
+                    "stats": {
+                        "repositories": [
+                            {
+                                "name": "user-service",
+                                "status": "ok",
+                                "files_discovered": 1,
+                                "files_parsed": 1,
+                                "files_failed": 0,
+                                "candidates": 1,
+                            },
+                            {
+                                "name": "order-center",
+                                "status": "ok",
+                                "files_discovered": 1,
+                                "files_parsed": 1,
+                                "files_failed": 0,
+                                "candidates": 0,
+                            },
+                        ],
+                        "totals": {
+                            "candidates": 1,
+                            "files_discovered": 2,
+                            "files_parsed": 2,
+                            "files_failed": 0,
+                        },
+                    },
+                    "capabilities": {
+                        "requested": ["rest"],
+                        "supported": ["rest"],
+                        "unsupported": [],
+                    },
                 },
             )
         return httpx.Response(404, json={"code": "NOT_FOUND", "message": "路径未模拟"})

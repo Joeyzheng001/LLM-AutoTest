@@ -3,26 +3,57 @@
   "$id": "llm-autotest/code_inventory",
   "title": "源码扫描清单（模块 2 CODE，主笔：乙）",
   "type": "object",
-  "required": ["schema_version", "job_id", "repositories"],
+  "required": [
+    "schema_version",
+    "job_id",
+    "repositories"
+  ],
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0" },
-    "job_id": { "type": "string", "pattern": "^job-" },
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^job-"
+    },
     "repositories": {
       "type": "array",
       "minItems": 1,
       "description": "C-10：≥1 个仓库（原 G3 ≥2 放宽，验收演示仍双仓库）；X-CODE-01~03 四态",
       "items": {
         "type": "object",
-        "required": ["name", "path", "branch", "is_fallback", "status", "file_count"],
+        "required": [
+          "name",
+          "path",
+          "branch",
+          "is_fallback",
+          "status",
+          "file_count"
+        ],
         "properties": {
-          "name": { "type": "string" },
+          "name": {
+            "type": "string"
+          },
           "language": {
             "type": "string",
-            "enum": ["java", "python"],
+            "enum": [
+              "java",
+              "python"
+            ],
             "description": "仓库语言（C-13：java → java-parser；python → 内置 AST 扫描；缺省 java）"
           },
-          "path": { "type": "string", "description": "已检出正确分支的本地路径（07 遗留事项 #1）" },
-          "branch": { "type": "string" },
+          "path": {
+            "type": "string",
+            "description": "已检出正确分支的本地路径（07 遗留事项 #1）"
+          },
+          "source_path": {
+            "type": "string",
+            "description": "实际用于 AST 扫描的不可变源码快照路径（Python 等语言可用）"
+          },
+          "branch": {
+            "type": "string"
+          },
           "baseline_branch": {
             "type": "string",
             "description": "基线分支（C-09 双分支 diff；缺省 = 不比对）"
@@ -30,29 +61,138 @@
           "changed_files": {
             "type": "object",
             "description": "基线→被测分支变更文件清单（C-09，git diff merge-base 口径，仓内相对路径）",
-            "required": ["added", "modified", "removed"],
+            "required": [
+              "added",
+              "modified",
+              "removed"
+            ],
             "properties": {
-              "added": { "type": "array", "items": { "type": "string" } },
-              "modified": { "type": "array", "items": { "type": "string" } },
-              "removed": { "type": "array", "items": { "type": "string" } }
+              "added": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "modified": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "removed": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             }
           },
-          "is_fallback": { "type": "boolean" },
+          "base_ref": {
+            "type": "string",
+            "description": "变更范围左端解析出的提交（commits 模式取最早提交的父，baseline 模式取 merge-base）。changed_lines[].removed 的行号基于此版本（变更前的旧行号）"
+          },
+          "target_ref": {
+            "type": "string",
+            "description": "变更范围右端提交（commits 模式取拓扑最晚的提交，baseline 模式取 branch）。源码解析必须用这一版，否则行号对不上"
+          },
+          "base_sha": {
+            "type": "string",
+            "description": "base_ref 解析出的提交号（根提交场景为空树对象id，原样透传）"
+          },
+          "target_sha": {
+            "type": "string",
+            "description": "target_ref 解析出的提交号。extract 必须按它检出只读快照后解析接口候选，否则候选行号与 changed_lines 不同版本（行级判定与变动代码全错位）"
+          },
+          "changed_lines": {
+            "type": "object",
+            "description": "每个变更文件的行级变更区间：{仓内相对路径: {added: [[起,止]...], removed: [[起,止]...]}}。两侧坐标版本不同，禁止混用：added 是 target_ref 版本（变更后）的行号，removed 是 base_ref 版本（变更前）的行号——同一处替换在两侧行号本就不等。行级判定（与按 target_ref 解析出的源码求交）只用 added；removed 用于识别被删内容。纯删除的文件以旧路径登记且 added 为空；某侧为空数组表示该侧无行。路径口径与 changed_files 完全一致",
+            "additionalProperties": {
+              "type": "object",
+              "required": [
+                "added",
+                "removed"
+              ],
+              "properties": {
+                "added": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                },
+                "removed": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                }
+              }
+            }
+          },
+          "is_fallback": {
+            "type": "boolean"
+          },
           "status": {
             "type": "string",
-            "enum": ["ok", "empty", "truncated", "error"],
+            "enum": [
+              "ok",
+              "empty",
+              "truncated",
+              "error"
+            ],
             "description": "empty=X-CODE-02 流程继续；truncated=X-CODE-03；error=X-CODE-01"
           },
-          "file_count": { "type": "integer", "minimum": 0 },
-          "truncated_scope": { "type": "array", "items": { "type": "string" }, "description": "截断后实际扫描目录（X-CODE-03 注明范围）" },
-          "encoding_skipped": { "type": "array", "items": { "type": "string" }, "description": "异常编码跳过文件（R-CODE-03）" },
+          "file_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "files_parsed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "files_failed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated_scope": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "截断后实际扫描目录（X-CODE-03 注明范围）"
+          },
+          "encoding_skipped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "异常编码跳过文件（R-CODE-03）"
+          },
           "error": {
             "type": "object",
-            "required": ["code", "message"],
+            "required": [
+              "code",
+              "message"
+            ],
             "properties": {
-              "code": { "type": "string" },
-              "message": { "type": "string" },
-              "details": { "type": "object" }
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object"
+              }
             }
           },
           "files": {
@@ -60,11 +200,23 @@
             "description": "源码清单（仓库、模块、文件路径，F-CODE-03）",
             "items": {
               "type": "object",
-              "required": ["repo", "module", "path"],
+              "required": [
+                "repo",
+                "module",
+                "path"
+              ],
               "properties": {
-                "repo": { "type": "string" },
-                "module": { "type": "string", "description": "Maven 模块，无模块结构取顶层目录名" },
-                "path": { "type": "string", "description": "仓库内相对路径" }
+                "repo": {
+                  "type": "string"
+                },
+                "module": {
+                  "type": "string",
+                  "description": "Maven 模块，无模块结构取顶层目录名"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "仓库内相对路径"
+                }
               }
             }
           }

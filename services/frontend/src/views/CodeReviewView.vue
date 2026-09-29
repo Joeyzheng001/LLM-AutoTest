@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Code Review 页（07 §3.3）：视图一映射表（四态+置信度）+ 视图二风险清单 +
-// 视图三遗漏功能清单（三视图同源 review_mapping.json）+ 人工审核面板（F-REVW-06）+
+// 视图三遗漏功能清单（四视图同源 review_mapping.json）+ 人工审核面板（F-REVW-06）+
 // 视图四·变更范围（C-09 双分支 diff，仅配基线分支的 job 展示；旧产物无键则隐藏）。
 // 红线：全部数据来自后端产物；风险/遗漏/变更范围均由后端程序化派生，前端只渲染。
 // 人工审核不在 9 节点口径内（D6/D7）：approved 仅记录；rejected 回流 testcase_generate。
@@ -21,8 +21,9 @@ import type {
   ReviewEvidence,
   ReviewClaimAssessment,
   ReviewScanCoverage,
+  ReviewCallChain,
 } from '../api/types'
-import { MAPPING_STATUS_LABELS } from '../api/labels'
+import { EVIDENCE_QUALITY_LABELS, MAPPING_STATUS_LABELS } from '../api/labels'
 
 const _jobId = ref('')
 
@@ -32,6 +33,7 @@ const props = defineProps<{ initialJobId?: string }>()
 const items = ref<RequirementItem[]>([])
 const mappings = ref<ReviewMapping[]>([])
 const evidenceCatalog = ref<ReviewEvidence[]>([])
+const callChains = ref<ReviewCallChain[]>([])
 const scanCoverage = ref<ReviewScanCoverage | null>(null)
 const risks = ref<DerivedRisk[]>([])
 const deterministicChecks = ref<DeterministicReviewCheck[]>([])
@@ -56,6 +58,10 @@ const claimById = computed(() => {
 
 const evidenceById = computed(
   () => new Map(evidenceCatalog.value.map((item) => [item.evidence_id, item])),
+)
+
+const callChainByInterface = computed(
+  () => new Map(callChains.value.map((item) => [item.interface_id, item])),
 )
 
 const evidenceText = computed(() => {
@@ -86,21 +92,23 @@ async function load(): Promise<void> {
     items.value = req.items
     mappings.value = review.mappings
     evidenceCatalog.value = review.evidence_catalog ?? []
+    callChains.value = review.call_chains ?? []
     scanCoverage.value = review.scan_coverage ?? null
     risks.value = review.risks
     deterministicChecks.value = review.deterministic_checks ?? []
     incrementalFindings.value = review.incremental_findings ?? []
     missing.value = review.missing_features
-    // C-09：旧产物无键 → 空数组（视图四隐藏）；有键但为空 = 配了基线但无变更
+    // C-09：优先使用明确的 available 标志；旧产物按 change_scope 字段兼容。
     changeScope.value = review.change_scope ?? []
     removedFiles.value = review.removed_files ?? []
     unmatchedFiles.value = review.unmatched_changed_files ?? []
-    hasChangeScope.value = review.change_scope !== undefined
+    hasChangeScope.value = review.change_scope_available ?? review.change_scope !== undefined
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Review 产物加载失败'
     items.value = []
     mappings.value = []
     evidenceCatalog.value = []
+    callChains.value = []
     scanCoverage.value = null
     risks.value = []
     deterministicChecks.value = []
@@ -169,6 +177,23 @@ function evidenceExcerpt(ref: string): string {
   return evidenceById.value.get(ref)?.excerpt ?? ''
 }
 
+function callChainSummary(interfaceIds: string[] | undefined): string {
+  const chains = (interfaceIds ?? [])
+    .map((id) => callChainByInterface.value.get(id))
+    .filter((item): item is ReviewCallChain => Boolean(item))
+  if (!chains.length) return ''
+  const unresolved = chains.reduce((total, item) => total + (item.unresolved_calls ?? 0), 0)
+  return chains.some((item) => item.status === 'partial' || unresolved > 0)
+    ? `调用链待核查 · 未解析 ${unresolved} 个`
+    : '调用链已确认'
+}
+
+function claimCountSummary(mapping: ReviewMapping): string {
+  const counts = mapping.claim_counts
+  if (!counts) return ''
+  return `原子声明 ${counts.total} 条 · 已实现 ${counts.implemented} · 待核查 ${counts.undetermined} · 缺失 ${counts.missing}`
+}
+
 function assessmentSummary(assessment: ReviewClaimAssessment): string {
   const values = [...assessment.unmet_conditions, ...assessment.verification_needed]
   return values.join('；')
@@ -180,6 +205,22 @@ function claimStatement(claimId: string): string {
 
 const uncoveredCount = computed(
   () => changeScope.value.filter((entry) => !entry.covered_by.length).length,
+)
+
+const claimTotals = computed(() =>
+  mappings.value.reduce(
+    (total, mapping) => {
+      const counts = mapping.claim_counts
+      if (!counts) return total
+      total.total += counts.total
+      total.implemented += counts.implemented
+      total.partial += counts.partial
+      total.missing += counts.missing
+      total.undetermined += counts.undetermined
+      return total
+    },
+    { total: 0, implemented: 0, partial: 0, missing: 0, undetermined: 0 },
+  ),
 )
 </script>
 
@@ -193,20 +234,45 @@ const uncoveredCount = computed(
 
     <template v-else-if="mappings.length">
       <div v-if="scanCoverage && !scanCoverage.complete" class="coverage-warning" role="status">
-        仓库扫描或代码证据提取范围不完整；“缺失”结论已自动降为“待核查”，请先补齐扫描范围再判断功能是否遗漏。
-        <span v-if="scanCoverage.review_evidence_limited">本次代码证据提取触及系统上限。</span>
-        <span v-if="scanCoverage.repositories.length">
-          未完整扫描：{{
-            scanCoverage.repositories.map((repo) => repo.repo || '未命名仓库').join('、')
-          }}
-        </span>
+        <strong>证据覆盖未闭合</strong>
+        <span>当前“缺失”结论已自动降为“待核查”，请先补齐下面列出的证据范围。</span>
+        <ul class="coverage-details">
+          <li v-if="scanCoverage.repositories.length">
+            未完整扫描仓库：{{
+              scanCoverage.repositories.map((repo) => repo.repo || '未命名仓库').join('、')
+            }}
+          </li>
+          <li v-if="scanCoverage.review_evidence_limited">
+            代码证据池达到上限：当前最多保留系统允许的证据条目，需扩大证据池或按仓库分批复核。
+          </li>
+          <li v-if="scanCoverage.interface_evidence_truncated">
+            接口实现证据不完整：已覆盖
+            {{ scanCoverage.interface_evidence_count ?? 0 }} /
+            {{ scanCoverage.interfaces_total ?? 0 }} 个接口。
+          </li>
+          <li v-if="scanCoverage.interface_evidence_missing?.length">
+            缺少接口证据：{{ scanCoverage.interface_evidence_missing.join('、') }}
+          </li>
+          <li v-if="scanCoverage.call_chain_truncated">
+            调用链分析达到上限：最多处理 {{ scanCoverage.call_chain_limit ?? '未知' }} 个接口。
+          </li>
+          <li v-if="scanCoverage.scan_integrity_complete === false">
+            接口扫描完整性未闭合：{{
+              (scanCoverage.scan_integrity_reasons ?? []).join('；') || '缺少完整性记录'
+            }}
+          </li>
+        </ul>
       </div>
       <!-- 覆盖率口径：结构性说明（R-REVW-01），非前端计算数值 -->
       <div class="view-head">
         <span class="tag tag-accent">视图一 · 需求-代码映射表</span>
         <span class="coverage-note">
-          覆盖率口径：每条需求条目均有映射行（R-REVW-01 结构性全覆盖），共
-          <span class="mono">{{ mappings.length }}</span> 行
+          需求映射完整率：<span class="mono">{{ mappings.length }}/{{ items.length }}</span
+          >； 原子声明评审：<span class="mono">{{ claimTotals.total }}</span> 条； 已实现
+          <span class="mono">{{ claimTotals.implemented }}</span
+          >， 部分实现 <span class="mono">{{ claimTotals.partial }}</span
+          >， 待核查 <span class="mono">{{ claimTotals.undetermined }}</span
+          >， 已确认缺失 <span class="mono">{{ claimTotals.missing }}</span>
         </span>
       </div>
 
@@ -229,12 +295,18 @@ const uncoveredCount = computed(
                   <div class="req-cell">
                     <span class="mono req-id">{{ mapping.requirement_id }}</span>
                     <span class="req-title">{{ requirementTitle(mapping.requirement_id) }}</span>
+                    <span v-if="claimCountSummary(mapping)" class="mapping-meta">
+                      {{ claimCountSummary(mapping) }}
+                    </span>
                   </div>
                 </td>
                 <td>
                   <span class="mono">{{
                     mapping.interface_ids?.join('、') || mapping.interface_id || '—'
                   }}</span>
+                  <span v-if="callChainSummary(mapping.interface_ids)" class="chain-status">
+                    {{ callChainSummary(mapping.interface_ids) }}
+                  </span>
                 </td>
                 <td>
                   <span class="mono loc">{{ evidenceText(mapping) || '—' }}</span>
@@ -245,7 +317,9 @@ const uncoveredCount = computed(
                   </span>
                 </td>
                 <td>
-                  <span class="mono loc">{{ mapping.evidence_quality ?? '—' }}</span>
+                  <span class="mono loc">{{
+                    EVIDENCE_QUALITY_LABELS[mapping.evidence_quality ?? ''] ?? '—'
+                  }}</span>
                 </td>
                 <td>
                   <span class="mono">{{ formatConfidence(mapping.confidence) }}</span>
@@ -316,6 +390,9 @@ const uncoveredCount = computed(
           <ul v-else class="derived-list">
             <li v-for="risk in risks" :key="risk.requirement_id" class="derived-item">
               <span class="mono req-id">{{ risk.requirement_id }}</span>
+              <span v-if="risk.claim_ids?.length" class="mono claim-ref">
+                {{ risk.claim_ids.join('、') }}
+              </span>
               <span v-if="risk.severity" class="tag severity-tag">{{ risk.severity }}</span>
               <span v-if="risk.kind === 'evidence_gap'" class="tag evidence-tag">待核查</span>
               <span
@@ -326,12 +403,16 @@ const uncoveredCount = computed(
           </ul>
         </div>
         <div class="card derived-card">
-          <header class="derived-title">视图三 · 遗漏功能清单（程序化派生 · R-REVW-02）</header>
+          <header class="derived-title">视图三 · 已确认遗漏功能点（程序化派生 · R-REVW-02）</header>
           <p v-if="!missing.length" class="derived-empty">无遗漏条目</p>
           <ul v-else class="derived-list">
             <li v-for="feature in missing" :key="feature.requirement_id" class="derived-item">
               <span class="mono req-id">{{ feature.requirement_id }}</span>
-              <span>{{ feature.title }}</span>
+              <span v-if="feature.claim_id" class="mono claim-ref">{{ feature.claim_id }}</span>
+              <span>
+                {{ feature.claim_statement || feature.title }}
+                <small v-if="feature.claim_statement" class="dim">（{{ feature.title }}）</small>
+              </span>
             </li>
           </ul>
         </div>
@@ -392,7 +473,7 @@ const uncoveredCount = computed(
               <th scope="col">接口</th>
               <th scope="col">仓库 / 文件</th>
               <th scope="col">变更</th>
-              <th scope="col">需求覆盖</th>
+              <th scope="col">需求 / Claim 覆盖</th>
             </tr>
           </thead>
           <tbody>
@@ -402,6 +483,17 @@ const uncoveredCount = computed(
               </td>
               <td>
                 <span class="mono loc">{{ entry.repo }}/{{ entry.file }}</span>
+                <span v-if="entry.matched_via || entry.evidence_level" class="mapping-meta">
+                  {{ entry.matched_via === 'related_file' ? '关联文件命中' : '接口定义命中' }}
+                  <template v-if="entry.evidence_level"> · {{ entry.evidence_level }}</template>
+                </span>
+                <span
+                  v-for="related in entry.related_changed_files ?? []"
+                  :key="related.file"
+                  class="mapping-meta"
+                >
+                  关联变更：{{ related.file }}（{{ related.role }}）
+                </span>
               </td>
               <td>
                 <span class="tag" :data-change="entry.change">
@@ -409,9 +501,24 @@ const uncoveredCount = computed(
                 </span>
               </td>
               <td>
-                <span v-if="entry.covered_by.length" class="mono">{{
-                  entry.covered_by.join('、')
-                }}</span>
+                <template v-if="entry.covered_by.length">
+                  <span
+                    v-for="covered in entry.covered_claims ?? []"
+                    :key="covered.requirement_id"
+                    class="coverage-group"
+                  >
+                    <span class="mono">{{ covered.requirement_id }}</span>
+                    <span class="tag" :data-status="covered.status">
+                      {{ MAPPING_STATUS_LABELS[covered.status] ?? covered.status }}
+                    </span>
+                    <span v-if="covered.claim_ids.length" class="mono claim-ref">
+                      {{ covered.claim_ids.join('、') }}
+                    </span>
+                  </span>
+                  <span v-if="!(entry.covered_claims ?? []).length" class="mono">
+                    {{ entry.covered_by.join('、') }}
+                  </span>
+                </template>
                 <span v-else class="uncovered">未被需求覆盖（变更风险）</span>
               </td>
             </tr>
@@ -581,6 +688,20 @@ const uncoveredCount = computed(
   overflow-wrap: anywhere;
 }
 
+.coverage-warning > span {
+  display: block;
+  margin-top: 2px;
+}
+
+.coverage-details {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-4);
+}
+
+.coverage-details li + li {
+  margin-top: 2px;
+}
+
 .tag {
   display: inline-block;
   padding: 2px var(--space-2);
@@ -731,6 +852,34 @@ const uncoveredCount = computed(
   color: var(--text-2);
 }
 
+.mapping-meta {
+  display: block;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.chain-status {
+  display: block;
+  margin-top: 3px;
+  color: var(--accent-strong);
+  font-size: var(--text-xs);
+}
+
+.claim-ref {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.coverage-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-1);
+}
+
 .loc {
   font-size: var(--text-xs);
   color: var(--text-3);
@@ -766,6 +915,8 @@ const uncoveredCount = computed(
 
 .derived-item {
   display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
   gap: var(--space-2);
   padding: var(--space-2) 0;
   border-bottom: 1px dashed var(--border);

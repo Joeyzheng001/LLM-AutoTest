@@ -72,6 +72,8 @@ def resolve_repository_inputs(
             # 工作区 HEAD 同时用于两处：快照留痕，以及 java-parser 的幂等指纹
             # （见 RepositoryInput.workspace_revision）。只算一次——git 子进程不该为一个值跑两遍。
             workspace_revision = _git_revision(path, "HEAD")
+            target_ref = commits[-1] if commits else branch
+            declared_revision = _git_revision(path, target_ref)
             resolved_input = RepositoryInput(
                 name=name,
                 path=str(path),
@@ -84,7 +86,9 @@ def resolve_repository_inputs(
                 commits=commits,
                 workspace_revision=workspace_revision,
                 # 配置分支指向的提交：与工作区 HEAD 比对可发现「工作区不在配置分支上」。
-                declared_revision=_git_revision(path, branch),
+                declared_revision=declared_revision,
+                # Python AST 也必须读取配置目标版本的快照，不得直接读可变工作区。
+                target_sha=declared_revision or workspace_revision,
             )
             resolved.append(resolved_input)
             _register_snapshot(
@@ -93,9 +97,9 @@ def resolve_repository_inputs(
                 name=name,
                 source_type="local",
                 source_url=None,
-                target_ref=branch,
+                target_ref=target_ref,
                 baseline_ref=baseline,
-                target_sha=workspace_revision,
+                target_sha=declared_revision or workspace_revision,
                 baseline_sha=_git_revision(path, baseline) if baseline else None,
                 workspace_path=path,
                 cache_hit=False,
@@ -120,6 +124,10 @@ def resolve_repository_inputs(
         )
         # 同上：检出目录的 HEAD 既进快照，也进 java-parser 幂等指纹。
         workspace_revision = _git_revision(checkout, "HEAD", access_token=access_token)
+        target_ref = commits[-1] if commits else (commit or branch)
+        declared_revision = (
+            _git_revision(checkout, target_ref, access_token=access_token) or workspace_revision
+        )
         resolved_input = RepositoryInput(
             name=name,
             path=str(checkout),
@@ -131,10 +139,8 @@ def resolve_repository_inputs(
             service_base_url=service_base_url,
             commits=commits,
             workspace_revision=workspace_revision,
-            declared_revision=(
-                _git_revision(checkout, branch, access_token=access_token)
-                or workspace_revision  # git 源按 branch 检出，取不到时视为一致
-            ),
+            declared_revision=declared_revision,
+            target_sha=declared_revision,
         )
         resolved.append(resolved_input)
         _register_snapshot(
@@ -143,9 +149,9 @@ def resolve_repository_inputs(
             name=name,
             source_type="git",
             source_url=remote_url,
-            target_ref=commit or branch,
+            target_ref=target_ref,
             baseline_ref=baseline,
-            target_sha=workspace_revision,
+            target_sha=declared_revision,
             baseline_sha=(
                 _git_revision(checkout, baseline, access_token=access_token)
                 if baseline

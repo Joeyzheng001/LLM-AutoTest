@@ -1,6 +1,6 @@
-"""code_review 节点测试：三视图全链路 + 程序化派生一致性 + 覆盖率/虚构校验。
+"""code_review 节点测试：四视图全链路 + 程序化派生一致性 + 覆盖率/虚构校验。
 
-覆盖：四态成功、partial→risks 派生、missing→missing_features 派生、
+覆盖：Claim 状态汇总、partial→risks 派生、missing→missing_features 派生、
 覆盖率缺口/虚构 REQ/虚构 IF/非法 status（X-LLM-02）、前置产物缺失（X-ORCH-01）、跳序。
 """
 
@@ -18,7 +18,7 @@ from common.llm import LlmResult
 from common.pipeline import NodeStatus
 from common.prompts_loader import PromptSpec
 
-from helpers import requirement_review_payload
+from helpers import change_set_payload, requirement_review_payload
 from orchestrator.nodes import run_code_review
 from orchestrator.nodes.code_review import (
     _content_tokens,
@@ -200,12 +200,13 @@ def env(tmp_path: Path) -> tuple[Engine, ArtifactStore]:
         "interfaces.json",
         {"schema_version": "1.0", "job_id": _JOB, "interfaces": _INTERFACES},
     )
+    store.write(_JOB, "change_set.json", change_set_payload(_JOB))
     engine.mark_completed(state, "interface_reconstruct")
     return engine, store
 
 
 async def test_code_review_three_views(env: tuple[Engine, ArtifactStore]) -> None:
-    """三视图成功：映射表 + partial→风险派生 + missing→遗漏派生；LLM 谎报位置被忽略。"""
+    """四视图成功：映射表 + partial→风险派生 + missing→遗漏派生；LLM 谎报位置被忽略。"""
     engine, store = env
     state = engine.open_job(_JOB)
     llm = _StubLlm(_LLM_GOOD)
@@ -369,6 +370,7 @@ async def test_code_review_change_scope_derivation(env: tuple[Engine, ArtifactSt
             "repo": "user-service",
             "file": "UserController.java",
             "change": "modified",
+            "matched_via": "definition",
             "covered_by": ["REQ-001"],
         },
         {
@@ -376,6 +378,7 @@ async def test_code_review_change_scope_derivation(env: tuple[Engine, ArtifactSt
             "repo": "order-center",
             "file": "OrderGrpc.java",
             "change": "added",
+            "matched_via": "definition",
             "covered_by": ["REQ-002"],
         },
     ]
@@ -414,11 +417,135 @@ async def test_code_review_change_scope_uncovered(env: tuple[Engine, ArtifactSto
             "repo": "order-center",
             "file": "OrderGrpc.java",
             "change": "modified",
+            "matched_via": "definition",
             "covered_by": [],
         }
     ]
     assert payload["removed_files"] == []
     assert payload["unmatched_changed_files"] == []
+
+async def test_change_scope_matches_related_files_and_shrinks_unmatched(
+    env: tuple[Engine, ArtifactStore],
+) -> None:
+    """P0③：接口定义文件没改、但依赖（Service/DTO）被改 → 仍进 change_scope。
+
+    此前只看 code_location.file，这类接口会整个漏出 change_scope，而被改的 Service
+    又全部落进 unmatched_changed_files——两头都不对（评审 §5）。
+    """
+    engine, store = env
+    state = engine.open_job(_JOB)
+    inventory = store.read_json(_JOB, "code_inventory.json")
+    # 只改 UserService.java（接口定义文件 UserController.java 未改）
+    inventory["repositories"][0]["baseline_branch"] = "main"
+    inventory["repositories"][0]["changed_files"] = {
+        "added": [],
+        "modified": ["UserService.java"],
+        "removed": [],
+    }
+    store.write(_JOB, "code_inventory.json", inventory)
+    # 接口带上 related_files（java-parser 静态解析产物，已随 interfaces.json 透传）
+    store.write(
+        _JOB,
+        "interfaces.json",
+        {
+            "schema_version": "1.0",
+            "job_id": _JOB,
+            "interfaces": [
+                {
+                    "id": "IF-REST-001",
+                    "protocol": "rest",
+                    "signature": {"method": "GET", "path": "/api/v1/users", "summary": "查用户"},
+                    "code_location": {
+                        "repo": "user-service",
+                        "file": "UserController.java",
+                        "start_line": 1,
+                        "end_line": 5,
+                    },
+                    "is_fallback": False,
+                    "related_files": [
+                        {
+                            "repo": "user-service",
+                            "file": "UserController.java",
+                            "role": "controller",
+                        },
+                        {"repo": "user-service", "file": "UserService.java", "role": "service"},
+                    ],
+                    "change_evidence": {"level": "callee"},
+                }
+            ],
+        },
+    )
+    store.write(_JOB, "change_set.json", change_set_payload(_JOB))
+    # 本任务只还原出一个接口：LLM 桩同步去掉对 IF-GRPC-001 的引用（虚构接口即 X-LLM-02）
+    llm_single = _LLM_GOOD.replace('"interface_id": "IF-GRPC-001",\n      ', "")
+
+    await run_code_review(engine, state, store, _StubLlm(llm_single), _PROMPTS)
+
+    payload = store.read_json(_JOB, "review_mapping.json")
+    assert payload["change_scope"] == [
+        {
+            "interface_id": "IF-REST-001",
+            "repo": "user-service",
+            "file": "UserController.java",
+            # 定义文件没改 → change 取关联文件的变更类型，来源由 matched_via 说清
+            "change": "modified",
+            "matched_via": "related_file",
+            "related_changed_files": [
+                {"file": "UserService.java", "role": "service", "change": "modified"}
+            ],
+            "evidence_level": "callee",
+            "covered_by": ["REQ-001"],
+        }
+    ]
+    # 被关联文件命中的变更文件不再算 unmatched
+    assert payload["unmatched_changed_files"] == []
+
+
+async def test_code_review_schema_accepts_recursive_call_graph_and_evidence_roles(
+    env: tuple[Engine, ArtifactStore], tmp_path: Path
+) -> None:
+    """递归调用链与证据 role 都属于程序派生字段，必须能通过最终产物 Schema。"""
+    engine, store = env
+    for name in ("UserController.java", "UserService.java"):
+        (tmp_path / name).write_text("\n".join([f"class {name[:-5]} {{"] * 50), encoding="utf-8")
+
+    inventory = store.read_json(_JOB, "code_inventory.json")
+    inventory["repositories"][0]["path"] = str(tmp_path)
+    inventory["repositories"][0]["files"] = [
+        {"repo": "user-service", "module": "", "path": "UserController.java"},
+        {"repo": "user-service", "module": "", "path": "UserService.java"},
+    ]
+    store.write(_JOB, "code_inventory.json", inventory)
+
+    interfaces = store.read_json(_JOB, "interfaces.json")
+    interfaces["interfaces"][0]["code_spans"] = [
+        {
+            "file": "UserService.java",
+            "role": "service",
+            "kind": "callee",
+            "start_line": 1,
+            "end_line": 5,
+            "depth": 1,
+            "call_line": 32,
+        }
+    ]
+    interfaces["interfaces"][0]["call_graph"] = {
+        "status": "complete",
+        "resolved_calls": 1,
+        "resolved_nodes": 1,
+        "unresolved_calls": 0,
+        "max_depth": 1,
+    }
+    store.write(_JOB, "interfaces.json", interfaces)
+
+    await run_code_review(engine, engine.open_job(_JOB), store, _StubLlm(_LLM_GOOD), _PROMPTS)
+
+    payload = store.read_json(_JOB, "review_mapping.json")
+    chain = payload["call_chains"][0]
+    assert chain["confidence"] == "static_recursive"
+    assert chain["callees"][0]["role"] == "service"
+    assert any(item.get("role") == "service" for item in payload["evidence_catalog"])
+
 
 def test_evidence_gate_downgrades_session_requirement_without_direct_evidence() -> None:
     from orchestrator.nodes.code_review import (
@@ -475,6 +602,150 @@ def test_collect_code_evidence_includes_config_not_listed_by_python_scan(tmp_pat
     evidence = _collect_code_evidence(inventory)
 
     assert any(item["category"] == "session" for item in evidence)
+
+
+def test_collect_code_evidence_includes_recursive_interface_spans(tmp_path: Path) -> None:
+    from orchestrator.nodes.code_review import _collect_code_evidence
+
+    (tmp_path / "Controller.java").write_text("class Controller {}\n", encoding="utf-8")
+    (tmp_path / "Service.java").write_text(
+        "class Service { String load() { return \"ok\"; } }\n", encoding="utf-8"
+    )
+    inventory = {
+        "repositories": [
+            {
+                "name": "demo",
+                "path": str(tmp_path),
+                "files": [{"path": "Controller.java"}, {"path": "Service.java"}],
+            }
+        ]
+    }
+    interfaces = [
+        {
+            "id": "IF-REST-001",
+            "code_location": {
+                "repo": "demo",
+                "file": "Controller.java",
+                "start_line": 1,
+                "end_line": 1,
+            },
+            "code_spans": [
+                {
+                    "file": "Controller.java",
+                    "role": "controller",
+                    "kind": "body",
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+                {
+                    "file": "Service.java",
+                    "role": "service",
+                    "kind": "callee",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "depth": 1,
+                },
+            ],
+        }
+    ]
+
+    evidence = _collect_code_evidence(inventory, interfaces)
+
+    assert any(
+        item["category"] == "call_chain_implementation"
+        and item["file"] == "Service.java"
+        and item["interface_ids"] == ["IF-REST-001"]
+        for item in evidence
+    )
+
+
+def test_requirement_with_implemented_and_undetermined_claims_is_partial() -> None:
+    from orchestrator.nodes.code_review import _aggregate_claim_assessments
+
+    requirements = [
+        {
+            "id": "REQ-001",
+            "title": "自动审批配置",
+            "claims": [
+                {"claim_id": "CLM-001", "statement": "支持查询"},
+                {"claim_id": "CLM-002", "statement": "校验取值"},
+            ],
+        }
+    ]
+    assessments = [
+        {
+            "claim_id": "CLM-001",
+            "status": "implemented",
+            "confidence": 0.9,
+            "interface_ids": ["IF-REST-001"],
+            "evidence_refs": ["EVD-0001"],
+            "met_conditions": ["查询接口存在"],
+            "unmet_conditions": [],
+            "verification_needed": [],
+        },
+        {
+            "claim_id": "CLM-002",
+            "status": "undetermined",
+            "confidence": 0.4,
+            "interface_ids": ["IF-REST-001"],
+            "evidence_refs": [],
+            "met_conditions": [],
+            "unmet_conditions": [],
+            "verification_needed": ["需要确认枚举值"],
+        },
+    ]
+
+    mappings = _aggregate_claim_assessments(requirements, assessments)
+
+    assert mappings[0]["status"] == "partial"
+    assert mappings[0]["confidence"] == 0.65
+    assert mappings[0]["claim_ids"] == ["CLM-001", "CLM-002"]
+    assert mappings[0]["claim_counts"] == {
+        "total": 2,
+        "implemented": 1,
+        "partial": 0,
+        "missing": 0,
+        "undetermined": 1,
+    }
+
+
+def test_missing_view_contains_claim_statement() -> None:
+    from orchestrator.nodes.code_review import _aggregate_claim_assessments, _derive_missing
+
+    requirements = [
+        {
+            "id": "REQ-001",
+            "title": "自动审批配置",
+            "claims": [{"claim_id": "CLM-001", "statement": "支持按业务类型配置审批规则"}],
+        }
+    ]
+    mappings = _aggregate_claim_assessments(
+        requirements,
+        [
+            {
+                "claim_id": "CLM-001",
+                "status": "missing",
+                "confidence": 0.9,
+                "interface_ids": [],
+                "evidence_refs": [],
+                "met_conditions": [],
+                "unmet_conditions": ["未找到对应审批规则配置入口"],
+                "verification_needed": [],
+            }
+        ],
+    )
+
+    assert _derive_missing(mappings, requirements) == [
+        {
+            "requirement_id": "REQ-001",
+            "title": "自动审批配置",
+            "claim_id": "CLM-001",
+            "claim_statement": "支持按业务类型配置审批规则",
+            "interface_ids": [],
+            "evidence_refs": [],
+            "unmet_conditions": ["未找到对应审批规则配置入口"],
+        }
+    ]
 
 
 def test_call_chain_and_incremental_findings_are_static(tmp_path: Path) -> None:
@@ -667,3 +938,70 @@ async def test_semantic_recall_falls_back_on_llm_failure() -> None:
         )
         is None
     )
+
+
+def test_scan_coverage_reports_truncation_and_integrity_gate() -> None:
+    """P0②：接口证据/调用链截断与完整性门禁都要进 scan_coverage，并让 complete 变 false。
+
+    此前的漏洞：接口证据被 140 条上限截断、调用链被 120 条上限截断时，`complete` 仍是 true，
+    下游据此把「模型没看到」读成「不存在」。
+    """
+    from orchestrator.nodes.code_review import (
+        _MAX_CALL_CHAINS,
+        _MAX_INTERFACE_EVIDENCE,
+        _scan_coverage,
+    )
+
+    inventory = {"repositories": [{"name": "r", "status": "ok", "files": [{"path": "A.java"}]}]}
+    over = [{"id": f"IF-REST-{index:03d}"} for index in range(1, _MAX_INTERFACE_EVIDENCE + 2)]
+
+    coverage = _scan_coverage(inventory, [], over, {"complete": True, "reasons": []})
+    assert coverage["interface_evidence_truncated"] is True
+    assert coverage["call_chain_truncated"] is True
+    assert coverage["interface_evidence_limit"] == _MAX_INTERFACE_EVIDENCE
+    assert coverage["call_chain_limit"] == _MAX_CALL_CHAINS
+    assert coverage["complete"] is False
+
+    # 未触顶 + 门禁通过 + 完整性记录齐备 → 才算完整
+    ok_evidence = [
+        {"category": "interface_implementation", "interface_ids": [item["id"]]}
+        for item in over[:10]
+    ]
+    ok = _scan_coverage(inventory, ok_evidence, over[:10], {"complete": True, "reasons": []})
+    assert ok["interface_evidence_truncated"] is False
+    assert ok["interface_evidence_missing"] == []
+    assert ok["call_chain_truncated"] is False
+    assert ok["complete"] is True
+
+    # 完整性门禁未通过 → complete=false，原因照抄不改写
+    bad = _scan_coverage(
+        inventory, [], over[:10], {"complete": False, "reasons": ["r 计数不守恒"]}
+    )
+    assert bad["complete"] is False
+    assert bad["scan_integrity_complete"] is False
+    assert bad["scan_integrity_reasons"] == ["r 计数不守恒"]
+
+    # 找不到完整性记录 → 不假装完整
+    missing = _scan_coverage(inventory, [], over[:10], None)
+    assert missing["complete"] is False
+    assert missing["scan_integrity_complete"] is False
+
+
+def test_scan_coverage_rejects_missing_interface_evidence() -> None:
+    """即使接口总数未触发上限，只要有接口没有源码证据也不能报告 complete。"""
+    from orchestrator.nodes.code_review import _scan_coverage
+
+    inventory = {"repositories": [{"name": "r", "status": "ok", "files": []}]}
+    interfaces = [
+        {"id": "IF-REST-001"},
+        {"id": "IF-REST-002"},
+    ]
+    coverage = _scan_coverage(
+        inventory,
+        [{"category": "interface_implementation", "interface_ids": ["IF-REST-001"]}],
+        interfaces,
+        {"complete": True, "reasons": []},
+    )
+
+    assert coverage["complete"] is False
+    assert coverage["interface_evidence_missing"] == ["IF-REST-002"]

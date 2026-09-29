@@ -35,6 +35,7 @@ ARTIFACT_FILES: tuple[str, ...] = (
     "code_inventory.json",
     "interface_candidates.json",
     "interfaces.json",
+    "change_set.json",
     "review_mapping.json",
     "testcases.json",
     "execution.json",
@@ -52,6 +53,7 @@ _WRITE_OWNERS: dict[str, str] = {
     "code_inventory.json": "orchestrator",
     "interface_candidates.json": "orchestrator",
     "interfaces.json": "orchestrator",
+    "change_set.json": "orchestrator",
     "review_mapping.json": "orchestrator",
     "testcases.json": "test-executor",
     "execution.json": "test-executor",
@@ -183,6 +185,29 @@ class ArtifactStore:
         tmp.replace(target)
         storage_uri = self._mirror_file(job_id, target)
         self._register_artifact(job_id, relative_path, target, storage_uri, None)
+        return target
+
+    def write_bytes(self, job_id: str, relative_path: str, content: bytes) -> Path:
+        """Write binary execution evidence under the test-executor evidence directory."""
+        relative = Path(relative_path)
+        if (
+            self._service != "test-executor"
+            or relative.is_absolute()
+            or len(relative.parts) != 2
+            or relative.parts[0] != "evidence"
+            or not re.fullmatch(r"E2E-\d{3}\.png", relative.name)
+        ):
+            raise PipelineError(
+                code=X_ORCH_01,
+                message=f"write_bytes 仅允许 test-executor 写 evidence/E2E-###.png：{relative_path}",
+            )
+        target = self.job_dir(job_id) / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".tmp")
+        temporary.write_bytes(content)
+        temporary.replace(target)
+        storage_uri = self._mirror_file(job_id, target)
+        self._register_artifact(job_id, relative.as_posix(), target, storage_uri, None)
         return target
 
     def validate(self, job_id: str, filename: str, payload: dict[str, Any]) -> list[str]:
@@ -332,6 +357,8 @@ class ArtifactStore:
                 kind = "script"
             elif relative.parts and relative.parts[0] == "archive":
                 kind = "archive"
+            elif relative.parts and relative.parts[0] == "evidence":
+                kind = "evidence"
             elif relative_name.endswith(".jsonl"):
                 kind = "log"
             else:

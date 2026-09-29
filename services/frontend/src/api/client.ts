@@ -33,6 +33,7 @@ import type {
   RetestResponse,
   ReviewLogResponse,
   ReviewMapping,
+  ReviewCallChain,
   DerivedRisk,
   AuthConfig,
   AuthVerificationResponse,
@@ -280,14 +281,20 @@ export function getTestcases(jobId: string): Promise<{
   return request(`/api/v1/jobs/${jobId}/artifacts/testcases.json`)
 }
 
-export function getInterfaceCandidates(
-  jobId: string,
-): Promise<{ candidates: InterfaceCandidate[] }> {
+export function getInterfaceCandidates(jobId: string): Promise<{
+  candidates: InterfaceCandidate[]
+  warnings?: string[]
+  capabilities?: import('./types').InterfaceScanCapabilities
+}> {
   return request(`/api/v1/jobs/${jobId}/artifacts/interface_candidates.json`)
 }
 
 export function getInterfaces(jobId: string): Promise<{ interfaces: InterfaceDef[] }> {
   return request(`/api/v1/jobs/${jobId}/artifacts/interfaces.json`)
+}
+
+export function getChangeSet(jobId: string): Promise<{ removed_files?: RemovedFile[] }> {
+  return request(`/api/v1/jobs/${jobId}/artifacts/change_set.json`)
 }
 
 export function getReviewMapping(jobId: string): Promise<{
@@ -296,8 +303,10 @@ export function getReviewMapping(jobId: string): Promise<{
   risks: DerivedRisk[]
   missing_features: MissingFeature[]
   evidence_catalog?: import('./types').ReviewEvidence[]
+  call_chains?: ReviewCallChain[]
   deterministic_checks?: import('./types').DeterministicReviewCheck[]
-  change_scope?: ChangeScopeEntry[] // C-09：旧产物无此键 → undefined → 页面隐藏视图四
+  change_scope?: ChangeScopeEntry[]
+  change_scope_available?: boolean
   removed_files?: RemovedFile[]
   unmatched_changed_files?: UnmatchedChangedFile[]
   incremental_findings?: import('./types').IncrementalFinding[]
@@ -311,6 +320,15 @@ export function getExecution(jobId: string): Promise<{
   degraded_protocols?: Array<{ protocol: string; mode: string; reason?: string }>
 }> {
   return request(`/api/v1/jobs/${jobId}/artifacts/execution.json`)
+}
+
+export async function getEvidenceBlob(jobId: string, evidencePath: string): Promise<Blob> {
+  const encodedPath = evidencePath.split('/').map(encodeURIComponent).join('/')
+  const response = await fetch(`/api/v1/jobs/${jobId}/artifacts/${encodedPath}`, {
+    headers: accessHeaders(),
+  })
+  if (!response.ok) throw new Error(`执行证据加载失败：${response.status}`)
+  return response.blob()
 }
 
 export function getDefects(

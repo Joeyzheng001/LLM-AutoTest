@@ -1,8 +1,8 @@
-"""code_review 节点：三视图产出（F-REVW-01~05）——按原子声明分批审查，
+"""code_review 节点：四视图产出（F-REVW-01~05）——按原子声明分批审查，
 风险清单与遗漏功能清单程序化派生（R-REVW-02：与映射表 100% 一致）；
 双分支配置时程序化派生视图四·变更范围（C-09，不经 LLM）。
 
-产物：review_mapping.json（Day1 冻结口径：三视图合一单产物；
+产物：review_mapping.json（映射、风险、遗漏、变更范围四视图合一单产物；
 R-REVW-03 的三文件名是规格草案表述，以 schemas/ 冻结文件名为准）。
 
 程序化派生（数值/清单不经 LLM）：
@@ -22,7 +22,8 @@ code_inventory.json 无 changed_files 键（未配基线分支）时两视图为
 - interface_id 必须存在于 interfaces.json → 虚构即 X-LLM-02。
 
 失败口径（docs/12）：
-- LLM 输出不可解析/未过 Schema → X-LLM-02；前置产物缺失/不合规 → X-ORCH-01。
+- LLM 输出不可解析、claim/引用业务校验失败 → X-LLM-02；前置产物缺失/不合规或程序派生产物
+  与 Schema 不一致 → X-ORCH-01。
 """
 
 from __future__ import annotations
@@ -91,15 +92,18 @@ _EVIDENCE_RULES: dict[str, re.Pattern[str]] = {
 _REVIEWABLE_SUFFIXES = {
     ".py", ".java", ".kt", ".js", ".ts", ".yml", ".yaml", ".properties", ".xml"
 }
-_MAX_EVIDENCE_FILES = 160
-# 证据池容量：真机上 72 条被瞬间打满（实测 evidence_catalog 恰好 72 条、且
-# scan_coverage.review_evidence_limited=True），后面的候选文件根本轮不到被采。
-# 池子太小会让「语义召回」无米下锅，所以先放开容量，再做检索质量。
-_MAX_EVIDENCE_ITEMS = 240
-# 接口实现证据的条数上限（按变更文件优先排序后截断）。原先是硬截 interfaces[:36]，
-# 113 个接口里 77 个连一条接口证据都没有。
-_MAX_INTERFACE_EVIDENCE = 140
+_MAX_EVIDENCE_FILES = 2_000
+# 证据池只在真正达到条目上限时触发降级；不能再把“仓库文件数大于某阈值”误报成
+# “扫描范围不完整”。当前普通 Java 仓库通常几百到一千余文件，2000 是防止异常大仓库
+# 无限膨胀的保护线，实际会先按变更文件和行为相关文件优先处理。
+_MAX_EVIDENCE_ITEMS = 1_000
+# 接口实现证据必须覆盖全部接口；该值只作为异常大任务的最后保护线，不再按接口输入顺序
+# 截掉前 140 个。正常情况下所有接口都会有 interface_implementation 证据或明确缺失记录。
+_MAX_INTERFACE_EVIDENCE = 1_000
 _MAX_EVIDENCE_CHARS = 520
+# 调用链分析的接口数保护线。正常情况下全部接口都会进入调用链摘要；触顶必须进
+# scan_coverage，否则“模型没看到”会被读成“不存在”（评审 §4）。
+_MAX_CALL_CHAINS = 1_000
 # 语义召回（LLM 重排）用的子提示词与选入上限。中转站没有 embedding 接口
 # （`/v1/embeddings` → 401 key_model_access_denied），语义只能交给模型判断。
 _EVIDENCE_SELECT_PROMPT = "code_review_evidence_select"
@@ -124,7 +128,7 @@ async def run_code_review(
     llm: SupportsComplete,
     prompts_dir: Path,
 ) -> Path:
-    """执行 code_review 全流程：读前置产物 → LLM 映射 → 派生三视图 → 落盘。
+    """执行 code_review 全流程：读前置产物 → LLM 映射 → 派生四视图 → 落盘。
 
     Returns:
         review_mapping.json 产物路径。
@@ -138,37 +142,24 @@ async def run_code_review(
         requirements = _load_requirements(store, state.job_id)
         interfaces = _load_interfaces(store, state.job_id)
         inventory = _load_code_inventory(store, state.job_id)
-        # 在代码证据提取前按需求选择接口入口，优先确保本任务相关业务代码进入证据池。
+        _attach_scan_source_paths(inventory, store, state.job_id)
+        # 在 LLM 提示词中按需求选择接口入口，控制语义上下文规模；但确定性证据不能
+        # 复用这个 36 条的相关性截断，否则未被需求召回的接口会没有任何源码证据。
         interface_index = _compact_interfaces(interfaces)
         all_claims = _flatten_requirement_claims(requirements)
         review_batches = chunk_json_items(all_claims, max_chars=5_000)
-        relevant_interfaces: list[dict[str, Any]] = []
-        relevant_interface_ids: set[str] = set()
-        candidates_by_batch = [
-            _select_interfaces_for_claims(batch, interface_index) for batch in review_batches
-        ]
-        # 轮转批次挑选，避免前 36 个接口挤占证据预算、后续需求完全没有业务代码上下文。
-        for rank in range(max((len(items) for items in candidates_by_batch), default=0)):
-            for candidates in candidates_by_batch:
-                if rank >= len(candidates):
-                    continue
-                item = candidates[rank]
-                interface_id = str(item.get("id", ""))
-                if interface_id and interface_id not in relevant_interface_ids:
-                    relevant_interfaces.append(item)
-                    relevant_interface_ids.add(interface_id)
-                if len(relevant_interfaces) >= 36:
-                    break
-            if len(relevant_interfaces) >= 36:
-                break
         behavior_evidence = _behavior_evidence(inventory)
-        code_evidence = _collect_code_evidence(inventory, relevant_interfaces)
+        # 所有接口都进入确定性证据提取；后续 LLM 仍可按需求做有限召回，但不能改变
+        # “接口是否被源码扫描覆盖”的事实。
+        code_evidence = _collect_code_evidence(inventory, interfaces)
         for evidence_index, evidence in enumerate(code_evidence, start=1):
             evidence["evidence_id"] = f"EVD-{evidence_index:04d}"
         call_chains = _derive_call_chains(inventory, interfaces)
         incremental_focus = _collect_incremental_focus(inventory, interfaces)
         deterministic_checks = _derive_deterministic_checks(requirements, code_evidence)
-        scan_coverage = _scan_coverage(inventory, code_evidence)
+        scan_coverage = _scan_coverage(
+            inventory, code_evidence, interfaces, _load_scan_integrity(store, state.job_id)
+        )
 
         prompt = load_prompt(prompts_dir, NODE_NAME)
         # 历史 1.0 需求产物没有 claims。保留一条受控兼容路径读取旧版
@@ -284,6 +275,7 @@ async def run_code_review(
             "missing_features": _derive_missing(mappings, requirements),
             "deterministic_checks": deterministic_checks,
             "change_scope": change_scope,
+            "change_scope_available": _change_scope_available(inventory),
             "removed_files": removed_files,
             "unmatched_changed_files": unmatched,
             "call_chains": call_chains,
@@ -292,11 +284,15 @@ async def run_code_review(
         try:
             path = store.write(state.job_id, "review_mapping.json", payload)
         except PipelineError as exc:
-            # 源头是 LLM 输出不合规：归 X-LLM-02（错误码语义归位）
+            # 到这里 LLM 输出已经过了解析、引用和业务校验；此处失败只能说明
+            # 程序派生字段或冻结 Schema 不同步，不能误报成 LLM 输出错误。
             if exc.code == X_ORCH_01:
+                schema_errors = exc.details.get("errors", [])
+                detail = "；".join(str(item) for item in schema_errors[:3])
+                suffix = f"：{detail}" if detail else ""
                 raise PipelineError(
-                    code=X_LLM_02,
-                    message=f"LLM 输出未过 Schema 校验：{exc.message}",
+                    code=X_ORCH_01,
+                    message=f"review_mapping.json 程序派生产物未通过 Schema 校验{suffix}",
                     node_id=NODE_NAME,
                     details=exc.details,
                 ) from exc
@@ -354,6 +350,33 @@ def _load_code_inventory(store: ArtifactStore, job_id: str) -> dict[str, Any]:
         return dict(store.read_json(job_id, "code_inventory.json"))
     except FileNotFoundError:
         return {}
+
+
+def _attach_scan_source_paths(
+    inventory: dict[str, Any], store: ArtifactStore, job_id: str
+) -> None:
+    """把接口还原阶段实际解析的 target 快照路径回填到评审内存清单。
+
+    Java 候选是在 target_sha worktree 上解析的；评审若重新从可变工作区读源码，
+    行号和片段可能再次错位。快照路径只在当前评审内使用，不改写 code_inventory 原件。
+    """
+    try:
+        change_set = store.read_json(job_id, "change_set.json")
+    except FileNotFoundError:
+        return
+    if not isinstance(change_set, dict):
+        return
+    source_by_repo = {
+        str(item.get("name", "")): item.get("source_path")
+        for item in change_set.get("repositories") or []
+        if isinstance(item, dict) and item.get("source_path")
+    }
+    for repo in inventory.get("repositories") or []:
+        if not isinstance(repo, dict):
+            continue
+        source_path = source_by_repo.get(str(repo.get("name", "")))
+        if source_path:
+            repo["source_path"] = source_path
 
 
 def _compact_interfaces(interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -450,11 +473,12 @@ def _collect_code_evidence(
     """
     evidence: list[dict[str, Any]] = []
     roots = {
-        str(repo.get("name", "")): Path(str(repo.get("path", "")))
+        str(repo.get("name", "")): Path(
+            str(repo.get("source_path") or repo.get("path", ""))
+        )
         for repo in inventory.get("repositories") or []
         if isinstance(repo, dict)
     }
-    seen_locations: set[tuple[str, str, int]] = set()
     # 变更文件优先：本节点评审的是「本次改动」，先把变更文件里的接口证据收进来再截断。
     # 原先是按输入顺序硬截前 36 个接口——113 个接口时 77 个连一条接口证据都没有。
     changed: dict[str, set[str]] = {}
@@ -476,19 +500,73 @@ def _collect_code_evidence(
         return str(location.get("file", "")) in changed.get(str(location.get("repo", "")), set())
 
     ordered_interfaces = sorted(interfaces or [], key=lambda item: not _is_changed(item))
-    # 普通业务声明也需要代码证据；先为接口实现位置建立有限的直接证据入口，
-    # 再补充跨接口的安全、配置、事务等服务端行为片段。
-    for interface in ordered_interfaces[:_MAX_INTERFACE_EVIDENCE]:
+    # 普通业务声明需要的不只是 Controller 定义位置。接口还原阶段已经产出递归
+    # code_spans，这里把 body + callee 的每个源码节点都加入证据池，并合并同一位置
+    # 对应的多个接口 ID，避免 Service/Helper/DAO 改动没有证据可供需求映射引用。
+    source_entries: dict[tuple[str, str, int, int, str], dict[str, Any]] = {}
+    for interface in ordered_interfaces:
+        interface_id = str(interface.get("id", ""))
         location = interface.get("code_location") or {}
-        repo_name = str(location.get("repo", ""))
-        relative_path = str(location.get("file", ""))
-        try:
-            start_line = int(location.get("start_line", 0))
-        except (TypeError, ValueError):
-            continue
-        key = (repo_name, relative_path, start_line)
-        if not repo_name or not relative_path or start_line < 1 or key in seen_locations:
-            continue
+        locations = [
+            {
+                "repo": location.get("repo"),
+                "file": location.get("file"),
+                "start_line": location.get("start_line"),
+                "end_line": location.get("end_line"),
+                "category": "interface_implementation",
+                "role": "controller",
+            }
+        ]
+        for span in interface.get("code_spans") or []:
+            if not isinstance(span, dict):
+                continue
+            locations.append(
+                {
+                    "repo": location.get("repo"),
+                    "file": span.get("file"),
+                    "start_line": span.get("start_line"),
+                    "end_line": span.get("end_line"),
+                    "category": "call_chain_implementation",
+                    "role": span.get("role", "other"),
+                }
+            )
+        for item in locations:
+            repo_name = str(item.get("repo") or "")
+            relative_path = str(item.get("file") or "")
+            try:
+                start_line = int(item.get("start_line") or 0)
+                end_line = int(item.get("end_line") or start_line)
+            except (TypeError, ValueError):
+                continue
+            category = str(item.get("category") or "interface_implementation")
+            key = (repo_name, relative_path, start_line, end_line, category)
+            if not repo_name or not relative_path or start_line < 1:
+                continue
+            source = source_entries.setdefault(
+                key,
+                {
+                    "repo": repo_name,
+                    "file": relative_path,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "category": category,
+                    "role": str(item.get("role") or "other"),
+                    "interface_ids": [],
+                },
+            )
+            if interface_id and interface_id not in source["interface_ids"]:
+                source["interface_ids"].append(interface_id)
+
+    ordered_sources = sorted(
+        source_entries.values(),
+        key=lambda item: (
+            item["file"] not in changed.get(item["repo"], set()),
+            item["category"] != "interface_implementation",
+        ),
+    )
+    for item in ordered_sources[:_MAX_INTERFACE_EVIDENCE]:
+        repo_name = item["repo"]
+        relative_path = item["file"]
         root_value = roots.get(repo_name)
         if root_value is None or not root_value.is_dir():
             continue
@@ -500,42 +578,38 @@ def _collect_code_evidence(
             lines = path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):
             continue
+        start_line = int(item["start_line"])
         if start_line > len(lines):
             continue
-        try:
-            declared_end = int(location.get("end_line", start_line))
-        except (TypeError, ValueError):
-            declared_end = start_line
+        declared_end = max(start_line, int(item["end_line"]))
         snippet_start = max(1, start_line - 2)
         snippet_end = min(len(lines), max(start_line + 8, min(declared_end, start_line + 24)) + 2)
         excerpt = "\n".join(lines[snippet_start - 1 : snippet_end])
         excerpt = _SECRET_VALUE.sub(r"\1\2<redacted>", excerpt)[:_MAX_EVIDENCE_CHARS]
         if not excerpt.strip():
             continue
-        interface_id = str(interface.get("id", ""))
         evidence.append(
             {
-                "category": "interface_implementation",
+                "category": item["category"],
                 "repo": repo_name,
                 "file": relative_path,
                 "start_line": snippet_start,
                 "end_line": snippet_end,
                 "excerpt": excerpt,
-                "interface_ids": [interface_id] if interface_id else [],
+                "interface_ids": item["interface_ids"],
+                "role": item["role"],
             }
         )
-        seen_locations.add(key)
-
     for repo in inventory.get("repositories") or []:
         if not isinstance(repo, dict) or len(evidence) >= _MAX_EVIDENCE_ITEMS:
             continue
-        root = Path(str(repo.get("path", "")))
+        root = Path(str(repo.get("source_path") or repo.get("path", "")))
         if not root.is_dir():
             continue
         root = root.resolve()
         files = repo.get("files") or []
         candidates: list[str] = []
-        for item in files[:_MAX_EVIDENCE_FILES]:
+        for item in files:
             if isinstance(item, dict) and isinstance(item.get("path"), str):
                 candidates.append(item["path"])
         # 扫描清单对 Python 仓库只枚举 .py；补充有限的配置文件，才能审查
@@ -550,6 +624,30 @@ def _collect_code_evidence(
                 is_config = path.suffix.lower() in {".yml", ".yaml", ".properties", ".xml"}
                 if is_config and relative not in candidates:
                     candidates.append(relative)
+        changed_paths = changed.get(str(repo.get("name", "")), set())
+        behavior_path_keywords = (
+            "auth",
+            "session",
+            "jwt",
+            "token",
+            "setting",
+            "config",
+            "middleware",
+            "security",
+            "cache",
+            "serializ",
+            "model",
+            "service",
+            "message",
+        )
+        candidates = sorted(
+            dict.fromkeys(candidates),
+            key=lambda path: (
+                path not in changed_paths,
+                not any(word in path.lower() for word in behavior_path_keywords),
+                path,
+            ),
+        )[:_MAX_EVIDENCE_FILES]
         for relative_path in candidates:
             if len(evidence) >= _MAX_EVIDENCE_ITEMS:
                 break
@@ -592,9 +690,15 @@ def _collect_code_evidence(
 def _derive_call_chains(
     inventory: dict[str, Any], interfaces: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """从接口定义附近静态提取一跳服务调用，失败即留空而非补造调用链。"""
+    """优先使用 Java Parser 已确认的递归调用链，旧产物才退回正则兜底。
+
+    新产物中的 ``call_graph``/``code_spans`` 是调用链事实来源；这里不能再从 Controller
+    文本猜一跳变量名，否则 Service/Helper/DAO 改动会在 Code Review 阶段再次丢失。
+    """
     roots = {
-        str(repo.get("name", "")): Path(str(repo.get("path", "")))
+        str(repo.get("name", "")): Path(
+            str(repo.get("source_path") or repo.get("path", ""))
+        )
         for repo in inventory.get("repositories") or []
         if isinstance(repo, dict)
     }
@@ -602,10 +706,45 @@ def _derive_call_chains(
     call_pattern = re.compile(
         r"\b([A-Za-z_][A-Za-z0-9_]*(?:service|repository|dao|mapper|client))\s*\.", re.I
     )
-    for interface in interfaces[:120]:
+    for interface in interfaces:
+        interface_id = str(interface.get("id", ""))
         location = interface.get("code_location") or {}
         repo_name = str(location.get("repo", ""))
         relative = str(location.get("file", ""))
+        graph = interface.get("call_graph")
+        spans = [
+            item
+            for item in interface.get("code_spans") or []
+            if isinstance(item, dict) and item.get("kind") == "callee"
+        ]
+        if isinstance(graph, dict):
+            chains.append(
+                {
+                    "interface_id": interface_id,
+                    "entry": {"repo": repo_name, "file": relative},
+                    "callees": [
+                        {
+                            "file": str(item.get("file", "")),
+                            "role": str(item.get("role", "other")),
+                            "start_line": item.get("start_line"),
+                            "end_line": item.get("end_line"),
+                            "depth": item.get("depth", 1),
+                            "call_line": item.get("call_line"),
+                        }
+                        for item in spans
+                    ],
+                    "status": str(graph.get("status", "partial")),
+                    "resolved_calls": int(graph.get("resolved_calls", 0) or 0),
+                    "resolved_nodes": int(graph.get("resolved_nodes", len(spans)) or 0),
+                    "unresolved_calls": int(
+                        graph.get("unresolved_calls", len(interface.get("unresolved") or [])) or 0
+                    ),
+                    "unresolved": list(interface.get("unresolved") or []),
+                    "max_depth": int(graph.get("max_depth", 0) or 0),
+                    "confidence": "static_recursive",
+                }
+            )
+            continue
         root = roots.get(repo_name)
         if root is None or not root.is_dir() or not relative:
             continue
@@ -624,10 +763,15 @@ def _derive_call_chains(
             continue
         chains.append(
             {
-                "interface_id": str(interface.get("id", "")),
+                "interface_id": interface_id,
                 "entry": {"repo": repo_name, "file": relative},
                 "callees": callees,
-                "confidence": "static_one_hop",
+                "status": "partial",
+                "resolved_calls": len(callees),
+                "resolved_nodes": len(callees),
+                "unresolved_calls": 0,
+                "max_depth": 1,
+                "confidence": "legacy_static_one_hop",
             }
         )
     return chains
@@ -958,14 +1102,56 @@ def _select_evidence_for_claims(
 
 
 def _scan_coverage(
-    inventory: dict[str, Any], code_evidence: list[dict[str, Any]] | None = None
+    inventory: dict[str, Any],
+    code_evidence: list[dict[str, Any]] | None = None,
+    interfaces: list[dict[str, Any]] | None = None,
+    scan_integrity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """扫描覆盖率与"模型到底看全了没有"（P0①/②）。
+
+    `complete=true` 的语义是"仓库扫描完整，你已看到全部接口"——prompt 直接依赖它
+    （`skills/code-review-evidence.md`：complete=false 时"未发现"不能解释成"不存在"）。
+    所以任何**截断**（证据池、接口证据、调用链）与任何**完整性校验缺失**都必须让它是 false，
+    不能只报我们碰巧检测到的那一项。
+    """
     repositories = [item for item in inventory.get("repositories", []) if isinstance(item, dict)]
     repository_file_limit = any(
         isinstance(repo.get("files"), list) and len(repo["files"]) > _MAX_EVIDENCE_FILES
         for repo in repositories
     )
-    evidence_limit_reached = repository_file_limit or len(code_evidence or []) >= _MAX_EVIDENCE_ITEMS
+    evidence_limit_reached = repository_file_limit or (
+        len(code_evidence or []) >= _MAX_EVIDENCE_ITEMS
+    )
+    interface_items = [item for item in interfaces or [] if isinstance(item, dict)]
+    interface_total = len(interface_items)
+    expected_interface_ids = {
+        str(item.get("id")) for item in interface_items if str(item.get("id", ""))
+    }
+    covered_interface_ids = {
+        str(interface_id)
+        for evidence in code_evidence or []
+        if isinstance(evidence, dict)
+        and evidence.get("category") == "interface_implementation"
+        for interface_id in evidence.get("interface_ids") or []
+        if str(interface_id)
+    }
+    missing_interface_ids = sorted(expected_interface_ids - covered_interface_ids)
+    # 接口证据与调用链的硬上限原先不在 scan_coverage 里：超过 140 个接口时证据被悄悄截断，
+    # 而 complete 仍是 true —— 下游据此把"模型没看到"读成"不存在"。
+    interface_evidence_truncated = (
+        interface_total > _MAX_INTERFACE_EVIDENCE or bool(missing_interface_ids)
+    )
+    call_chain_truncated = interface_total > _MAX_CALL_CHAINS
+    integrity_complete = True
+    integrity_reasons: list[str] = []
+    if scan_integrity is None:
+        integrity_complete = False
+        integrity_reasons = [
+            "未找到接口扫描完整性记录（接口还原产物缺该字段，无法校验扫描是否看全）"
+        ]
+    else:
+        integrity_complete = bool(scan_integrity.get("complete"))
+        integrity_reasons = [str(item) for item in (scan_integrity.get("reasons") or [])]
     incomplete = [
         {
             "repo": str(repo.get("name", "")),
@@ -976,11 +1162,50 @@ def _scan_coverage(
         for repo in repositories
         if repo.get("status") != "ok" or repo.get("truncated_scope") or repo.get("encoding_skipped")
     ]
+    complete = (
+        bool(repositories)
+        and not incomplete
+        and not evidence_limit_reached
+        and not interface_evidence_truncated
+        and not call_chain_truncated
+        and integrity_complete
+    )
     return {
-        "complete": bool(repositories) and not incomplete and not evidence_limit_reached,
+        "complete": complete,
         "repositories": incomplete,
         "review_evidence_limited": evidence_limit_reached,
+        "interface_evidence_truncated": interface_evidence_truncated,
+        "interface_evidence_limit": _MAX_INTERFACE_EVIDENCE,
+        "interface_evidence_count": len(covered_interface_ids),
+        "interface_evidence_missing": missing_interface_ids,
+        "call_chain_truncated": call_chain_truncated,
+        "call_chain_limit": _MAX_CALL_CHAINS,
+        "interfaces_total": interface_total,
+        "scan_integrity_complete": integrity_complete,
+        "scan_integrity_reasons": integrity_reasons,
     }
+
+
+def _load_scan_integrity(store: ArtifactStore, job_id: str) -> dict[str, Any] | None:
+    """读接口还原阶段落盘的扫描完整性门禁结果（P0①）；缺失返回 None。
+
+    主源是 change_set.json（必带 scan_integrity），退回 interface_candidates.json。
+    读不到**不假装完整**：调用方把 None 当"无法校验"（complete=false）。
+    """
+    for filename in ("change_set.json", "interface_candidates.json"):
+        try:
+            payload = store.read_json(job_id, filename)
+        except FileNotFoundError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        integrity = payload.get("scan_integrity")
+        if isinstance(integrity, dict):
+            return dict(integrity)
+        if isinstance(payload.get("stats"), dict):
+            # 有统计但没门禁结论：完整性未知，如实标不完整
+            return {"complete": False, "reasons": ["接口还原产物未记录扫描完整性结论"]}
+    return None
 
 
 def _aggregate_claim_assessments(
@@ -1007,6 +1232,11 @@ def _aggregate_claim_assessments(
             status = "missing"
         elif any(value in {"partial", "missing"} for value in statuses):
             status = "partial"
+        elif "implemented" in statuses and "undetermined" in statuses:
+            # 同一需求下已有部分声明被源码证明、部分声明仍缺精确证据时，需求整体是
+            # “部分实现”，不是把已确认的实现一起抹成“无法判断”。只有全部 claim 都
+            # 无法判断时，才汇总为 undetermined。
+            status = "partial"
         else:
             status = "undetermined"
         interface_ids = list(dict.fromkeys(
@@ -1015,6 +1245,14 @@ def _aggregate_claim_assessments(
         evidence_refs = list(dict.fromkeys(
             value for result in claim_results for value in result["evidence_refs"]
         ))
+        claim_ids = [str(item["claim_id"]) for item in claim_results]
+        claim_counts = {
+            "total": len(parent_claims),
+            "implemented": sum(item.get("status") == "implemented" for item in claim_results),
+            "partial": sum(item.get("status") == "partial" for item in claim_results),
+            "missing": sum(item.get("status") == "missing" for item in claim_results),
+            "undetermined": sum(item.get("status") == "undetermined" for item in claim_results),
+        }
         note_parts = []
         note_parts.extend(value for result in claim_results for value in result["unmet_conditions"])
         note_parts.extend(value for result in claim_results for value in result["verification_needed"])
@@ -1023,6 +1261,8 @@ def _aggregate_claim_assessments(
             "status": status,
             "confidence": round(sum(float(item["confidence"]) for item in claim_results) / len(claim_results), 2) if claim_results else 0.0,
             "interface_ids": interface_ids,
+            "claim_ids": claim_ids,
+            "claim_counts": claim_counts,
             "claim_assessments": claim_results,
             "evidence": {"refs": evidence_refs, "note": "；".join(dict.fromkeys(note_parts))},
         }
@@ -1223,41 +1463,108 @@ def _derive_change_scope(
     if not changed_by_repo and not removed:
         return [], [], []
 
-    # 映射表反向：interface_id → 覆盖它的 REQ 清单
+    # 映射表反向：interface_id → 覆盖它的 REQ 清单与 Claim 明细。
     reqs_by_interface: dict[str, list[str]] = {}
+    claims_by_interface: dict[str, list[dict[str, Any]]] = {}
     for entry in mappings:
         interface_ids = entry.get("interface_ids") or ([entry["interface_id"]] if entry.get("interface_id") else [])
         for if_id in interface_ids:
-            reqs_by_interface.setdefault(str(if_id), []).append(str(entry["requirement_id"]))
+            interface_id = str(if_id)
+            requirement_id = str(entry["requirement_id"])
+            reqs_by_interface.setdefault(interface_id, []).append(requirement_id)
+            claim_assessments = [
+                item for item in entry.get("claim_assessments") or []
+                if isinstance(item, dict)
+                and (
+                    interface_id in {str(value) for value in item.get("interface_ids") or []}
+                    or not item.get("interface_ids")
+                )
+            ]
+            # 老版本映射没有 Claim 明细时，保持视图四的旧输出形状；只有
+            # 真正存在原子声明评审结果时，才展示 covered_claims。
+            if claim_assessments:
+                claims_by_interface.setdefault(interface_id, []).append(
+                    {
+                        "requirement_id": requirement_id,
+                        "claim_ids": [str(item.get("claim_id")) for item in claim_assessments],
+                        "status": str(entry.get("status", "undetermined")),
+                    }
+                )
 
     change_scope: list[dict[str, Any]] = []
-    matched: set[tuple[str, str]] = set()  # 已被接口定义命中的 (repo, file)
+    matched: set[tuple[str, str]] = set()  # 已被某个接口命中的 (repo, file)
     for interface in interfaces:
         location = interface.get("code_location") or {}
         repo_name = str(location.get("repo", ""))
         file = str(location.get("file", ""))
         repo_changes = changed_by_repo.get(repo_name)
-        if repo_changes is None or file not in repo_changes:
+        if repo_changes is None:
             continue
-        matched.add((repo_name, file))
+        related_hits = _changed_related_files(interface, repo_changes)
+        defined_changed = file in repo_changes
+        if not defined_changed and not related_hits:
+            continue
         if_id = str(interface.get("id", ""))
-        change_scope.append(
-            {
-                "interface_id": if_id,
-                "repo": repo_name,
-                "file": file,
-                "change": repo_changes[file],
-                "covered_by": reqs_by_interface.get(if_id, []),
-            }
-        )
+        entry: dict[str, Any] = {
+            "interface_id": if_id,
+            "repo": repo_name,
+            "file": file,
+            # change 的取值域只有 added/modified：接口定义文件没改时取关联文件的变更类型，
+            # 具体来源由 matched_via / related_changed_files 说清。
+            "change": repo_changes.get(file) or related_hits[0]["change"],
+            "matched_via": "definition" if defined_changed else "related_file",
+            "covered_by": list(dict.fromkeys(reqs_by_interface.get(if_id, []))),
+        }
+        covered_claims = claims_by_interface.get(if_id, [])
+        if covered_claims:
+            entry["covered_claims"] = covered_claims
+        if related_hits:
+            entry["related_changed_files"] = related_hits
+        evidence = interface.get("change_evidence")
+        if isinstance(evidence, dict) and evidence.get("level"):
+            entry["evidence_level"] = str(evidence["level"])
+        change_scope.append(entry)
+        if defined_changed:
+            matched.add((repo_name, file))
+        for item in related_hits:
+            matched.add((repo_name, item["file"]))
 
-    # 未命中接口定义的变更文件（业务逻辑层变更等——行为风险信号）
+    # 未命中任何接口（含其关联文件）的变更文件（业务逻辑层变更等——行为风险信号）
     unmatched: list[dict[str, Any]] = []
     for repo_name, file_map in changed_by_repo.items():
         for file, change in file_map.items():
             if (repo_name, file) not in matched:
                 unmatched.append({"repo": repo_name, "file": file, "change": change})
     return change_scope, removed, unmatched
+
+
+def _changed_related_files(
+    interface: dict[str, Any], repo_changes: dict[str, str]
+) -> list[dict[str, Any]]:
+    """接口的关联文件（Service/DTO/Entity/Enum…）中落在变更清单里的那些。
+
+    评审 §5：只看 `code_location.file` 会把「依赖改了、Controller 文件没改」的接口漏出
+    change_scope，而那些 Service/DTO 变更又全被记成 `unmatched_changed_files`——两头都不对。
+    `related_files` 由 java-parser 静态解析产出（Controller 自身 + 注入字段/构造器参数
+    类型 + 端点方法参数与返回类型，含 XxxService → XxxServiceImpl 一跳）。
+    """
+    hits: list[dict[str, Any]] = []
+    related = interface.get("related_files")
+    if not isinstance(related, list):
+        return hits
+    for item in related:
+        if not isinstance(item, dict):
+            continue
+        file = str(item.get("file", ""))
+        if file and file in repo_changes:
+            hits.append(
+                {
+                    "file": file,
+                    "role": str(item.get("role", "other")),
+                    "change": repo_changes[file],
+                }
+            )
+    return hits
 
 
 def _derive_incremental_findings(
@@ -1714,6 +2021,17 @@ def _derive_risks(
                 else "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口"
             ),
         }
+        risky_claims = [
+            item for item in entry.get("claim_assessments") or []
+            if isinstance(item, dict) and item.get("status") != "implemented"
+        ]
+        risk["claim_ids"] = [str(item.get("claim_id")) for item in risky_claims if item.get("claim_id")]
+        risk["interface_ids"] = list(dict.fromkeys(
+            str(value)
+            for item in risky_claims
+            for value in item.get("interface_ids") or []
+            if str(value)
+        ))
         if entry.get("interface_id"):
             risk["interface_id"] = entry["interface_id"]
         note = (entry.get("evidence") or {}).get("note")
@@ -1740,12 +2058,37 @@ def _derive_risks(
 def _derive_missing(
     mappings: list[dict[str, Any]], requirements: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """视图三（R-REVW-02）：提取 missing 条目，title 从需求回填（程序派生）。"""
+    """视图三（R-REVW-02）：提取确认缺失 Claim，并回填原子声明文本。"""
     title_by_id: dict[str, str] = {
         str(item["id"]): str(item.get("title", "")) for item in requirements if item.get("id")
     }
+    statement_by_claim_id = {
+        str(item["claim_id"]): str(item.get("statement", ""))
+        for item in _flatten_requirement_claims(requirements)
+        if item.get("claim_id")
+    }
     missing: list[dict[str, Any]] = []
     for entry in mappings:
+        missing_claims = [
+            item for item in entry.get("claim_assessments") or []
+            if isinstance(item, dict) and item.get("status") == "missing"
+        ]
+        if missing_claims:
+            for claim in missing_claims:
+                missing.append(
+                    {
+                        "requirement_id": entry["requirement_id"],
+                        "title": title_by_id.get(entry["requirement_id"], ""),
+                        "claim_id": str(claim.get("claim_id", "")),
+                        "claim_statement": statement_by_claim_id.get(
+                            str(claim.get("claim_id", "")), ""
+                        ),
+                        "interface_ids": list(claim.get("interface_ids") or []),
+                        "evidence_refs": list(claim.get("evidence_refs") or []),
+                        "unmet_conditions": list(claim.get("unmet_conditions") or []),
+                    }
+                )
+            continue
         if entry["status"] != "missing":
             continue
         missing.append(
@@ -1755,3 +2098,11 @@ def _derive_missing(
             }
         )
     return missing
+
+
+def _change_scope_available(inventory: dict[str, Any]) -> bool:
+    """判断是否实际提供了可用的基线/提交变更清单。"""
+    return any(
+        isinstance(repo, dict) and isinstance(repo.get("changed_files"), dict)
+        for repo in inventory.get("repositories") or []
+    )

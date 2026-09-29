@@ -37,6 +37,7 @@
                 "name": { "type": "string", "minLength": 1 },
                 "type": { "type": "string", "description": "类型名或字面量 unknown" },
                 "required": { "type": "boolean" },
+                "required_evidence": { "type": "string", "description": "required 判定依据" },
                 "in": { "type": "string", "enum": ["path", "query", "body", "header", "unknown"], "description": "REST 参数位置（unknown = 位置无法从注解推断）" },
                 "default": { "description": "unknown 参数的边界默认值（X-REV-02）" },
                 "fields": {
@@ -48,9 +49,29 @@
                     "properties": {
                       "name": { "type": "string", "minLength": 1 },
                       "type": { "type": "string" },
+                      "required": { "type": "boolean", "description": "字段级必填性；未明确声明时省略" },
+                      "required_evidence": { "type": "string", "description": "字段级 required 判定依据" },
                       "description": { "type": "string" }
+                      ,"default": {},
+                      "constraints": { "type": "array", "items": { "type": "string" } },
+                      "observed_values": { "type": "array" },
+                      "source_refs": { "type": "array", "items": { "type": "object" } }
                     }
                   }
+                },
+                "constraints": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "方法体中对该参数/字段施加的校验、分支或取值约束"
+                },
+                "observed_values": {
+                  "type": "array",
+                  "description": "方法体中直接出现且与该参数/字段相关的字面量取值"
+                },
+                "source_refs": {
+                  "type": "array",
+                  "items": { "type": "object" },
+                  "description": "参数证据在方法体中的行号引用"
                 }
               }
             }
@@ -75,6 +96,13 @@
           },
           "is_fallback": { "type": "boolean", "description": "兜底仓库标记，全链路透传（D5 分列基础）" },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          ,"parameter_evidence": { "type": "array", "items": { "type": "object" } }
+          ,"method_body_truncated": { "type": "boolean" }
+          ,"method_body_char_count": { "type": "integer", "minimum": 0 }
+          ,"method_body_context": { "type": "array", "items": { "type": "object" } }
+          ,"call_graph": { "type": "object" }
+          ,"call_graph_incomplete": { "type": "boolean" }
+          ,"unresolved": { "type": "array", "items": { "type": "object" } }
         }
       }
     }

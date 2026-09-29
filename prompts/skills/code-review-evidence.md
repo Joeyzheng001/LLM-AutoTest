@@ -1,8 +1,9 @@
 ---
-version: 3.1
+version: 3.2
 spec: K-REV-01
 owner: QA
 changelog:
+  - 3.2 | 2026-09-27 | scan_coverage 新增截断判据（接口证据/调用链/完整性门禁）：complete=false 的四类成因逐项说明
   - 3.1 | 2026-09-22 | 普通业务声明的接口实现片段进入 EVD 候选池
   - 3.0 | 2026-09-22 | 声明级证据矩阵、引用门禁和扫描覆盖边界
   - 2.0 | 2026-09-17 | 服务端行为证据审查
@@ -19,7 +20,7 @@ sampling:
 - 每条输入 claim 有 `claim_id`、父需求 ID、声明、可选验收条件和来源引用。
 - 接口目录只用于定位候选入口；`interface_id` 不是实现证据。
 - `code_evidence` 是系统从允许范围中提取、脱敏并编号的接口实现及服务端行为/配置片段。每项有唯一 `evidence_id`、路径、行范围和类别；接口实现片段只作为当前需求相关的代码入口，不等于完整调用链。
-- `scan_coverage.complete=false`、截断范围或仓库读取错误意味着“未发现”不能解释成“不存在”。
+- `scan_coverage.complete=false`、截断范围或仓库读取错误意味着“未发现”不能解释成“不存在”。`complete=false` 的成因至少四类，都要看：`review_evidence_limited`（证据池打满）、`interface_evidence_truncated`（接口证据按上限截断，见 `interface_evidence_limit`/`interfaces_total`）、`call_chain_truncated`（调用链按上限截断）、`scan_integrity_complete=false`（接口还原阶段发现文件数与解析数不守恒，见 `scan_integrity_reasons`）。仅当这些全为 false/true（即全部完整）时才可把“没查到”当作“不存在”。
 - 一批只审输入中的 claims。不得引用未传入本批的 claim、interface 或 evidence ID。
 
 ## 工作步骤

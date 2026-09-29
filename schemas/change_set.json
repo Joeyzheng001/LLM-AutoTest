@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/change_set",
+  "title": "变动接口与变动代码（模块 3 REV，行级精确；#52）",
+  "type": "object",
+  "description": "机器可读回答「本次到底改了哪些接口、哪些代码」：候选按 code_spans ∩ changed_lines 行级求交，命中等级 body > callee > file > related_file > none。所有行号都是 target_sha 版本，与候选源码同版本（禁止跨版本映射）",
+  "required": ["schema_version", "job_id", "repositories", "removed_files", "counts", "interfaces", "scan_integrity"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "job_id": { "type": "string", "pattern": "^job-" },
+    "repositories": {
+      "type": "array",
+      "description": "逐仓库的变更范围与版本锚点",
+      "items": {
+        "type": "object",
+        "required": ["name", "changed_files", "changed_file_count", "changed_lines"],
+        "properties": {
+          "name": { "type": "string" },
+          "base_ref": { "type": ["string", "null"] },
+          "target_ref": { "type": ["string", "null"] },
+          "base_sha": { "type": ["string", "null"] },
+          "target_sha": { "type": ["string", "null"], "description": "候选源码解析所依据的提交（行号口径的唯一锚点）" },
+          "source_path": {
+            "type": ["string", "null"],
+            "description": "候选实际解析的不可变快照路径，供后续源码证据读取"
+          },
+          "changed_files": {
+            "type": "object",
+            "properties": {
+              "added": { "type": "array", "items": { "type": "string" } },
+              "modified": { "type": "array", "items": { "type": "string" } },
+              "removed": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "changed_file_count": { "type": "integer" },
+          "changed_lines": { "type": "object" }
+        }
+      }
+    },
+    "removed_files": {
+      "type": "array",
+      "description": "本次变更删除的源码文件；目标版本没有源码，不能伪造接口签名，需单列供人工核查",
+      "items": {
+        "type": "object",
+        "required": ["repo", "file"],
+        "properties": {
+          "repo": { "type": "string" },
+          "file": { "type": "string" }
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "description": "可核对的计数：「不漏」不是口号，数字要闭合",
+      "required": ["candidates", "body", "callee", "file", "related_file", "none", "unresolved"],
+      "properties": {
+        "candidates": { "type": "integer" },
+        "body": { "type": "integer", "description": "本体方法被改的接口数" },
+        "callee": { "type": "integer", "description": "调用链上的代码被改的接口数" },
+        "file": { "type": "integer" },
+        "related_file": { "type": "integer" },
+        "none": { "type": "integer" },
+        "unknown": { "type": "integer", "description": "未提供 changed_lines 时的候选数（等级不可判定）" },
+        "conservative_expansion": { "type": "integer", "description": "因所在仓库解析不完整而保守纳入的候选数" },
+        "unresolved": { "type": "integer", "description": "无法静态定位的调用点条数" },
+        "files_failed": { "type": "integer" }
+      }
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "repo", "file", "signature", "level", "hits", "changed_snippets"],
+        "properties": {
+          "candidate_id": { "type": "string", "pattern": "^CAND-\\d{3}$" },
+          "repo": { "type": "string" },
+          "file": { "type": "string" },
+          "signature": { "type": "string" },
+          "level": {
+            "type": "string",
+            "enum": ["body", "callee", "file", "related_file", "none", "unknown"]
+          },
+          "hits": {
+            "type": "array",
+            "description": "命中的代码跨度与重叠的变更行区间",
+            "items": { "type": "object" }
+          },
+          "sources": {
+            "type": "array",
+            "description": "level=file/related_file 时的命中来源文件",
+            "items": { "type": "object" }
+          },
+          "changed_snippets": {
+            "type": "array",
+            "description": "实际变动代码片段（target 版本）",
+            "items": {
+              "type": "object",
+              "required": ["file", "start_line", "end_line", "text"],
+              "properties": {
+                "file": { "type": "string" },
+                "start_line": { "type": "integer" },
+                "end_line": { "type": "integer" },
+                "text": { "type": "string" }
+              }
+            }
+          },
+          "code_spans": { "type": "array", "items": { "type": "object" } },
+          "conservative_expansion": {
+            "type": "object",
+            "description": "保守纳入的原因（只有保守纳入的候选才有）",
+            "properties": { "reason": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "description": "无法静态定位的调用点（接收者非注入依赖/类型不在仓库内/同名多实现/方法继承自父类）。如实标注而非静默跳过",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "type", "method", "reason"],
+        "properties": {
+          "candidate_id": { "type": "string" },
+          "type": { "type": "string" },
+          "method": { "type": "string" },
+          "file": { "type": "string" },
+          "role": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "scan_integrity": {
+      "type": "object",
+      "description": "完整性闭环门禁结论（complete=false 时下游不得输出「未发现接口」）",
+      "required": ["complete", "reasons"],
+      "properties": {
+        "complete": { "type": "boolean" },
+        "reasons": { "type": "array", "items": { "type": "string" } },
+        "snapshot_repos": { "type": "array", "items": { "type": "string" } },
+        "degraded_repos": { "type": "array", "items": { "type": "string" } },
+        "error_repos": { "type": "array", "items": { "type": "string" } },
+        "unsupported_protocols": { "type": "array", "items": { "type": "string" } },
+        "files_discovered": { "type": "integer" },
+        "files_parsed": { "type": "integer" },
+        "files_failed": { "type": "integer" },
+        "candidates": { "type": "integer" }
+      }
+    }
+  }
+}

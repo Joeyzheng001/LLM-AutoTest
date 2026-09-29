@@ -248,6 +248,15 @@ def _git(root: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)  # noqa: S603, S607
 
 
+def _git_output(root: Path, *args: str) -> str:
+    return subprocess.run(  # noqa: S603
+        ["git", "-C", str(root), *args],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 def test_python_scan_baseline_diff(tmp_path: Path) -> None:
     """C-09 基线 diff：merge-base 三点 diff，added/modified 如实分列。"""
     root = tmp_path / "git-repo"
@@ -281,3 +290,39 @@ def test_python_scan_baseline_diff(tmp_path: Path) -> None:
     assert entry["changed_files"]["added"] == ["extra.py"]
     assert entry["changed_files"]["modified"] == ["views.py"]
     assert entry["changed_files"]["removed"] == []
+
+
+def test_python_scan_commit_target_uses_snapshot_and_reports_changed_files(tmp_path: Path) -> None:
+    """提交号模式必须同时锁定目标源码版本并产出变更文件清单。"""
+    root = tmp_path / "commit-repo"
+    root.mkdir()
+    (root / "views.py").write_text(
+        "from fastapi import FastAPI\n\napp = FastAPI()\n\n"
+        '@app.get("/old")\ndef old():\n    return {}\n',
+        encoding="utf-8",
+    )
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "baseline")
+    (root / "views.py").write_text(
+        "from fastapi import FastAPI\n\napp = FastAPI()\n\n"
+        '@app.get("/new")\ndef new():\n    return {}\n',
+        encoding="utf-8",
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "feature")
+    target = _git_output(root, "rev-parse", "HEAD")
+
+    result = scan_repository(_repo(root, commits=(target,), target_sha=target))
+
+    assert result.inventory_entry["status"] == "ok"
+    assert result.inventory_entry["source_path"] != str(root)
+    assert result.inventory_entry["files"][0]["path"] == "views.py"
+    assert result.inventory_entry["changed_files"] == {
+        "added": [],
+        "modified": ["views.py"],
+        "removed": [],
+    }
+    assert [candidate["signature"] for candidate in result.candidates] == ["GET /new"]

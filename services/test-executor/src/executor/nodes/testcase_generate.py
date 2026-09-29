@@ -46,6 +46,10 @@ from common.llm_batch import chunk_json_items
 from common.llm_repair import complete_with_json_repair
 from common.llm_text import strip_code_fence
 from common.prompts_loader import PromptSpec, load_prompt
+from common.response_assertions import (
+    legacy_response_assertions,
+    normalize_response_assertions,
+)
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
@@ -181,8 +185,8 @@ async def run_testcase_generate(
         # 违规明细按「批次 × 轮次」留痕：两轮都收，既能看出模型第二轮改没改好，
         # 也能在告警复现不出来时区分「模型输出漂移」与「代码路径不同」。
         param_violation_rounds: list[dict[str, Any]] = []
-        # F-GEN-04 溯源覆盖缺口（接口, 未覆盖测试点数）：补产后仍缺则记告警，
-        # 不中断批次——兜底用例不携带 testpoint_id，硬失败会让兜底路径无法收敛。
+        # Claim 测试点溯源缺口（接口, 未覆盖测试点数）：无论模型是否首轮输出
+        # testpoint_id，都尝试一次定向补产；仍缺则告警，不把模型漏溯源伪装成完整覆盖。
         coverage_gaps: list[tuple[str, int]] = []
         # 用例输出随接口数 × 三类场景增长。最多三个接口一批，避免模型只回答
         # 批次首项而把其余接口静默漏掉。
@@ -281,27 +285,21 @@ async def run_testcase_generate(
                 batch_valid = _merge_case_entries(
                     batch_valid, _synthesize_fallback_cases(missing)
                 )
-            # F-GEN-04 溯源覆盖：REQ 测试点未被任何用例引用时做一次定向补产。
-            # 仅在本批确有 testpoint_id 时启用：模型完全未采用该字段（旧模型/未支持）
-            # 时再调用一次同样产不出编号，只会白付一轮推理成本；且「完全未采用」属
-            # 功能未启用，不该伪装成覆盖缺口刷告警。补产只做一次，仍缺则记告警不中断
-            # ——程序兜底用例不携带 testpoint_id，做成硬门禁会让兜底路径无法收敛。
-            if any(str(case.get("testpoint_id", "")) for case in batch_valid):
+            # F-GEN-04/P0 溯源覆盖：即便模型首轮完全漏掉 testpoint_id，也定向补产一次；
+            # 兜底用例无法伪造 Claim 归属，仍有缺口时明确告警，不宣称完整覆盖。
+            uncovered = _uncovered_req_testpoints(batch_valid, testpoints, batch)
+            if uncovered:
+                batch_valid = await _recover_uncovered_testpoints(
+                    llm, prompt, user_content, batch, batch_valid, uncovered
+                )
                 uncovered = _uncovered_req_testpoints(batch_valid, testpoints, batch)
-                if uncovered:
-                    batch_valid = await _recover_uncovered_testpoints(
-                        llm, prompt, user_content, batch, batch_valid, uncovered
+            if uncovered:
+                coverage_gaps.append(
+                    (
+                        ", ".join(sorted({str(b.get("id", "")) for b in batch})),
+                        len(uncovered),
                     )
-                    uncovered = _uncovered_req_testpoints(
-                        batch_valid, testpoints, batch
-                    )
-                if uncovered:
-                    coverage_gaps.append(
-                        (
-                            ", ".join(sorted({str(b.get("id", "")) for b in batch})),
-                            len(uncovered),
-                        )
-                    )
+                )
             valid.extend(batch_valid)
             checkpoint_batches = [
                 item for item in checkpoint_batches if int(item.get("index", 0)) != index
@@ -323,10 +321,24 @@ async def run_testcase_generate(
             )
 
         warnings: list[str] = []
+        unlinked_risk_points = [
+            point
+            for point in testpoints
+            if point.get("source") == "RISK" and not point.get("interface_id")
+        ]
+        if unlinked_risk_points:
+            claim_refs = [
+                str(point.get("claim_id") or point.get("requirement_id") or "")
+                for point in unlinked_risk_points
+            ]
+            warnings.append(
+                f"P0-trace: {len(unlinked_risk_points)} 个需求/Claim 测试点没有接口映射"
+                f"（{', '.join(claim_refs[:12])}）；需通过 E2E 或人工确认，不能视为 API 已覆盖。"
+            )
         # F-GEN-04 溯源覆盖缺口：补产后仍未引用的 REQ 测试点如实告警（分母不缩减）。
         for interface_ids, count in coverage_gaps:
             warnings.append(
-                f"F-GEN-04: 接口 {interface_ids} 有 {count} 个 REQ 测试点未被任何用例"
+                f"P0-trace/F-GEN-04: 接口 {interface_ids} 有 {count} 个 REQ/Claim 测试点未被任何用例"
                 "引用（已定向补产一次仍未覆盖，需人工确认该测试点设计）"
             )
         # X-GEN-02：二次仍违规的接口——整接口用例放弃（非部分保留）。
@@ -356,6 +368,20 @@ async def run_testcase_generate(
         cases, any_unloadable = _finalize_cases(
             valid, state.job_id, store, interfaces, testpoints
         )
+        points_by_id = {str(point.get("id", "")): point for point in testpoints}
+        status_only_claim_cases = [
+            case
+            for case in cases
+            if case.get("category") == "normal"
+            and points_by_id.get(str(case.get("testpoint_id", "")), {}).get("source") == "REQ"
+            and not case.get("assertions")
+            and not legacy_response_assertions(str(case.get("expected", "")))
+        ]
+        if status_only_claim_cases:
+            warnings.append(
+                f"P0-assertion: {len(status_only_claim_cases)} 条需求主流程接口用例没有可执行的响应字段断言，"
+                "当前只能判定 HTTP 状态；需补充字段级 assertions 后才能作为业务结果通过。"
+            )
         e2e_cases: list[dict[str, Any]] = []
         if e2e and bool(e2e.get("generate_cases")):
             # E2E 是可选产物：接口用例已在上方定型，探测或生成失败一律降级为告警，
@@ -425,6 +451,8 @@ def _generation_fingerprint(
 ) -> str:
     """为批次检查点生成输入指纹，防止需求或接口变更时复用旧用例。"""
     payload = {
+        # 变更测试点溯源契约时使旧未完成检查点失效，避免续跑复用无 Claim 关联的用例。
+        "contract_version": "claim-trace-v2",
         "requirements": requirements,
         "interfaces": interfaces,
         "mappings": mappings,
@@ -578,10 +606,13 @@ def _load_repo_roots(store: ArtifactStore, job_id: str) -> dict[str, Path]:
 def _implementation_excerpt(
     interface: dict[str, Any], repo_roots: dict[str, Path]
 ) -> dict[str, Any] | None:
-    """按 code_location 读接口实现片段（方法体），带行数/字符上限与脱敏。
+    """接口的「代码依据」：优先**本次实际改动的代码**，退化到整个方法体（#52）。
 
     越出仓库根、文件不存在、编码不可解、行号越界都返回 None——宁可不注入，也不猜实现。
     """
+    changed = _changed_excerpt(interface)
+    if changed is not None:
+        return changed
     location = interface.get("code_location") or {}
     repo = str(location.get("repo", ""))
     relative = str(location.get("file", ""))
@@ -619,11 +650,61 @@ def _implementation_excerpt(
     if not excerpt.strip():
         return None
     return {
+        "source": "method_body",
         "file": relative,
         "start_line": start,
         "end_line": end,
         "excerpt": excerpt,
         "truncated": truncated,
+    }
+
+
+def _changed_excerpt(interface: dict[str, Any]) -> dict[str, Any] | None:
+    """本次**实际改动**的代码片段（#52）：来自接口还原阶段的 target 版本只读快照。
+
+    为什么不改写工作区文件取窗口：工作区与 target 提交可能不是同一版本，按行号取窗口会
+    取错行；片段本身已经是权威内容（行号与候选同版本），且已在 java-parser 侧做过
+    行数/字符上限。信息密度也更高——直接说明"这次改了哪几行语义"。
+    """
+    evidence = interface.get("change_evidence")
+    if not isinstance(evidence, dict):
+        return None
+    snippets = evidence.get("changed_snippets")
+    if not isinstance(snippets, list):
+        return None
+    parts: list[str] = []
+    files: list[str] = []
+    first_line = 0
+    last_line = 0
+    total = 0
+    for item in snippets:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "")
+        if not text.strip():
+            continue
+        header = f"// {item.get('file')}:{item.get('start_line')}-{item.get('end_line')}"
+        block = f"{header}\n{text.rstrip()}"
+        if total + len(block) > _MAX_IMPLEMENTATION_CHARS:
+            break
+        parts.append(block)
+        total += len(block)
+        files.append(str(item.get("file", "")))
+        if not first_line:
+            first_line = int(item.get("start_line") or 0)
+        last_line = int(item.get("end_line") or 0)
+    if not parts:
+        return None
+    excerpt = _SECRET_VALUE_RE.sub(r"\1\2<redacted>", "\n\n".join(parts))
+    return {
+        "source": "changed_lines",
+        "level": str(evidence.get("level", "")),
+        "files": list(dict.fromkeys(files)),
+        "file": files[0],
+        "start_line": first_line,
+        "end_line": last_line,
+        "excerpt": excerpt,
+        "truncated": bool(evidence.get("truncated")),
     }
 
 
@@ -643,15 +724,45 @@ def _build_batch_context(
     expected 必须落在实现逻辑上，不能只凭 signature 编。读不到就不带该字段。
     """
     interface_ids = {str(item.get("id", "")) for item in interfaces}
-    batch_mappings = [
-        {
-            "requirement_id": mapping.get("requirement_id"),
-            "interface_id": mapping.get("interface_id"),
-            "status": mapping.get("status"),
-        }
-        for mapping in mappings
-        if str(mapping.get("interface_id", "")) in interface_ids
-    ]
+    batch_mappings: list[dict[str, Any]] = []
+    for mapping in mappings:
+        raw_assessments = [
+            assessment
+            for assessment in (mapping.get("claim_assessments") or [])
+            if isinstance(assessment, dict)
+        ]
+        linked_ids = [str(value) for value in (mapping.get("interface_ids") or [])]
+        if not linked_ids and mapping.get("interface_id"):
+            linked_ids = [str(mapping["interface_id"])]
+        linked_ids.extend(
+            str(value)
+            for assessment in raw_assessments
+            for value in (assessment.get("interface_ids") or [])
+        )
+        linked_ids = list(dict.fromkeys(linked_ids))
+        selected_ids = [value for value in linked_ids if value in interface_ids]
+        if not selected_ids:
+            continue
+        assessments = [
+            {
+                **dict(assessment),
+                "interface_ids": [
+                    str(value)
+                    for value in (assessment.get("interface_ids") or [])
+                    if str(value) in interface_ids
+                ],
+            }
+            for assessment in raw_assessments
+        ]
+        batch_mappings.append(
+            {
+                "requirement_id": mapping.get("requirement_id"),
+                "interface_id": selected_ids[0],
+                "interface_ids": selected_ids,
+                "status": mapping.get("status"),
+                "claim_assessments": assessments,
+            }
+        )
     requirement_ids = {str(mapping.get("requirement_id", "")) for mapping in batch_mappings}
     interfaces_payload: list[dict[str, Any]] = []
     for interface in interfaces:
@@ -923,12 +1034,15 @@ async def _recover_uncovered_testpoints(
         f"{user_content}\n\n"
         "这是测试点覆盖补充请求。下列 REQ 测试点尚无对应用例，请每个测试点各产出"
         "至少一条用例，并在用例中回填其 testpoint_id；同时仍需满足每个接口"
-        "normal/boundary/exception 三类各 ≥1。只为下面列出的测试点与接口输出，"
+        "normal/boundary/exception 三类各 ≥1。若源码证据支持，请给 normal 用例提供"
+        "机器可执行的响应字段断言 assertions；不要根据接口名臆造返回字段或固定值。"
+        "只为下面列出的测试点与接口输出，"
         "禁止输出其它接口：\n"
         f"未覆盖测试点：{json.dumps(uncovered, ensure_ascii=False)}\n"
         '输出格式：{"cases":[{"interface_id":"...","requirement_id":"...",'
         '"testpoint_id":"...","category":"normal|boundary|exception","title":"...",'
-        '"params":{},"expected":"status=..."}]}。'
+        '"params":{},"expected":"status=...","assertions":[{"path":"data.id",'
+        '"op":"exists"}]}]}。'
     )
     try:
         result = await llm.complete(NODE_NAME, prompt, targeted_content)
@@ -1179,12 +1293,7 @@ def _derive_testpoints(
     interfaces: list[dict[str, Any]],
     mappings: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """从需求映射派生可追溯测试点，避免模型只围绕 HTTP 参数拼接口用例。
-
-    每个已映射的需求-接口关系至少有一个主业务测试点；评审为 partial、missing
-    或 undetermined 时额外生成风险测试点。没有映射的需求也保留为需求级风险点，
-    供后续 E2E/人工测试设计使用，绝不伪造接口归属。
-    """
+    """按 Claim 而非 REQ 聚合粒度派生测试点，并保留每条声明的接口归属。"""
     interface_ids = {str(item.get("id", "")) for item in interfaces}
     requirement_by_id = {str(item.get("id", "")): item for item in requirements}
     points: list[dict[str, Any]] = []
@@ -1196,11 +1305,24 @@ def _derive_testpoints(
         scenario: str,
         hints: list[str],
         source_ref: str,
+        claim: dict[str, Any] | None = None,
     ) -> None:
+        claim_id = str((claim or {}).get("claim_id", "")).strip()
+        raw_criteria = (claim or {}).get("acceptance_criteria", [])
+        if not isinstance(raw_criteria, list):
+            raw_criteria = [raw_criteria]
+        acceptance_criteria = [str(value) for value in raw_criteria if str(value).strip()]
         points.append(
             {
                 "id": f"TP-{len(points) + 1:03d}",
                 "requirement_id": requirement_id,
+                **({"claim_id": claim_id} if claim_id else {}),
+                **(
+                    {"claim_statement": str(claim.get("statement", ""))}
+                    if claim and claim.get("statement")
+                    else {}
+                ),
+                **({"acceptance_criteria": acceptance_criteria} if acceptance_criteria else {}),
                 **({"interface_id": interface_id} if interface_id else {}),
                 "source": source,
                 "source_ref": source_ref,
@@ -1209,11 +1331,12 @@ def _derive_testpoints(
             }
         )
 
-    mapped_requirements: set[str] = set()
+    requirements_with_mapping: set[str] = set()
     for mapping in mappings:
         requirement_id = str(mapping.get("requirement_id", ""))
         if requirement_id not in requirement_by_id:
             continue
+        requirements_with_mapping.add(requirement_id)
         # 一个需求可映射多个接口：逐接口派生测试点，避免只覆盖首个接口（C-12）。
         mapped_ids = [str(value) for value in (mapping.get("interface_ids") or [])]
         if not mapped_ids:
@@ -1221,46 +1344,107 @@ def _derive_testpoints(
             if legacy:
                 mapped_ids = [legacy]
         valid_ids = [value for value in mapped_ids if value in interface_ids]
-        if not valid_ids:
-            continue
-        mapped_requirements.add(requirement_id)
         requirement = requirement_by_id[requirement_id]
         title = str(requirement.get("title", requirement_id))
-        description = str(requirement.get("description", "")).strip()
-        status = str(mapping.get("status", ""))
-        for interface_id in valid_ids:
-            append_point(
-                requirement_id,
-                interface_id,
-                "REQ",
-                f"验证“{title}”主业务流程" + (f"：{description}" if description else ""),
-                ["正常主流程", "输入边界与空值", "异常/权限/业务拒绝"],
-                f"需求 {requirement_id} ↔ 接口 {interface_id}",
-            )
-        if status in {"partial", "missing", "undetermined"}:
-            for interface_id in valid_ids:
+        claims = requirement.get("claims")
+        if not isinstance(claims, list) or not claims:
+            claims = [
+                {
+                    "statement": str(requirement.get("description", "")).strip()
+                    or title
+                }
+            ]
+        assessment_by_claim = {
+            str(item.get("claim_id", "")): item
+            for item in mapping.get("claim_assessments", [])
+            if isinstance(item, dict) and item.get("claim_id")
+        }
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            claim_id = str(claim.get("claim_id", ""))
+            assessment = assessment_by_claim.get(claim_id, {})
+            claim_interface_ids = [
+                str(value)
+                for value in assessment.get("interface_ids", [])
+                if str(value) in interface_ids
+            ] or valid_ids
+            statement = str(claim.get("statement", "")).strip() or title
+            criteria = claim.get("acceptance_criteria", [])
+            if not isinstance(criteria, list):
+                criteria = [str(criteria)]
+            criteria = [str(value).strip() for value in criteria if str(value).strip()]
+            criteria_note = f"；验收条件：{'；'.join(criteria)}" if criteria else ""
+            status = str(assessment.get("status", mapping.get("status", "")))
+            if claim_interface_ids:
+                for interface_id in claim_interface_ids:
+                    append_point(
+                        requirement_id,
+                        interface_id,
+                        "REQ",
+                        f"验证需求声明“{statement}”{criteria_note}",
+                        ["按声明验证正常结果", *criteria[:3], "验证该接口对声明结果的响应"],
+                        f"声明 {claim_id or requirement_id} ↔ 接口 {interface_id}",
+                        claim,
+                    )
+                    if status in {"partial", "missing", "undetermined"}:
+                        append_point(
+                            requirement_id,
+                            interface_id,
+                            "RISK",
+                            f"复核声明“{statement}”在代码评审状态 {status} 下的行为",
+                            ["核对声明对应分支", "检查结果与验收条件一致", "确认异常或降级行为"],
+                            f"声明 {claim_id or requirement_id} 评审状态：{status}",
+                            claim,
+                        )
+            else:
                 append_point(
                     requirement_id,
-                    interface_id,
+                    None,
                     "RISK",
-                    f"确认“{title}”在实现状态为 {status} 时的遗漏、降级或不一致行为",
-                    ["关键业务路径", "异常提示与数据一致性", "配置/会话/权限等服务端行为"],
-                    f"代码评审映射状态：{status}",
+                    f"需求声明“{statement}”尚未关联接口，需由页面流程或人工确认{criteria_note}",
+                    ["端到端主路径", "用户可见反馈", "实现与声明的可追溯性"],
+                    f"声明 {claim_id or requirement_id} 无接口映射",
+                    claim,
                 )
     for requirement_id, requirement in requirement_by_id.items():
-        if requirement_id in mapped_requirements:
+        if requirement_id in requirements_with_mapping:
             continue
-        append_point(
-            requirement_id,
-            None,
-            "RISK",
-            (
-                f"需求“{requirement.get('title', requirement_id)}”尚未映射到接口，"
-                "需通过页面流程或人工确认实现证据"
-            ),
-            ["端到端主路径", "用户可见反馈", "实现与需求的可追溯性"],
-            f"需求 {requirement_id} 无接口映射",
-        )
+        claims = requirement.get("claims")
+        if isinstance(claims, list) and claims:
+            for claim in claims:
+                if not isinstance(claim, dict):
+                    continue
+                claim_id = str(claim.get("claim_id", ""))
+                statement = str(claim.get("statement", "")).strip() or str(
+                    requirement.get("title", requirement_id)
+                )
+                criteria = claim.get("acceptance_criteria", [])
+                if not isinstance(criteria, list):
+                    criteria = [str(criteria)]
+                criteria_note = (
+                    f"；验收条件：{'；'.join(str(value) for value in criteria if str(value).strip())}"
+                    if criteria
+                    else ""
+                )
+                append_point(
+                    requirement_id,
+                    None,
+                    "RISK",
+                    f"需求声明“{statement}”没有需求映射记录，需经页面流程或人工确认{criteria_note}",
+                    ["端到端主路径", "用户可见反馈", "实现与声明的可追溯性"],
+                    f"声明 {claim_id or requirement_id} 无需求映射记录",
+                    claim,
+                )
+        else:
+            append_point(
+                requirement_id,
+                None,
+                "RISK",
+                f"需求“{requirement.get('title', requirement_id)}”尚未映射到接口，需通过页面流程或人工确认实现证据",
+                ["端到端主路径", "用户可见反馈", "实现与需求的可追溯性"],
+                f"需求 {requirement_id} 无接口映射",
+            )
     return points
 
 
@@ -1284,6 +1468,17 @@ def _testpoint_context(
             {
                 "testpoint_id": str(point.get("id", "")),
                 "source": str(point.get("source", "")),
+                **({"claim_id": str(point["claim_id"])} if point.get("claim_id") else {}),
+                **(
+                    {"claim_statement": str(point["claim_statement"])}
+                    if point.get("claim_statement")
+                    else {}
+                ),
+                **(
+                    {"acceptance_criteria": list(point["acceptance_criteria"])}
+                    if point.get("acceptance_criteria")
+                    else {}
+                ),
                 "requirement": {
                     "id": str(requirement.get("id", point.get("requirement_id", ""))),
                     "title": str(requirement.get("title", "")),
@@ -1441,6 +1636,9 @@ async def _generate_e2e_cases(
     prompt = load_prompt(prompts_dir, "e2e_testcase_generate")
     allowed_selectors = {selector for route in surface["routes"] for selector in route["selectors"]}
     allowed_paths = {route["path"] for route in surface["routes"]}
+    point_by_id = {
+        str(point.get("id", "")): point for point in testpoints if point.get("id")
+    }
     content = json.dumps(
         {
             "surface": surface,
@@ -1456,19 +1654,28 @@ async def _generate_e2e_cases(
         "testcase_generate",
         prompt,
         content,
-        partial(_parse_e2e_cases, allowed_selectors=allowed_selectors, allowed_paths=allowed_paths),
+        partial(
+            _parse_e2e_cases,
+            allowed_selectors=allowed_selectors,
+            allowed_paths=allowed_paths,
+            allowed_testpoints=point_by_id,
+        ),
     )
     result: list[dict[str, Any]] = []
     for sequence, case in enumerate(raw_cases[:12], start=1):
+        point = point_by_id.get(str(case.get("testpoint_id", "")), {})
         entry = {
             "id": f"E2E-{sequence:03d}",
             "case_type": "e2e",
-            "requirement_id": str(case["requirement_id"]),
+            "requirement_id": str(point.get("requirement_id", case["requirement_id"])),
+            "testpoint_id": str(case.get("testpoint_id", "")),
             "title": str(case["title"]),
             "preconditions": [str(x) for x in case.get("preconditions", [])],
             "steps": case["steps"],
             "expected": str(case["expected"]),
         }
+        if point.get("claim_id"):
+            entry["claim_id"] = str(point["claim_id"])
         result.append(entry)
     warnings: list[str] = []
     if dropped:
@@ -1624,6 +1831,7 @@ def _parse_e2e_cases(
     text: str,
     allowed_selectors: set[str] | None = None,
     allowed_paths: set[str] | None = None,
+    allowed_testpoints: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """严格收敛 E2E 动作白名单，避免模型产生任意 JS 或危险浏览器操作。
 
@@ -1692,6 +1900,26 @@ def _parse_e2e_cases(
         if missing:
             dropped.append(f"第 {index} 条缺少{'/'.join(missing)}")
             continue
+        copied = dict(entry)
+        if allowed_testpoints is not None:
+            requirement_id = str(entry.get("requirement_id", ""))
+            point_id = str(entry.get("testpoint_id", ""))
+            point = allowed_testpoints.get(point_id)
+            if point is None and not point_id:
+                matching = [
+                    item
+                    for item in allowed_testpoints.values()
+                    if str(item.get("requirement_id", "")) == requirement_id
+                ]
+                if len(matching) == 1:
+                    point = matching[0]
+                    point_id = str(point.get("id", ""))
+            if point is None or str(point.get("requirement_id", "")) != requirement_id:
+                dropped.append(f"第 {index} 条缺少有效的需求测试点溯源")
+                continue
+            copied["testpoint_id"] = point_id
+            if point.get("claim_id"):
+                copied["claim_id"] = str(point["claim_id"])
         steps = entry.get("steps")
         if not isinstance(steps, list) or not steps:
             dropped.append(f"第 {index} 条缺少步骤")
@@ -1735,7 +1963,6 @@ def _parse_e2e_cases(
             prefix = f"第 {index} 条（{title}）" if title else f"第 {index} 条"
             dropped.append(f"{prefix}：{rejection}")
             continue
-        copied = dict(entry)
         copied["steps"] = normalized_steps
         cases.append(copied)
     return cases, dropped
@@ -1815,6 +2042,15 @@ def _parse_llm_cases(text: str, interfaces: list[dict[str, Any]]) -> list[dict[s
             entry["testpoint_id"] = testpoint_id
         else:
             entry.pop("testpoint_id", None)
+        if "assertions" in raw:
+            try:
+                entry["assertions"] = normalize_response_assertions(raw["assertions"])
+            except ValueError as exc:
+                raise PipelineError(
+                    code=X_LLM_02,
+                    message=f"LLM 用例响应断言格式不合法：{exc}",
+                    node_id=NODE_NAME,
+                ) from exc
         # 超长字符串记号展开：把「数 1025 个字符」从模型侧移回程序侧（见 _LONG_MARKER_RE 注释）。
         # 放在参数一致性校验之前，确保后续校验/渲染/执行拿到的是真实字面量而非记号。
         if "params" in entry:
@@ -1982,7 +2218,12 @@ def _finalize_cases(
         for interface in interfaces
         if any(str(p.get("type")) == "unknown" for p in interface.get("params") or [])
     }
-    known_points = _valid_testpoint_ids(testpoints or [])
+    testpoint_by_id = {
+        str(item.get("id", "")): item
+        for item in (testpoints or [])
+        if item.get("id")
+    }
+    known_points = set(testpoint_by_id)
     finalized: list[dict[str, Any]] = []
     any_unloadable = False
     for seq, case in enumerate(cases, start=1):
@@ -1994,13 +2235,23 @@ def _finalize_cases(
             "title": str(case.get("title", f"{case['interface_id']} {case['category']} 用例")),
             "expected": str(case.get("expected", "")),
         }
-        if case.get("requirement_id"):
-            entry["requirement_id"] = str(case["requirement_id"])
         # F-GEN-04 溯源扩展：只保留合法测试点编号。程序兜底用例天然没有该字段（不伪造）；
         # 模型虚构或跨批引用（不在本批 testpoints 内）在此剥离，不使整批失败。
         testpoint_id = str(case.get("testpoint_id", "") or "")
         if testpoint_id and testpoint_id in known_points:
             entry["testpoint_id"] = testpoint_id
+            point = testpoint_by_id[testpoint_id]
+            if point.get("requirement_id"):
+                entry["requirement_id"] = str(point["requirement_id"])
+            if point.get("claim_id"):
+                entry["claim_id"] = str(point["claim_id"])
+        elif case.get("requirement_id"):
+            entry["requirement_id"] = str(case["requirement_id"])
+        response_assertions = normalize_response_assertions(case.get("assertions"))
+        if not response_assertions:
+            response_assertions = legacy_response_assertions(entry["expected"])
+        if response_assertions:
+            entry["assertions"] = response_assertions
         if isinstance(case.get("params"), dict):
             entry["params"] = case["params"]
         if str(case.get("auth_mode", "")) in {"inherit", "missing", "invalid"}:

@@ -90,6 +90,7 @@ class FakeRunner:
             job_id, "interface_candidates.json", self._payload("interface_candidates", job_id)
         )
         self.orch_store.write(job_id, "interfaces.json", self._payload("interfaces", job_id))
+        self.orch_store.write(job_id, "change_set.json", self._payload("change_set", job_id))
         self.orch_store.write(
             job_id, "review_mapping.json", self._payload("review_mapping", job_id)
         )
@@ -113,6 +114,20 @@ class FakeRunner:
         code_location = {"repo": "repo-a", "file": "A.java", "start_line": 1, "end_line": 2}
         if kind == "requirement_items":
             base["items"] = [{"id": "REQ-001", "title": "查询用户", "description": "按 ID 查询"}]
+        elif kind == "change_set":
+            base["repositories"] = []
+            base["removed_files"] = []
+            base["counts"] = {
+                "candidates": 0,
+                "body": 0,
+                "callee": 0,
+                "file": 0,
+                "related_file": 0,
+                "none": 0,
+                "unresolved": 0,
+            }
+            base["interfaces"] = []
+            base["scan_integrity"] = {"complete": True, "reasons": []}
         elif kind == "code_inventory":
             base["repositories"] = [
                 {

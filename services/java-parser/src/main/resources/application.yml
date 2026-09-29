@@ -7,3 +7,5 @@ parser:
   scan-concurrency: 4
   # 单仓库文件数截断上限（超出记 truncated，X-CODE-03 注明截断范围）
   max-files-per-repo: 20000
+  # 单条 git 命令的墙钟上限（秒）。大仓库冷启动首次 diff 可能触顶，按需调大
+  git-timeout-seconds: 30

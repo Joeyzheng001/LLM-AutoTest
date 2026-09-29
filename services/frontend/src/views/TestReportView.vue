@@ -2,9 +2,9 @@
 // 测试报告页（07 §3.4）：KPI（execution.json summary 后端汇总）+ 失败二态明细（R-EXEC-03）+
 // 降级说明（degraded_protocols，F-RPT-03）+ 报告 Markdown 原文（后端唯一事实源）。
 // 红线：KPI 数值全部来自后端 summary，前端不计算通过率；报告原文按 Markdown 纯文本呈现（不用 v-html）。
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
-import { getExecution, getReportMd } from '../api/client'
+import { getEvidenceBlob, getExecution, getReportMd } from '../api/client'
 import type { ExecResult, ExecSummary } from '../api/types'
 
 const _jobId = ref('')
@@ -16,6 +16,7 @@ const summary = ref<ExecSummary | null>(null)
 const results = ref<ExecResult[]>([])
 const degradedProtocols = ref<Array<{ protocol: string; mode: string; reason?: string }>>([])
 const reportMd = ref('')
+const evidenceUrls = ref<Record<string, string>>({})
 const loading = ref(false)
 const error = ref('')
 
@@ -28,6 +29,9 @@ const environmentFailures = computed(() =>
 )
 const skippedResults = computed(() =>
   visibleResults.value.filter((result) => result.skipped_reason != null),
+)
+const statusOnlyResults = computed(() =>
+  visibleResults.value.filter((result) => result.assertion_scope === 'status_only'),
 )
 const reportType = computed<'api' | 'e2e' | null>(() => {
   if (props.viewKey === 'e2e-execution') return 'e2e'
@@ -56,11 +60,26 @@ async function load(): Promise<void> {
   if (!_jobId.value) return
   loading.value = true
   error.value = ''
+  for (const url of Object.values(evidenceUrls.value)) URL.revokeObjectURL(url)
+  evidenceUrls.value = {}
   try {
     const execution = await getExecution(_jobId.value)
     summary.value = execution.summary
     results.value = execution.results
     degradedProtocols.value = execution.degraded_protocols ?? []
+    const evidenceEntries = await Promise.all(
+      execution.results
+        .filter((result) => result.evidence?.screenshot_ref)
+        .map(async (result) => {
+          try {
+            const blob = await getEvidenceBlob(_jobId.value, result.evidence!.screenshot_ref!)
+            return [result.case_id, URL.createObjectURL(blob)] as const
+          } catch {
+            return null
+          }
+        }),
+    )
+    evidenceUrls.value = Object.fromEntries(evidenceEntries.filter((entry) => entry !== null))
     reportMd.value = await getReportMd(_jobId.value)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '执行产物加载失败'
@@ -71,6 +90,14 @@ async function load(): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+onBeforeUnmount(() => {
+  for (const url of Object.values(evidenceUrls.value)) URL.revokeObjectURL(url)
+})
+
+function traceText(result: ExecResult): string {
+  return [result.requirement_id, result.claim_id, result.testpoint_id].filter(Boolean).join(' · ') || '无需求溯源'
 }
 
 // C-16：总览页节点卡跳转（immediate 同步赋值早于 watch(_jobId) 注册，须显式触发 load；
@@ -141,6 +168,9 @@ watch(_jobId, () => void load())
       <div v-if="displaySummary?.skipped" class="hint hint-notice">
         {{ displaySummary.skipped }} 条用例跳过执行（脚本不可加载或前置缺失，如实分列）
       </div>
+      <div v-if="statusOnlyResults.length" class="hint hint-warning">
+        {{ statusOnlyResults.length }} 条接口用例未配置业务响应断言；成功执行时只能判定 HTTP 状态，不能据此认定业务功能通过。
+      </div>
 
       <div v-if="e2eResults.length" class="card e2e-result-card">
         <header class="card-title">前端 E2E 执行结果</header>
@@ -150,6 +180,7 @@ watch(_jobId, () => void load())
               <th scope="col">用例</th>
               <th scope="col">结果</th>
               <th scope="col">耗时</th>
+              <th scope="col">需求溯源/截图</th>
               <th scope="col">说明</th>
             </tr>
           </thead>
@@ -168,6 +199,19 @@ watch(_jobId, () => void load())
                 }}</span>
               </td>
               <td class="mono">{{ result.duration_ms ?? '—' }} ms</td>
+              <td class="trace-cell">
+                <span>{{ traceText(result) }}</span>
+                <a
+                  v-if="evidenceUrls[result.case_id]"
+                  class="evidence-link"
+                  :href="evidenceUrls[result.case_id]"
+                  target="_blank"
+                  rel="noopener"
+                >查看执行截图</a>
+                <span v-else-if="result.evidence?.capture_error" class="state-error">
+                  截图留存失败
+                </span>
+              </td>
               <td class="detail-cell">{{ result.failure_reason ?? result.expected ?? '—' }}</td>
             </tr>
           </tbody>
@@ -181,6 +225,7 @@ watch(_jobId, () => void load())
           <thead>
             <tr>
               <th scope="col">用例</th>
+              <th scope="col">需求溯源</th>
               <th scope="col">类型</th>
               <th scope="col">接口</th>
               <th scope="col">预期</th>
@@ -194,6 +239,7 @@ watch(_jobId, () => void load())
               <td>
                 <span class="mono">{{ result.case_id }}</span>
               </td>
+              <td class="trace-cell">{{ traceText(result) }}</td>
               <td>
                 <span class="tag" :class="result.case_type === 'e2e' ? 'tag-e2e' : ''">{{
                   result.case_type === 'e2e' ? '前端 E2E' : '接口'
@@ -208,6 +254,11 @@ watch(_jobId, () => void load())
                 <pre v-if="result.actual_body !== undefined" class="actual-body">{{
                   JSON.stringify(result.actual_body, null, 2)
                 }}</pre>
+                <div v-if="result.assertion_results?.length" class="assertion-results">
+                  <span v-for="item in result.assertion_results" :key="item.path + item.op">
+                    {{ item.path }} · {{ item.op }} · {{ item.passed ? '通过' : '失败' }}
+                  </span>
+                </div>
               </td>
               <td>{{ result.failure_reason ?? '—' }}</td>
               <td>{{ result.timeout ? '是' : '否' }}</td>
@@ -224,6 +275,7 @@ watch(_jobId, () => void load())
           <thead>
             <tr>
               <th scope="col">用例</th>
+              <th scope="col">需求溯源</th>
               <th scope="col">类型</th>
               <th scope="col">接口</th>
               <th scope="col">预期</th>
@@ -237,6 +289,7 @@ watch(_jobId, () => void load())
               <td>
                 <span class="mono">{{ result.case_id }}</span>
               </td>
+              <td class="trace-cell">{{ traceText(result) }}</td>
               <td>
                 <span class="tag" :class="result.case_type === 'e2e' ? 'tag-e2e' : ''">{{
                   result.case_type === 'e2e' ? '前端 E2E' : '接口'
@@ -481,6 +534,27 @@ watch(_jobId, () => void load())
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.trace-cell {
+  min-width: 170px;
+  max-width: 260px;
+  overflow-wrap: anywhere;
+}
+
+.evidence-link {
+  display: inline-block;
+  margin-top: var(--space-1);
+  color: var(--accent-strong);
+}
+
+.assertion-results {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+
 .actual-body {
   margin: var(--space-1) 0 0;
   max-width: 360px;

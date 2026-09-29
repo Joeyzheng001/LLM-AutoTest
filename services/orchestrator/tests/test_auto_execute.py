@@ -27,7 +27,7 @@ from executor.nodes.auto_execute import (
     resolved_auth_mode,
 )
 
-from helpers import requirement_review_payload
+from helpers import change_set_payload, requirement_review_payload
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 _JOB = "job-3f2a1b8c-0000-4000-8000-000000000001"
@@ -209,6 +209,7 @@ def env(tmp_path: Path) -> tuple[Engine, ArtifactStore, ArtifactStore]:
     )
     engine.mark_completed(state, "req_parse")
     engine.mark_completed(state, "code_scan")
+    orch_store.write(_JOB, "change_set.json", change_set_payload(_JOB))
     engine.mark_completed(state, "interface_reconstruct")
     engine.mark_completed(state, "code_review")
     engine.mark_completed(state, "testcase_generate")

@@ -363,6 +363,36 @@ components:
         snippet:
           type: string
           description: 接口定义源码片段（供 LLM 语义解析的上下文）
+        method_body:
+          type: string
+        method_body_truncated:
+          type: boolean
+        method_body_char_count:
+          type: integer
+        method_body_context:
+          type: array
+          items:
+            type: object
+            required: [start_line, end_line, text]
+            properties:
+              start_line: { type: integer }
+              end_line: { type: integer }
+              text: { type: string }
+        parameter_evidence:
+          type: array
+          items:
+            type: object
+        request_body:
+          type: array
+          items:
+            type: object
+            required: [name, type]
+            properties:
+              name: { type: string }
+              type: { type: string }
+              required: { type: boolean }
+              required_evidence: { type: string }
+              source_refs: { type: array, items: { type: object } }
         related_files:
           type: array
           items:
@@ -375,6 +405,26 @@ components:
           minimum: 0
           maximum: 1
           description: 静态定位置信度（X-REQ-04 置信度标记）
+        code_spans:
+          type: array
+          items:
+            type: object
+          description: 仓内递归调用链的已定位方法跨度；kind=body 为接口本体，kind=callee 为调用链节点
+        call_graph:
+          type: object
+          required: [status, resolved_calls, resolved_nodes, unresolved_calls, max_depth]
+          properties:
+            status: { type: string, enum: [complete, partial] }
+            resolved_calls: { type: integer, minimum: 0 }
+            resolved_nodes: { type: integer, minimum: 0 }
+            unresolved_calls: { type: integer, minimum: 0 }
+            max_depth: { type: integer, minimum: 0 }
+        unresolved:
+          type: array
+          items:
+            type: object
+        call_graph_incomplete:
+          type: boolean
 
     ExtractJob:
       allOf:
@@ -392,3 +442,10 @@ components:
               description: |
                 告警清单（如 X-REV-04：候选数低于底线时提示换用兜底仓库；
                 X-REV-01：单文件解析失败记录跳过+原因，不中断整体）
+            capabilities:
+              type: object
+              properties:
+                requested: { type: array, items: { type: string } }
+                supported: { type: array, items: { type: string } }
+                known: { type: array, items: { type: string } }
+                unsupported: { type: array, items: { type: string } }

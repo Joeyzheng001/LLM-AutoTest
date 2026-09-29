@@ -28,6 +28,123 @@
             }
           },
           "snippet": { "type": "string", "description": "接口定义源码片段（LLM 上下文）" },
+          "method_body": { "type": "string", "description": "接口方法完整源码（参数语义解析的主要证据）" },
+          "method_body_truncated": { "type": "boolean", "description": "完整方法源码是否因上限截断" },
+          "method_body_char_count": { "type": "integer", "minimum": 0 },
+          "method_body_context": {
+            "type": "array",
+            "description": "长方法截断后，参数访问点附近的源码窗口",
+            "items": {
+              "type": "object",
+              "required": ["start_line", "end_line", "text"],
+              "properties": {
+                "start_line": { "type": "integer", "minimum": 1 },
+                "end_line": { "type": "integer", "minimum": 1 },
+                "text": { "type": "string" }
+              }
+            }
+          },
+          "parameter_evidence": {
+            "type": "array",
+            "description": "参数在方法体中的访问、透传和条件判断证据",
+            "items": { "type": "object" }
+          },
+          "code_spans": {
+            "type": "array",
+            "description": "候选的代码跨度（#51）：本体方法行范围（kind=body）+ 仓内递归调用链定义（kind=callee）。行号与 changed_lines 同属 target_sha 版本，行级求交与变更代码提取都以此为准",
+            "items": {
+              "type": "object",
+              "required": ["file", "role", "kind", "start_line", "end_line"],
+              "properties": {
+                "file": { "type": "string", "description": "仓库内相对路径" },
+                "role": { "type": "string", "enum": ["controller", "service", "dto", "proto", "wsdl", "listener", "other"] },
+                "kind": { "type": "string", "enum": ["body", "callee"], "description": "body=接口本体方法；callee=递归调用链中已定位的定义" },
+                "start_line": { "type": "integer", "minimum": 1 },
+                "end_line": { "type": "integer" }
+              }
+            }
+          },
+          "call_graph": {
+            "type": "object",
+            "description": "接口方法的仓内调用链解析摘要；complete 表示所有可静态解析的仓内调用均已展开，partial 表示存在 unresolved 或达到深度上限",
+            "required": ["status", "resolved_calls", "resolved_nodes", "unresolved_calls", "max_depth"],
+            "properties": {
+              "status": { "type": "string", "enum": ["complete", "partial"] },
+              "resolved_calls": { "type": "integer", "minimum": 0 },
+              "resolved_nodes": { "type": "integer", "minimum": 0 },
+              "unresolved_calls": { "type": "integer", "minimum": 0 },
+              "max_depth": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "unresolved": {
+            "type": "array",
+            "description": "无法静态定位的调用（动态接收者 / 同名多实现 / 方法继承自父类等）。**如实标注而非静默跳过**：候选保留，由调用方按保守口径处理",
+            "items": {
+              "type": "object",
+              "required": ["type", "method", "reason"],
+              "properties": {
+                "type": { "type": "string" },
+                "method": { "type": "string" },
+                "file": { "type": "string", "description": "能定位到文件时给出（仅类型可定位、方法不可定位的场景）" },
+                "role": { "type": "string" },
+                "reason": { "type": "string" }
+              }
+            }
+          },
+          "change_evidence": {
+            "type": "object",
+            "description": "#52：code_spans ∩ changed_lines 的行级判定。level 优先级 body > callee > file > related_file > none；仅当请求提供了 changed_lines 时出现。changed_snippets 是 target 版本的实际变动代码（行号与快照源码同版本）",
+            "required": ["level", "hits", "changed_snippets", "truncated"],
+            "properties": {
+              "level": {
+                "type": "string",
+                "enum": ["body", "callee", "file", "related_file", "none"],
+                "description": "body=接口本体方法被改；callee=调用链上的代码被改；file=本体文件被改但改动行不在任何跨度内；related_file=只有关联文件被改；none=本次变更未碰到"
+              },
+              "hits": {
+                "type": "array",
+                "description": "命中的跨度与重叠的变更行区间",
+                "items": {
+                  "type": "object",
+                  "required": ["file", "role", "kind", "start_line", "end_line", "changed"],
+                  "properties": {
+                    "file": { "type": "string" },
+                    "role": { "type": "string" },
+                    "kind": { "type": "string" },
+                    "start_line": { "type": "integer" },
+                    "end_line": { "type": "integer" },
+                    "changed": {
+                      "type": "array",
+                      "items": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 }
+                    }
+                  }
+                }
+              },
+              "sources": {
+                "type": "array",
+                "description": "level=file/related_file 时的命中来源文件",
+                "items": {
+                  "type": "object",
+                  "properties": { "file": { "type": "string" }, "role": { "type": "string" } }
+                }
+              },
+              "changed_snippets": {
+                "type": "array",
+                "description": "实际变动代码片段（target 版本），供实现注入使用；有行数/字符上限",
+                "items": {
+                  "type": "object",
+                  "required": ["file", "start_line", "end_line", "text"],
+                  "properties": {
+                    "file": { "type": "string" },
+                    "start_line": { "type": "integer" },
+                    "end_line": { "type": "integer" },
+                    "text": { "type": "string" }
+                  }
+                }
+              },
+              "truncated": { "type": "boolean", "description": "片段因上限被截断" }
+            }
+          },
           "related_files": {
             "type": "array",
             "description": "R-REV-04②：Controller→Service→DTO 直接关联（静态调用链）",
@@ -54,7 +171,13 @@
               "properties": {
                 "name": { "type": "string", "minLength": 1 },
                 "type": { "type": "string" },
+                "required": { "type": "boolean", "description": "字段级必填性；未明确声明时省略" },
+                "required_evidence": { "type": "string", "description": "字段级 required 判定依据" },
                 "description": { "type": "string" }
+                ,"default": {},
+                "constraints": { "type": "array", "items": { "type": "string" } },
+                "observed_values": { "type": "array" },
+                "source_refs": { "type": "array", "items": { "type": "object" } }
               }
             }
           }
@@ -65,6 +188,61 @@
       "type": "array",
       "description": "X-REV-01 单文件解析失败（跳过+原因不中断）；X-REV-04 候选数 <5 提示换兜底",
       "items": { "type": "string" }
+    },
+    "stats": {
+      "type": "object",
+      "description": "完整性闭环的数据源：orchestrator 用它校验「发现文件数 == 解析成功数 + 解析失败数」以及与 code_inventory 的文件数是否一致。任何\"少读了文件\"必须在此可见，否则会静默变成\"没发现接口\"",
+      "properties": {
+        "repositories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "status", "files_discovered", "files_parsed", "files_failed", "candidates"],
+            "properties": {
+              "name": { "type": "string" },
+              "workspace": { "type": "string", "description": "配置的工作区路径" },
+              "status": {
+                "type": "string",
+                "enum": ["ok", "degraded", "error"],
+                "description": "ok=按 target_sha 快照解析；degraded=未提供 target_sha（行号版本不保证）；error=路径不存在或快照检出失败"
+              },
+              "snapshot": { "type": "boolean", "description": "是否使用了只读快照" },
+              "snapshot_path": { "type": "string" },
+              "target_sha": { "type": "string" },
+              "degraded_reason": { "type": "string" },
+              "types_indexed": { "type": "integer" },
+              "methods_indexed": { "type": "integer" },
+              "files_discovered": { "type": "integer", "description": "按 include_paths 发现的 .java 文件数" },
+              "files_parsed": { "type": "integer", "description": "解析成功的文件数" },
+              "files_failed": { "type": "integer", "description": "解析/读取失败的文件数（X-REV-01）" },
+              "candidates": { "type": "integer" },
+              "error": {
+                "type": "object",
+                "properties": { "code": { "type": "string" }, "message": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "totals": {
+          "type": "object",
+          "properties": {
+            "candidates": { "type": "integer" },
+            "files_discovered": { "type": "integer" },
+            "files_parsed": { "type": "integer" },
+            "files_failed": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "协议能力声明：请求但未接入的协议必须结构化可见（不能只留在日志里，否则\"所有接口\"会被静默窄化成\"只有 REST\"）",
+      "properties": {
+        "supported": { "type": "array", "items": { "type": "string" } },
+        "known": { "type": "array", "items": { "type": "string" } },
+        "requested": { "type": "array", "items": { "type": "string" } },
+        "unsupported": { "type": "array", "items": { "type": "string" } }
+      }
     }
   }
 }

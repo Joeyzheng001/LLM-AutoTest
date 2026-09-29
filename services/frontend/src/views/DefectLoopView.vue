@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // 缺陷闭环页（07 §3.5）：缺陷清单（双向关联 + 复现脚本引用）+ 生命周期时间线（R-DEF-03）+
 // 单条复测（07 §3.5）/ 一键全量复测（F-DEF-02）。边界提示如实分列（X-DEF-01/03、N9）。
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
-import { getDefects, retestFull, retestSingle } from '../api/client'
+import { getDefects, getEvidenceBlob, retestFull, retestSingle } from '../api/client'
 import type { DefectEntry, RetestResponse } from '../api/types'
 import { DEFECT_STATUS_LABELS, DEFECT_EVENT_LABELS } from '../api/labels'
 import { navigateTo } from '../api/navigation'
@@ -14,6 +14,7 @@ const _jobId = ref('')
 const props = defineProps<{ initialJobId?: string; viewKey?: string }>()
 
 const defects = ref<DefectEntry[]>([])
+const evidenceUrls = ref<Record<string, string>>({})
 const warnings = ref<string[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -36,10 +37,25 @@ async function load(): Promise<void> {
   if (!_jobId.value) return
   loading.value = true
   error.value = ''
+  for (const url of Object.values(evidenceUrls.value)) URL.revokeObjectURL(url)
+  evidenceUrls.value = {}
   try {
     const payload = await getDefects(_jobId.value)
     defects.value = payload.defects
     warnings.value = payload.warnings ?? []
+    const evidenceEntries = await Promise.all(
+      payload.defects
+        .filter((defect) => defect.evidence?.screenshot_ref)
+        .map(async (defect) => {
+          try {
+            const blob = await getEvidenceBlob(_jobId.value, defect.evidence!.screenshot_ref!)
+            return [defect.id, URL.createObjectURL(blob)] as const
+          } catch {
+            return null
+          }
+        }),
+    )
+    evidenceUrls.value = Object.fromEntries(evidenceEntries.filter((entry) => entry !== null))
   } catch (err) {
     error.value = err instanceof Error ? err.message : '缺陷产物加载失败'
     defects.value = []
@@ -48,6 +64,10 @@ async function load(): Promise<void> {
     loading.value = false
   }
 }
+
+onBeforeUnmount(() => {
+  for (const url of Object.values(evidenceUrls.value)) URL.revokeObjectURL(url)
+})
 
 // C-16：总览页节点卡跳转（immediate 同步赋值早于 watch(_jobId) 注册，须显式触发 load；
 // 且须在 load/refs 之后——immediate 执行时函数体引用的 const 已初始化，免 TDZ）
@@ -74,6 +94,11 @@ function actualText(defect: DefectEntry): string {
   if (actual.body == null) return status
   const body = typeof actual.body === 'string' ? actual.body : JSON.stringify(actual.body, null, 2)
   return `${status}\n${body}`
+}
+
+function assertionValueText(value: unknown): string {
+  if (typeof value === 'string') return value
+  return JSON.stringify(value) ?? String(value)
 }
 
 function triageLabel(kind: NonNullable<DefectEntry['triage']>['kind']): string {
@@ -213,6 +238,32 @@ async function retestAll(): Promise<void> {
                 </p>
               </div>
               <div class="detail-block">
+                <span class="detail-label">需求追踪</span>
+                <p class="detail-text mono">
+                  {{ defect.requirement_id || '—' }} · {{ defect.claim_id || '—' }} ·
+                  {{ defect.testpoint_id || '—' }}
+                </p>
+              </div>
+              <div v-if="defect.evidence" class="detail-block">
+                <span class="detail-label">执行证据</span>
+                <p class="detail-text">
+                  <a
+                    v-if="evidenceUrls[defect.id]"
+                    :href="evidenceUrls[defect.id]"
+                    target="_blank"
+                    rel="noopener"
+                  >查看浏览器截图</a>
+                  <span v-else-if="defect.evidence.capture_error" class="state-error">截图留存失败</span>
+                  <span v-else>接口响应或浏览器状态见下方实际结果</span>
+                </p>
+                <p v-if="defect.evidence.page_url" class="detail-subtext mono">
+                  {{ defect.evidence.page_url }}
+                </p>
+                <p v-if="defect.evidence.console_errors?.length" class="detail-subtext">
+                  浏览器错误 {{ defect.evidence.console_errors.length }} 条
+                </p>
+              </div>
+              <div class="detail-block">
                 <span class="detail-label">预期结果</span>
                 <p class="detail-text pre-wrap">
                   {{ defect.testcase?.expected || '历史任务未记录预期结果' }}
@@ -221,6 +272,19 @@ async function retestAll(): Promise<void> {
               <div class="detail-block">
                 <span class="detail-label">实际结果</span>
                 <pre class="detail-code">{{ actualText(defect) }}</pre>
+                <div v-if="defect.actual?.assertion_results?.length" class="assertion-results">
+                  <span
+                    v-for="item in defect.actual.assertion_results"
+                    :key="item.path + item.op"
+                    :class="item.passed ? 'assertion-pass' : 'assertion-fail'"
+                  >
+                    {{ item.path }} · {{ item.op }} · {{ item.passed ? '通过' : '失败' }}
+                    <template v-if="item.found">
+                      （实际 {{ assertionValueText(item.actual) }}）
+                    </template>
+                    <template v-else>（字段不存在）</template>
+                  </span>
+                </div>
               </div>
               <div class="detail-block">
                 <span class="detail-label">失败原因</span>
@@ -451,6 +515,23 @@ async function retestAll(): Promise<void> {
   font-size: var(--text-xs);
   color: var(--text-3);
   margin-bottom: var(--space-1);
+}
+
+.assertion-results {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.assertion-pass {
+  color: var(--accent-strong);
+}
+
+.assertion-fail {
+  color: var(--warning);
 }
 
 .detail-text {

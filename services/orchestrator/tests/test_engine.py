@@ -11,7 +11,7 @@ from common.engine import NODE_ARTIFACTS, Engine, JobState
 from common.errors import PipelineError
 from common.pipeline import NODE_ORDER, NodeStatus
 
-from helpers import requirement_review_payload
+from helpers import change_set_payload, requirement_review_payload
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 _JOB = "job-3f2a1b8c-0000-4000-8000-000000000001"
@@ -171,11 +171,13 @@ def test_corrupt_state_rejected(env: tuple[Engine, ArtifactStore]) -> None:
     assert excinfo.value.code == "X-ORCH-01"
 
 
-def test_interface_reconstruct_requires_both_artifacts(env: tuple[Engine, ArtifactStore]) -> None:
-    """interface_reconstruct 完成判据：候选与接口两份产物都合规。"""
+def test_interface_reconstruct_requires_all_artifacts(
+    env: tuple[Engine, ArtifactStore],
+) -> None:
+    """interface_reconstruct 完成判据：候选、接口、变更集三份产物都合规（#52 新增第三份）。"""
     engine, store = env
     state = engine.init_job(_JOB)
-    # 只落 candidates 不落 interfaces：不得置完成
+    # 只落 candidates 不落 interfaces/change_set：不得置完成
     store.write(
         _JOB,
         "interface_candidates.json",
@@ -183,3 +185,30 @@ def test_interface_reconstruct_requires_both_artifacts(env: tuple[Engine, Artifa
     )
     with pytest.raises(PipelineError):
         engine.mark_completed(state, "interface_reconstruct")
+    # 补齐 candidates + interfaces，仍缺 change_set：依然不得置完成
+    store.write(
+        _JOB,
+        "interfaces.json",
+        {
+            "schema_version": "1.0",
+            "job_id": _JOB,
+            "interfaces": [
+                {
+                    "id": "IF-REST-001",
+                    "protocol": "rest",
+                    "signature": {"summary": "查用户"},
+                    "code_location": {
+                        "repo": "user-service",
+                        "file": "UserController.java",
+                        "start_line": 1,
+                        "end_line": 2,
+                    },
+                    "is_fallback": False,
+                }
+            ],
+        },
+    )
+    with pytest.raises(PipelineError):
+        engine.mark_completed(state, "interface_reconstruct")
+    store.write(_JOB, "change_set.json", change_set_payload(_JOB))
+    engine.mark_completed(state, "interface_reconstruct")

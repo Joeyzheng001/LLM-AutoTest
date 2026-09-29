@@ -24,9 +24,12 @@ from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
 from orchestrator.nodes import run_interface_reconstruct
 from orchestrator.nodes.interface_reconstruct import (
     _collect_changed_files,
+    _enrich_params_from_candidate,
     _declared_scope_repos,
     _filter_candidates_by_scope,
+    _normalize_candidates,
     _repos_without_change_scope,
+    _scan_integrity,
     _unscoped_report,
 )
 
@@ -75,6 +78,33 @@ _EXTRACT_RESPONSE: dict[str, Any] = {
         },
     ],
     "warnings": ["X-REV-01: /bad/Syntax.java 解析失败已跳过"],
+    "stats": {
+        "repositories": [
+            {
+                "name": "user-service",
+                "status": "ok",
+                "files_discovered": 1,
+                "files_parsed": 1,
+                "files_failed": 0,
+                "candidates": 1,
+            },
+            {
+                "name": "fallback-demo",
+                "status": "ok",
+                "files_discovered": 1,
+                "files_parsed": 1,
+                "files_failed": 0,
+                "candidates": 1,
+            },
+        ],
+        "totals": {
+            "candidates": 2,
+            "files_discovered": 2,
+            "files_parsed": 2,
+            "files_failed": 0,
+        },
+    },
+    "capabilities": {"requested": ["rest"], "supported": ["rest"], "unsupported": []},
 }
 
 _LLM_GOOD = """```json
@@ -461,6 +491,82 @@ def test_filter_candidates_drops_repos_without_scope() -> None:
     assert [c["candidate_id"] for c in kept] == ["CAND-001"]
 
 
+def test_normalize_candidates_deduplicates_same_source_mapping() -> None:
+    """重复注解展开不能把同一个源码接口计数两次。"""
+    candidates, warnings = _normalize_candidates(
+        {
+            "candidates": [
+                {
+                    "candidate_id": "CAND-001",
+                    "protocol": "rest",
+                    "signature": "GET /orders",
+                    "code_location": {
+                        "repo": "repo-a",
+                        "file": "OrderController.java",
+                        "start_line": 10,
+                        "end_line": 12,
+                    },
+                },
+                {
+                    "candidate_id": "CAND-002",
+                    "protocol": "rest",
+                    "signature": "GET /orders",
+                    "code_location": {
+                        "repo": "repo-a",
+                        "file": "OrderController.java",
+                        "start_line": 10,
+                        "end_line": 12,
+                    },
+                },
+            ]
+        }
+    )
+
+    assert len(candidates) == 1
+    assert any("重复接口候选" in warning for warning in warnings)
+
+
+def test_enrich_params_from_method_body_evidence() -> None:
+    """方法体里的 get/getOrDefault/条件值必须进入最终 body 字段证据。"""
+    candidate = {
+        "code_location": {"file": "RiskController.java"},
+        "request_body": [
+            {"name": "approvalType", "type": "unknown"},
+            {"name": "decision", "type": "unknown"},
+        ],
+        "parameter_evidence": [
+            {
+                "name": "param",
+                "type": "Map<String, Object>",
+                "in": "body",
+                "required": True,
+                "body_accesses": [
+                    {
+                        "operation": "getOrDefault",
+                        "field": "approvalType",
+                        "default_expression": '"NORMAL"',
+                        "line": 12,
+                    },
+                    {"operation": "get", "field": "decision", "line": 13},
+                ],
+                "conditions": [
+                    {"condition": '"REJECT".equals(param.get("decision"))', "line": 13}
+                ],
+            }
+        ],
+    }
+
+    enriched = _enrich_params_from_candidate(
+        [{"name": "param", "type": "Map<String, Object>", "required": True}], candidate
+    )
+
+    assert enriched[0]["in"] == "body"
+    fields = {field["name"]: field for field in enriched[0]["fields"]}
+    assert fields["approvalType"]["default"] == '"NORMAL"'
+    assert "REJECT" in fields["decision"]["observed_values"]
+    assert fields["decision"]["source_refs"] == [{"file": "RiskController.java", "line": 13}]
+
+
 def test_filter_candidates_keeps_candidate_whose_dependency_changed() -> None:
     """依赖被改、Controller 文件没改的接口也要保留（行为级口径，R-REV-04②）。
 
@@ -512,6 +618,39 @@ def test_filter_candidates_drops_candidate_with_no_changed_related_file() -> Non
     assert _filter_candidates_by_scope(candidates, {"repo-a": {"SomeOther.java"}}) == []
 
 
+def test_filter_candidates_does_not_expand_incomplete_call_graph_to_whole_repo() -> None:
+    """调用链不完整只是能力标记，不能把仓库内所有接口都算作本次变动。"""
+    candidates = [
+        {
+            "candidate_id": "CAND-001",
+            "code_location": {"repo": "repo-a", "file": "UntouchedController.java"},
+            "call_graph_incomplete": True,
+        },
+        {
+            "candidate_id": "CAND-002",
+            "code_location": {"repo": "repo-a", "file": "ChangedController.java"},
+            "call_graph_incomplete": True,
+        },
+        {
+            "candidate_id": "CAND-003",
+            "code_location": {"repo": "repo-a", "file": "OtherController.java"},
+            "unresolved": [{"type": "OtherService", "method": "load"}],
+        },
+        {
+            "candidate_id": "CAND-004",
+            "code_location": {"repo": "repo-a", "file": "DependencyController.java"},
+            "unresolved": [
+                {"type": "ChangedService", "method": "load", "file": "ChangedService.java"}
+            ],
+        },
+    ]
+
+    kept = _filter_candidates_by_scope(candidates, {"repo-a": {"ChangedController.java", "ChangedService.java"}})
+
+    assert [item["candidate_id"] for item in kept] == ["CAND-002", "CAND-004"]
+    assert "conservative_expansion" in kept[1]
+
+
 def test_filter_candidates_drops_repo_with_empty_change_scope() -> None:
     """登记为空集（配了范围但本次无变更）的仓库同样不保留候选。"""
     candidates = [
@@ -541,3 +680,337 @@ async def test_interface_reconstruct_rejects_repo_without_change_scope(
         )
     assert excinfo.value.code == "X-ORCH-01"
     assert excinfo.value.details["repos_without_scope"] == ["user-service"]
+
+
+# ---- #50/#52：target_sha 与 changed_lines 透传、完整性闭环门禁、change_set ----
+
+
+def _payload_handler(payload: dict[str, Any], captured: list[dict[str, Any]]) -> Any:
+    """POST 受理 + GET 返回指定载荷（自动补终态字段），并抓取请求体（校验透传字段用）。"""
+    body = {"job_id": "extract-0001", "status": "completed", **payload}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/v1/extract-jobs":
+            captured.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(202, json={"job_id": "extract-0001", "status": "queued"})
+        if request.method == "GET" and request.url.path == "/api/v1/extract-jobs/extract-0001":
+            return httpx.Response(200, json=body)
+        raise AssertionError(f"非预期请求：{request.method} {request.url.path}")
+
+    return handler
+
+
+def _with_scope(tmp_path: Path, *, target_sha: str, changed_lines: dict[str, Any]) -> tuple[
+    Engine, ArtifactStore
+]:
+    """在 _ready_env 基础上给仓库补 target_sha / changed_lines（#50 的行号锚点）。"""
+    engine, store = _ready_env(tmp_path)
+    inventory = store.read_json(_JOB, "code_inventory.json")
+    inventory["repositories"][0]["target_ref"] = "release/v2.3"
+    inventory["repositories"][0]["target_sha"] = target_sha
+    inventory["repositories"][0]["changed_lines"] = changed_lines
+    store.write(_JOB, "code_inventory.json", inventory)
+    return engine, store
+
+
+def test_scan_integrity_rejects_failed_files_and_missing_repositories() -> None:
+    """零漏扫门禁：解析失败或仓库统计缺失都不能返回 complete=true。"""
+    result = _scan_integrity(
+        {
+            "repositories": [
+                {"name": "repo-a", "file_count": 2},
+                {"name": "repo-b", "file_count": 1},
+            ]
+        },
+        {
+            "repositories": [
+                {
+                    "name": "repo-a",
+                    "status": "ok",
+                    "files_discovered": 2,
+                    "files_parsed": 1,
+                    "files_failed": 1,
+                }
+            ],
+            "totals": {"files_discovered": 2, "files_parsed": 1, "files_failed": 1},
+        },
+        {},
+        1,
+        expected_repo_names=["repo-a", "repo-b"],
+    )
+
+    assert result["complete"] is False
+    assert result["missing_repos"] == ["repo-b"]
+    assert any("解析失败" in reason for reason in result["reasons"])
+
+
+async def test_target_sha_and_changed_lines_are_forwarded_to_java_parser(
+    tmp_path: Path,
+) -> None:
+    """#50：候选必须在 target 提交的快照上解析——target_sha / changed_lines 必须进请求体。"""
+    target = "a" * 40
+    engine, store = _with_scope(
+        tmp_path,
+        target_sha=target,
+        changed_lines={"UserController.java": {"added": [[30, 32]], "removed": []}},
+    )
+    state = engine.open_job(_JOB)
+    captured: list[dict[str, Any]] = []
+
+    await run_interface_reconstruct(
+        engine,
+        state,
+        store,
+        _client(_payload_handler(dict(_EXTRACT_RESPONSE), captured)),
+        _StubLlm(_LLM_GOOD),
+        _PROMPTS,
+        _REPOS,
+    )
+
+    sent = captured[0]["repositories"][0]
+    assert sent["target_sha"] == target
+    assert sent["changed_lines"] == {"UserController.java": {"added": [[30, 32]], "removed": []}}
+    # 未配 target_sha 的仓库不带该键（java-parser 会如实标 degraded，由门禁拦下）
+    assert "target_sha" not in captured[0]["repositories"][1]
+
+
+async def test_scan_integrity_blocks_when_repo_extract_failed(tmp_path: Path) -> None:
+    """P0①：仓库级提取失败 → 硬拦，禁止据此判定「未发现接口」。"""
+    engine, store = _ready_env(tmp_path)
+    state = engine.open_job(_JOB)
+    payload = {
+        "candidates": [],
+        "warnings": [],
+        "stats": {
+            "repositories": [
+                {
+                    "name": "user-service",
+                    "status": "error",
+                    "error": {"code": "SNAPSHOT_FAILED", "message": "快照检出失败"},
+                    "files_discovered": 0,
+                    "files_parsed": 0,
+                    "files_failed": 0,
+                    "candidates": 0,
+                }
+            ],
+            "totals": {
+                "candidates": 0,
+                "files_discovered": 0,
+                "files_parsed": 0,
+                "files_failed": 0,
+            },
+        },
+    }
+
+    with pytest.raises(PipelineError) as excinfo:
+        await run_interface_reconstruct(
+            engine,
+            state,
+            store,
+            _client(_payload_handler(payload, [])),
+            _StubLlm(_LLM_GOOD),
+            _PROMPTS,
+            _REPOS,
+        )
+
+    assert excinfo.value.code == "X-ORCH-01"
+    assert "禁止据此判定" in excinfo.value.message
+    assert excinfo.value.details["error_repos"] == ["user-service"]
+
+
+async def test_scan_integrity_blocks_file_count_mismatch(
+    tmp_path: Path,
+) -> None:
+    """P0①：文件计数不守恒 → 硬拦，禁止把不完整扫描交给后续评审。"""
+    engine, store = _ready_env(tmp_path)
+    state = engine.open_job(_JOB)
+    payload = {
+        "candidates": _EXTRACT_RESPONSE["candidates"],
+        "warnings": [],
+        "stats": {
+            "repositories": [
+                {
+                    "name": "user-service",
+                    "status": "ok",
+                    "snapshot": True,
+                    "files_discovered": 5,
+                    "files_parsed": 5,
+                    "files_failed": 0,
+                    "candidates": 1,
+                },
+                {
+                    "name": "fallback-demo",
+                    "status": "ok",
+                    "snapshot": True,
+                    "files_discovered": 1,
+                    "files_parsed": 1,
+                    "files_failed": 0,
+                    "candidates": 1,
+                },
+            ],
+            "totals": {
+                "candidates": 2,
+                "files_discovered": 6,
+                "files_parsed": 6,
+                "files_failed": 0,
+            },
+        },
+    }
+
+    with pytest.raises(PipelineError) as excinfo:
+        await run_interface_reconstruct(
+            engine,
+            state,
+            store,
+            _client(_payload_handler(payload, [])),
+            _StubLlm(_LLM_GOOD),
+            _PROMPTS,
+            _REPOS,
+        )
+
+    assert excinfo.value.code == "X-ORCH-01"
+    assert any("code_inventory 记录 1" in reason for reason in excinfo.value.details["scan_integrity"]["reasons"])
+
+
+async def test_change_set_records_levels_snippets_and_unresolved(tmp_path: Path) -> None:
+    """#52：change_set 记录逐接口命中等级、实际变动代码与未解析调用点。"""
+    engine, store = _ready_env(tmp_path)
+    state = engine.open_job(_JOB)
+    candidate = dict(_EXTRACT_RESPONSE["candidates"][0])
+    candidate["code_spans"] = [
+        {
+            "file": "UserController.java",
+            "role": "controller",
+            "kind": "body",
+            "start_line": 30,
+            "end_line": 45,
+        }
+    ]
+    candidate["unresolved"] = [
+        {
+            "type": "UserService",
+            "method": "load",
+            "reason": "类型不在本仓库源码内（跨模块或外部依赖）",
+        }
+    ]
+    candidate["change_evidence"] = {
+        "level": "body",
+        "hits": [
+            {
+                "file": "UserController.java",
+                "role": "controller",
+                "kind": "body",
+                "start_line": 30,
+                "end_line": 45,
+                "changed": [[31, 31]],
+            }
+        ],
+        "changed_snippets": [
+            {
+                "file": "UserController.java",
+                "start_line": 31,
+                "end_line": 31,
+                "text": 'return service.load(id).trim();',
+            }
+        ],
+        "truncated": False,
+    }
+    payload = {
+        "candidates": [candidate, _EXTRACT_RESPONSE["candidates"][1]],
+        "warnings": [],
+        "stats": {
+            "repositories": [
+                {
+                    "name": "user-service",
+                    "status": "ok",
+                    "files_discovered": 1,
+                    "files_parsed": 1,
+                    "files_failed": 0,
+                    "candidates": 1,
+                },
+                {
+                    "name": "fallback-demo",
+                    "status": "ok",
+                    "files_discovered": 1,
+                    "files_parsed": 1,
+                    "files_failed": 0,
+                    "candidates": 1,
+                }
+            ],
+            "totals": {
+                "candidates": 2,
+                "files_discovered": 2,
+                "files_parsed": 2,
+                "files_failed": 0,
+            },
+        },
+    }
+
+    await run_interface_reconstruct(
+        engine,
+        state,
+        store,
+        _client(_payload_handler(payload, [])),
+        _StubLlm(_LLM_GOOD),
+        _PROMPTS,
+        _REPOS,
+    )
+
+    change_set = store.read_json(_JOB, "change_set.json")
+    assert change_set["counts"]["body"] == 1
+    assert change_set["counts"]["unknown"] == 1  # 第二条候选没有 change_evidence
+    assert change_set["counts"]["unresolved"] == 1
+    entry = change_set["interfaces"][0]
+    assert entry["level"] == "body"
+    assert entry["changed_snippets"][0]["text"] == "return service.load(id).trim();"
+    assert change_set["unresolved"][0]["candidate_id"] == "CAND-001"
+    # 溯源字段一路带到 interfaces.json（P0③：change_scope 才能按行为级口径关联）
+    interfaces = store.read_json(_JOB, "interfaces.json")
+    rest = next(item for item in interfaces["interfaces"] if item["id"] == "IF-REST-001")
+    assert rest["change_evidence"]["level"] == "body"
+    assert rest["unresolved"][0]["method"] == "load"
+
+
+def test_filter_uses_change_evidence_levels_and_expands_conservatively() -> None:
+    """#52：过滤以行级证据为准；仓库解析不完整时对 level=none 保守纳入并打标。"""
+    changed = {"repo-a": {"A.java"}}
+    candidates: list[dict[str, Any]] = [
+        {
+            "candidate_id": "CAND-001",
+            "code_location": {"repo": "repo-a", "file": "A.java"},
+            "change_evidence": {"level": "body"},
+        },
+        {
+            "candidate_id": "CAND-002",
+            "code_location": {"repo": "repo-a", "file": "A.java"},
+            "change_evidence": {"level": "callee"},
+        },
+        {
+            "candidate_id": "CAND-003",
+            "code_location": {"repo": "repo-a", "file": "A.java"},
+            "change_evidence": {"level": "none"},
+        },
+        {
+            # 无 change_evidence（旧产物）：退回文件级口径
+            "candidate_id": "CAND-004",
+            "code_location": {"repo": "repo-a", "file": "A.java"},
+        },
+        {
+            "candidate_id": "CAND-005",
+            "code_location": {"repo": "repo-a", "file": "Z.java"},
+            "change_evidence": {"level": "none"},
+        },
+    ]
+
+    kept = _filter_candidates_by_scope(candidates, changed)
+    assert [item["candidate_id"] for item in kept] == ["CAND-001", "CAND-002", "CAND-004"]
+
+    kept = _filter_candidates_by_scope(candidates, changed, parse_failed_files={"repo-a": 3})
+    assert [item["candidate_id"] for item in kept] == [
+        "CAND-001",
+        "CAND-002",
+        "CAND-003",
+        "CAND-004",
+    ]
+    expanded = next(item for item in kept if item["candidate_id"] == "CAND-003")
+    assert "保守纳入" in expanded["conservative_expansion"]["reason"]

@@ -33,7 +33,7 @@ from executor.nodes.testcase_generate import (
     _validate_batch_coverage,
 )
 
-from helpers import requirement_review_payload
+from helpers import change_set_payload, requirement_review_payload
 
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 _PROMPTS = Path(__file__).resolve().parents[3] / "prompts"
@@ -262,6 +262,7 @@ def env(
         store.write(_JOB, filename, payload)
     engine.mark_completed(state, "req_parse")
     engine.mark_completed(state, "code_scan")
+    store.write(_JOB, "change_set.json", change_set_payload(_JOB))
     engine.mark_completed(state, "interface_reconstruct")
     engine.mark_completed(state, "code_review")
     return engine, store, te_store
@@ -1433,3 +1434,89 @@ def test_runtime_injected_params_are_neither_required_nor_defaulted() -> None:
     assert inspect_case_parameters(normalized, interface).missing_required == ()  # 不算缺必填
     # 业务必填参数照旧要查
     assert inspect_case_parameters({"params": {}}, interface).missing_required == ("query",)
+
+
+def test_implementation_excerpt_prefers_changed_lines(tmp_path: Path) -> None:
+    """#52：有 change_evidence 时，注入的是**本次实际改动的代码**，不是整个方法体。"""
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "C.java").write_text("\n".join(f"line{i}" for i in range(1, 41)), encoding="utf-8")
+
+    excerpt = testcase_generate_module._implementation_excerpt(
+        {
+            "code_location": {
+                "repo": "svc",
+                "file": "C.java",
+                "start_line": 1,
+                "end_line": 40,
+            },
+            "change_evidence": {
+                "level": "body",
+                "changed_snippets": [
+                    {
+                        "file": "C.java",
+                        "start_line": 12,
+                        "end_line": 13,
+                        "text": "if (id == null) {\n    throw new IllegalArgumentException();\n}",
+                    }
+                ],
+                "truncated": False,
+            },
+        },
+        {"svc": repo},
+    )
+
+    assert excerpt is not None
+    assert excerpt["source"] == "changed_lines"
+    assert excerpt["level"] == "body"
+    assert "line12" not in excerpt["excerpt"]  # 不再取工作区文件（版本可能不一致）
+    assert "IllegalArgumentException" in excerpt["excerpt"]
+    assert excerpt["start_line"] == 12
+    assert excerpt["end_line"] == 13
+
+
+def test_implementation_excerpt_falls_back_to_method_body(tmp_path: Path) -> None:
+    """无 change_evidence（未圈定变更范围）时退回整个方法体，行为与既有口径一致。"""
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "C.java").write_text("\n".join(f"line{i}" for i in range(1, 11)), encoding="utf-8")
+
+    excerpt = testcase_generate_module._implementation_excerpt(
+        {
+            "code_location": {
+                "repo": "svc",
+                "file": "C.java",
+                "start_line": 3,
+                "end_line": 5,
+            }
+        },
+        {"svc": repo},
+    )
+
+    assert excerpt is not None
+    assert excerpt["source"] == "method_body"
+    assert excerpt["excerpt"].splitlines() == ["line3", "line4", "line5"]
+
+
+def test_implementation_excerpt_redacts_secrets_in_changed_lines() -> None:
+    """变更行片段同样要脱敏（与 code_review 同一口径）。"""
+    excerpt = testcase_generate_module._implementation_excerpt(
+        {
+            "change_evidence": {
+                "level": "callee",
+                "changed_snippets": [
+                    {
+                        "file": "S.java",
+                        "start_line": 7,
+                        "end_line": 7,
+                        "text": 'String password = "p@ss";',
+                    }
+                ],
+            }
+        },
+        {},
+    )
+
+    assert excerpt is not None
+    assert "p@ss" not in excerpt["excerpt"]
+    assert "<redacted>" in excerpt["excerpt"]

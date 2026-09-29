@@ -33,7 +33,7 @@ from common.pipeline import NODE_ORDER, NodeStatus
 
 NODE_NAME = "test_report"
 
-_JUDGE_NOTE = "通过率口径：环境失败/跳过用例无可判读，不计入分母（X-RPT-02）"
+_JUDGE_NOTE = "执行通过率口径：环境失败/跳过用例不计入分母（X-RPT-02）；仅状态码断言不等同业务通过。"
 
 
 async def run_test_report(engine: Engine, state: JobState, store: ArtifactStore) -> Path:
@@ -100,11 +100,12 @@ def _render_markdown(
 
     judged = summary.get("passed", 0) + summary.get("failed_assertion", 0)
     total = summary.get("total", 0)
+    status_only_rows = [r for r in results if r.get("assertion_scope") == "status_only"]
     lines: list[str] = [
         f"# 测试报告（{job_id}）",
         "",
         "> 数值来源：`execution.json` 程序化汇总，未经 LLM（F-RPT-02）。",
-        "> 演示态断言口径：status token 等值 / HTTP 2xx + 「字段=值」语义等值对（docs/13 C-05）。",
+        "> 接口通过口径：HTTP 状态码 + 可机器判定的响应断言；未配置响应断言的用例仅校验状态码，不代表业务结果已验证。",
         "",
         "## 1. 执行汇总",
         "",
@@ -122,6 +123,22 @@ def _render_markdown(
         rate = summary.get("passed", 0) / judged
         lines.append(f"| 通过率 | {rate:.1%}（{summary.get('passed', 0)}/{judged} 可判读） |")
     lines += ["", f"{_JUDGE_NOTE}_", ""]
+    lines += [
+        f"未配置业务响应断言：{len(status_only_rows)} 条。此类用例即使显示通过，也只表示 HTTP 状态符合预期，尚未验证响应字段或业务结果。",
+        "",
+    ]
+    if status_only_rows:
+        lines += [
+            "### 需补充业务断言的用例",
+            "",
+            "| 用例 | 需求 | 声明 | 接口 | 执行结果 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        lines += [
+            f"| {r.get('case_id', '')} | {r.get('requirement_id', '—')} | {r.get('claim_id', '—')} | {r.get('interface_id', '')} | {'通过' if r.get('passed') is True else '失败'} |"
+            for r in status_only_rows
+        ]
+        lines.append("")
 
     # D5 真实/兜底分列：按接口协议路由判定
     real_rows = [

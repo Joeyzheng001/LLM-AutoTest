@@ -56,6 +56,13 @@ sampling:
   不足以判断时使用；在 `verification_needed` 写出需要查验的具体位置或信息。接口清单不完整
   （`interfaces_complete` 为 `false`）时，不要仅凭未召回接口判定 `missing`。
 
+当输入同时出现 `scan_coverage.complete=false` 与“证据池触及上限”提示时，先区分原因：
+`review_evidence_limited=true` 只表示需求评审可引用的证据片段被截断，不代表仓库扫描不完整；
+`repository_file_limit`、`interface_evidence_truncated`、`call_chain_truncated` 或
+`scan_integrity_complete=false` 才表示扫描/接口/调用链覆盖本身存在缺口。证据池受限时，
+应把受影响 claim 标为 `undetermined` 或 `partial`，并写明待补证据；不得把所有需求统一输出为
+“无法判断”，也不得据此认定功能遗漏。
+
 以下高风险行为必须引用与该需求直接相关的代码/配置证据：Session/Token 生命周期、权限、
 密码处理、事务/回滚、幂等、状态流转、数据一致性、缓存、异步消息和定时任务。全仓库出现某类
 代码不代表当前需求已实现；证据必须能从相关入口或适用配置关联到当前 claim。

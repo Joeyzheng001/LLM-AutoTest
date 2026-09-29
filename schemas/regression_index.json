@@ -24,6 +24,8 @@
                 "case_id": { "type": "string", "pattern": "^(TC|E2E)-\\d{3}$" },
                 "script_path": { "type": "string", "description": "归档后路径（移动非复制，R-REG-01）" },
                 "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$", "description": "F-REG-02 溯源随档" },
+                "claim_id": { "type": "string", "pattern": "^CLM-\\d{3,}$" },
+                "testpoint_id": { "type": "string", "pattern": "^TP-\\d{3}$" },
                 "interface_id": { "type": "string", "pattern": "^(IF-[A-Z]+-\\d{3}|UI-E2E-001)$" },
                 "archived_at": { "type": "string", "format": "date-time", "description": "UTC ISO-8601；R-REG-03 幂等：同用例重档更新此时间" },
                 "version": { "type": "integer", "minimum": 1, "description": "X-REG-01：覆盖归档时递增版本" },

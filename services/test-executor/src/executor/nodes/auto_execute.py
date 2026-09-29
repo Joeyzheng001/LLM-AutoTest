@@ -15,8 +15,8 @@
   不静默、不阻塞；
 - 完成判据（D4）：允许有失败用例——失败二态明确即 completed。
 
-演示态简化（如实声明）：断言仅到「调用层成功 + HTTP 2xx」层级，
-`expected` 的语义断言留给断言引擎完善；Mock 演示 Runner 返回固定桩响应。
+断言口径：状态码断言 + 受限 JSON 路径业务断言；缺少字段级断言的用例会明确标成
+`status_only`，不宣称已经验证业务结果。Mock 演示 Runner 返回固定桩响应。
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import urlparse
 
 import httpx
@@ -40,6 +40,11 @@ from common.case_validation import (
 )
 from common.engine import Engine, JobState
 from common.errors import X_ORCH_01, PipelineError
+from common.response_assertions import (
+    evaluate_response_assertions,
+    legacy_response_assertions,
+    normalize_response_assertions,
+)
 from common.security import redact_secrets
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -352,43 +357,44 @@ class RestRunner:
         )
 
 
-def _semantic_mismatches(expected: str, body: Any) -> list[str]:
-    """最小语义断言（演示态）：解析 expected 中的「字段=值」等值对并比对响应体。
+def _response_assertion_results(
+    expected: str, body: Any, assertions: Any = None
+) -> list[dict[str, Any]]:
+    """Evaluate explicit response assertions, falling back to legacy field=value syntax."""
+    try:
+        normalized = normalize_response_assertions(assertions) if assertions else []
+    except ValueError as exc:
+        _ = exc
+        return [{"path": "", "op": "invalid", "found": False, "passed": False}]
+    if not normalized:
+        normalized = legacy_response_assertions(expected)
+    results = evaluate_response_assertions(body, normalized)
+    for result in results:
+        for key in ("actual", "expected"):
+            if key in result:
+                result[key] = _safe_actual_body(result[key])
+        path = str(result.get("path", "")).lower()
+        if any(marker in path for marker in ("token", "password", "secret", "authorization", "cookie")):
+            if "actual" in result:
+                result["actual"] = "<redacted>"
+            if "expected" in result:
+                result["expected"] = "<redacted>"
+    return results
 
-    约定（F-GEN 断言语义的最小实现，文档 docs/13 C-05）：
-    - expected 可含分号/逗号分隔的「字段=值」对（如 "id=1;age=28"）；
-    - 仅当响应体为对象且含该字段时比对；无等值对则不做语义检查（纯描述型 expected 不受影响）；
-    - 数值按数值比、其余按字符串比；不匹配返回原因清单；
-    - status 键由 _expected_status 单独处理（映射 HTTP 状态码，不比对响应体）。
-    """
-    if not isinstance(body, dict):
-        return []
-    mismatches: list[str] = []
-    for token in expected.replace("；", ";").replace("，", ",").split(";"):
-        token = token.strip()
-        if "=" not in token:
-            continue
-        key, _, raw_value = token.partition("=")
-        key = key.strip()
-        raw_value = raw_value.strip()
-        # 仅解析显式机器断言（field=value）。旧版中文描述中如“响应含
-        # fund_code='000330'”不是完整 token，不能被误判为字段断言。
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", key):
-            continue
-        # HTTP 状态断言由 _expected_statuses 单独判定；它们不是响应体字段。
-        if key in ("status", "status_class"):
-            continue
-        if key not in body:
-            mismatches.append(f"字段 {key} 不在响应体中（期望 {raw_value}）")
-            continue
-        actual = body[key]
-        try:
-            if float(actual) != float(raw_value):
-                mismatches.append(f"{key}={actual}（期望 {raw_value}）")
-        except (TypeError, ValueError):
-            if str(actual) != raw_value:
-                mismatches.append(f"{key}={actual}（期望 {raw_value}）")
-    return mismatches
+
+def _semantic_mismatches(
+    expected: str, body: Any, assertions: Any = None
+) -> list[str]:
+    """Return failed response-path assertions; old field=value expectations remain supported."""
+    return [
+        (
+            f"{item.get('path')}: {item.get('op')} 断言失败"
+            + (f"（期望 {item.get('expected')}）" if "expected" in item else "")
+            + (f"，实际 {item.get('actual')}" if item.get("found") else "，字段不存在")
+        )
+        for item in _response_assertion_results(expected, body, assertions)
+        if item.get("passed") is not True
+    ]
 
 
 def _expected_statuses(expected: str) -> tuple[set[int], set[int]]:
@@ -415,8 +421,10 @@ def _expected_statuses(expected: str) -> tuple[set[int], set[int]]:
     return explicit, classes
 
 
-def _judge_assertion(expected: str, status: int, body: Any) -> tuple[bool, list[str]]:
-    """断言判定：精确/区间 HTTP 状态码 > 默认 2xx + 语义等值对。
+def _judge_assertion(
+    expected: str, status: int, body: Any, assertions: Any = None
+) -> tuple[bool, list[str]]:
+    """断言判定：先校验精确/区间 HTTP 状态码，再校验结构化/兼容字段断言。
 
     Returns:
         (是否通过, 语义失配清单)。
@@ -427,7 +435,7 @@ def _judge_assertion(expected: str, status: int, body: Any) -> tuple[bool, list[
     else:
         is_pass = 200 <= status < 300
     if is_pass:
-        semantic_failures = _semantic_mismatches(expected, body)
+        semantic_failures = _semantic_mismatches(expected, body, assertions)
         is_pass = not semantic_failures
     else:
         semantic_failures = []
@@ -503,7 +511,7 @@ async def _run_fixture_phase(
                 except ValueError:
                     payload = response.text
                 passed, semantic_failures = _judge_assertion(
-                    expected, response.status_code, payload
+                    expected, response.status_code, payload, fixture.get("assertions")
                 )
                 failure_reason = ""
                 if not passed:
@@ -549,7 +557,9 @@ def _skipped_case_result(case: dict[str, Any], reason: str) -> dict[str, Any]:
     return {
         "case_id": case.get("id"),
         "interface_id": case.get("interface_id"),
+        "case_type": str(case.get("case_type", "api")),
         "expected": str(case.get("expected", "")),
+        **_case_trace_fields(case),
         "timestamp": _now_iso(),
         "passed": False,
         "failure_kind": None,
@@ -910,6 +920,9 @@ async def run_auto_execute(
                         if str(e2e.get("auth_mode", "browser")) == "reuse"
                         else None
                     ),
+                    evidence_writer=lambda relative_path, content: store.write_bytes(
+                        state.job_id, relative_path, content
+                    ).relative_to(store.job_dir(state.job_id)).as_posix(),
                 )
                 results.append(result)
                 _append_runtime_log(
@@ -962,6 +975,7 @@ async def _execute_e2e_case(
     case: dict[str, Any], base_url: str, ignore_https_errors: bool = True,
     runtime_values: dict[str, str] | None = None,
     auth_headers: dict[str, str] | None = None,
+    evidence_writer: Callable[[str, bytes], str] | None = None,
 ) -> dict[str, Any]:
     """执行受限的 Playwright 动作；浏览器缺失、页面不可达归环境失败。"""
     base: dict[str, Any] = {
@@ -970,13 +984,32 @@ async def _execute_e2e_case(
         "interface_id": "UI-E2E-001",
         "expected": str(case.get("expected", "")),
         "timestamp": _now_iso(),
+        "assertion_scope": "ui_steps",
     }
+    for key in ("requirement_id", "claim_id", "testpoint_id", "title"):
+        if case.get(key):
+            base[key] = str(case[key])
     started = time.monotonic()
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch()
             context = await browser.new_context(ignore_https_errors=ignore_https_errors)
             page = await context.new_page()
+            console_errors: list[str] = []
+            request_failures: list[str] = []
+            page.on("pageerror", lambda error: console_errors.append(str(error)[:400]))
+            page.on(
+                "console",
+                lambda message: console_errors.append(str(message.text)[:400])
+                if message.type == "error"
+                else None,
+            )
+            page.on(
+                "requestfailed",
+                lambda request: request_failures.append(
+                    f"{request.method} {_safe_browser_url(request.url)}"
+                ),
+            )
             if auth_headers:
                 # Token/Cookie 只附加到 E2E 页面同源请求，避免凭据泄露到第三方资源或跳转地址。
                 target = urlparse(base_url)
@@ -1006,8 +1039,30 @@ async def _execute_e2e_case(
                 for step in case.get("steps", []):
                     await _run_e2e_step(page, dict(step), base_url, runtime_values or {})
             finally:
-                await context.close()
-                await browser.close()
+                evidence: dict[str, Any] = {
+                    "kind": "browser",
+                    "page_url": _safe_browser_url(page.url),
+                    "console_errors": console_errors[:20],
+                    "request_failures": request_failures[:20],
+                }
+                try:
+                    evidence["page_title"] = (await page.title())[:300]
+                except PlaywrightError:
+                    pass
+                if evidence_writer:
+                    try:
+                        safe_case_id = re.sub(r"[^A-Za-z0-9_-]", "", str(case.get("id", "E2E")))
+                        screenshot = await page.screenshot(full_page=True, timeout=5_000)
+                        evidence["screenshot_ref"] = evidence_writer(
+                            f"evidence/{safe_case_id}.png", screenshot
+                        )
+                    except Exception as exc:
+                        evidence["capture_error"] = f"{type(exc).__name__}: {str(exc)[:250]}"
+                base["evidence"] = evidence
+                try:
+                    await context.close()
+                finally:
+                    await browser.close()
     except PlaywrightTimeoutError as exc:
         base.update(
             {
@@ -1122,9 +1177,17 @@ async def _execute_case(
     base: dict[str, Any] = {
         "case_id": case.get("id"),
         "interface_id": case.get("interface_id"),
+        "case_type": "api",
         "expected": str(case.get("expected", "")),
+        **_case_trace_fields(case),
         "timestamp": _now_iso(),
     }
+    explicit_assertions = case.get("assertions")
+    base["assertion_scope"] = (
+        "business"
+        if explicit_assertions or legacy_response_assertions(str(case.get("expected", "")))
+        else "status_only"
+    )
     # P0-05：先验证请求能否按接口契约构造，再决定是否访问被测服务。这样“缺少
     # fund_code/share_type”等编排问题不会被服务端 400/401/500 伪装成产品缺陷。
     normalized_case = materialize_declared_defaults(case, interface)
@@ -1185,6 +1248,12 @@ async def _execute_case(
     response = await runner.invoke(
         InvokeRequest(interface=interface, params=params, auth_mode=resolved_auth_mode(case))
     )
+    signature = interface.get("signature") if isinstance(interface.get("signature"), dict) else {}
+    base["evidence"] = {
+        "kind": "http_response",
+        "method": str(signature.get("method", "")),
+        "path": str(signature.get("path", "")),
+    }
 
     if not response.ok:
         base.update(
@@ -1198,10 +1267,16 @@ async def _execute_case(
         )
         return base
 
-    # 断言判定（与 retest 同源）：status token > 2xx + 语义等值对（docs/13 C-05）
+    # 断言判定（与 retest 同源）：状态码 + 结构化业务字段断言
     status = response.status or 0
     base["actual_status"] = status
     base["actual_body"] = _safe_actual_body(response.body)
+    assertion_results = _response_assertion_results(
+        str(case.get("expected", "")), response.body, case.get("assertions")
+    )
+    if assertion_results:
+        base["assertion_results"] = assertion_results
+        base["assertion_scope"] = "business"
     if status in {401, 403} and _expects_success(str(case.get("expected", ""))):
         auth_hint = (
             "鉴权配置未提供或凭据未生效"
@@ -1235,7 +1310,7 @@ async def _execute_case(
         )
         return base
     is_pass, semantic_failures = _judge_assertion(
-        str(case.get("expected", "")), status, response.body
+        str(case.get("expected", "")), status, response.body, case.get("assertions")
     )
     entry: dict[str, Any] = {
         "passed": is_pass,
@@ -1351,6 +1426,23 @@ def _safe_actual_body(value: Any, depth: int = 0) -> Any:
     if isinstance(value, str):
         return value[:2000] + ("…" if len(value) > 2000 else "")
     return value
+
+
+def _case_trace_fields(case: dict[str, Any]) -> dict[str, str]:
+    """Copy stable requirement lineage into execution evidence."""
+    return {
+        key: str(case[key])
+        for key in ("requirement_id", "claim_id", "testpoint_id", "title", "category")
+        if case.get(key)
+    }
+
+
+def _safe_browser_url(value: str) -> str:
+    """Keep browser evidence to origin + path; query strings and fragments may contain secrets."""
+    parsed = urlparse(value)
+    if not parsed.scheme or not parsed.netloc:
+        return parsed.path or ""
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 def _now_iso() -> str:

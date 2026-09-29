@@ -140,13 +140,21 @@ function paramsText(params: Record<string, unknown> | undefined): string {
                 <div class="req-cell">
                   <span class="mono loc">{{ item.interface_id }}</span>
                   <span v-if="item.requirement_id" class="mono loc">{{ item.requirement_id }}</span>
+                  <span v-if="item.claim_id" class="mono loc">{{ item.claim_id }}</span>
+                  <span v-if="item.testpoint_id" class="mono loc">{{ item.testpoint_id }}</span>
                 </div>
               </td>
               <td>
                 <span class="mono loc">{{ paramsText(item.params) }}</span>
               </td>
               <td>
-                <span class="desc">{{ item.expected }}</span>
+                <div class="req-cell">
+                  <span class="desc">{{ item.expected }}</span>
+                  <span v-if="item.assertions?.length" class="mono loc">
+                    {{ item.assertions.length }} 条响应字段断言
+                  </span>
+                  <span v-else class="low-conf">仅状态码断言</span>
+                </div>
               </td>
               <td>
                 <span v-if="item.loadable" class="mono loc">{{ item.script_path }}</span>
@@ -168,6 +176,8 @@ function paramsText(params: Record<string, unknown> | undefined): string {
             <span class="mono case-id">{{ item.id }}</span>
             <span class="tag tag-e2e">前端 E2E</span>
             <span class="mono loc">{{ item.requirement_id }}</span>
+            <span v-if="item.claim_id" class="mono loc">{{ item.claim_id }}</span>
+            <span v-if="item.testpoint_id" class="mono loc">{{ item.testpoint_id }}</span>
             <strong>{{ item.title }}</strong>
           </div>
           <p v-if="item.preconditions?.length" class="e2e-detail">

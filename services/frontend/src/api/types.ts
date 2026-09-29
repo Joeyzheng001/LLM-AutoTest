@@ -362,10 +362,53 @@ export interface InterfaceDef {
   id: string
   candidate_id?: string
   protocol: string
-  signature: { method: string; path: string; summary?: string }
-  params?: Array<{ name: string; type?: string; required?: boolean; in?: string }>
+  signature: {
+    method?: string
+    path?: string
+    service_method?: string
+    summary?: string
+  }
+  params?: InterfaceParam[]
+  parameter_evidence?: Array<Record<string, unknown>>
+  method_body_truncated?: boolean
+  method_body_char_count?: number
+  method_body_context?: Array<{ start_line: number; end_line: number; text: string }>
+  call_graph?: {
+    status?: 'complete' | 'partial'
+    resolved_calls?: number
+    resolved_nodes?: number
+    unresolved_calls?: number
+    max_depth?: number
+  }
+  call_graph_incomplete?: boolean
+  unresolved?: Array<Record<string, unknown>>
   code_location?: CodeLocation
   is_fallback?: boolean
+}
+
+export interface InterfaceParamField {
+  name: string
+  type?: string
+  required?: boolean
+  required_evidence?: string
+  description?: string
+  default?: unknown
+  constraints?: string[]
+  observed_values?: unknown[]
+  source_refs?: Array<{ file?: string; line?: number }>
+}
+
+export interface InterfaceParam {
+  name: string
+  type?: string
+  required?: boolean
+  required_evidence?: string
+  in?: string
+  default?: unknown
+  fields?: InterfaceParamField[]
+  constraints?: string[]
+  observed_values?: unknown[]
+  source_refs?: Array<{ file?: string; line?: number }>
 }
 
 export interface InterfaceCandidate {
@@ -375,12 +418,38 @@ export interface InterfaceCandidate {
   code_location: CodeLocation
   is_fallback?: boolean
   confidence?: number
+  method_body_truncated?: boolean
+  method_body_char_count?: number
+  call_graph?: {
+    status?: 'complete' | 'partial'
+    resolved_calls?: number
+    resolved_nodes?: number
+    unresolved_calls?: number
+    max_depth?: number
+  }
+  call_graph_incomplete?: boolean
+  unresolved?: Array<Record<string, unknown>>
+}
+
+export interface InterfaceScanCapabilities {
+  requested?: string[]
+  supported?: string[]
+  known?: string[]
+  unsupported?: string[]
 }
 
 export interface ReviewMapping {
   requirement_id: string
   interface_id?: string | null
   interface_ids?: string[]
+  claim_ids?: string[]
+  claim_counts?: {
+    total: number
+    implemented: number
+    partial: number
+    missing: number
+    undetermined: number
+  }
   status: 'implemented' | 'partial' | 'missing' | 'undetermined'
   confidence: number
   evidence_quality?: 'behavior_path' | 'interface_only' | 'insufficient' | 'none'
@@ -408,11 +477,44 @@ export interface ReviewEvidence {
   end_line: number
   excerpt: string
   interface_ids?: string[]
+  role?: string
+}
+
+export interface ReviewCallChain {
+  interface_id: string
+  entry: { repo?: string; file?: string }
+  callees: Array<
+    | string
+    | {
+        file?: string
+        role?: string
+        start_line?: number | null
+        end_line?: number | null
+        depth?: number | null
+        call_line?: number | null
+      }
+  >
+  status?: 'complete' | 'partial'
+  resolved_calls?: number
+  resolved_nodes?: number
+  unresolved_calls?: number
+  unresolved?: Array<Record<string, unknown>>
+  max_depth?: number
+  confidence: 'static_recursive' | 'legacy_static_one_hop' | 'static_one_hop' | string
 }
 
 export interface ReviewScanCoverage {
   complete: boolean
   review_evidence_limited: boolean
+  interface_evidence_truncated?: boolean
+  interface_evidence_limit?: number
+  interface_evidence_count?: number
+  interface_evidence_missing?: string[]
+  call_chain_truncated?: boolean
+  call_chain_limit?: number
+  interfaces_total?: number
+  scan_integrity_complete?: boolean
+  scan_integrity_reasons?: string[]
   repositories: Array<{
     repo: string
     status: string
@@ -422,6 +524,8 @@ export interface ReviewScanCoverage {
 
 export interface DerivedRisk {
   requirement_id: string
+  claim_ids?: string[]
+  interface_ids?: string[]
   description: string
   kind?: 'partial_implementation' | 'evidence_gap'
   severity?: 'P0' | 'P1' | 'P2'
@@ -449,6 +553,17 @@ export interface DeterministicReviewCheck {
 export interface MissingFeature {
   requirement_id: string
   title: string
+  claim_id?: string
+  claim_statement?: string
+  interface_ids?: string[]
+  evidence_refs?: string[]
+  unmet_conditions?: string[]
+}
+
+export interface CoveredClaimGroup {
+  requirement_id: string
+  claim_ids: string[]
+  status: 'implemented' | 'partial' | 'missing' | 'undetermined'
 }
 
 // C-09 视图四：变更范围（双分支 diff 程序化派生，不经 LLM）
@@ -458,6 +573,10 @@ export interface ChangeScopeEntry {
   file: string
   change: 'added' | 'modified'
   covered_by: string[] // 空 = 变更接口未被任何需求覆盖（变更风险信号）
+  covered_claims?: CoveredClaimGroup[]
+  matched_via?: 'definition' | 'related_file'
+  related_changed_files?: Array<{ file: string; role: string; change: 'added' | 'modified' }>
+  evidence_level?: 'body' | 'callee' | 'file' | 'related_file' | 'none'
 }
 
 export interface RemovedFile {
@@ -493,10 +612,17 @@ export interface TestCaseEntry {
   id: string
   interface_id: string
   requirement_id?: string
+  claim_id?: string
+  testpoint_id?: string
   category: 'normal' | 'boundary' | 'exception'
   title: string
   params?: Record<string, unknown>
   expected: string
+  assertions?: Array<{
+    path: string
+    op: 'equals' | 'not_equals' | 'exists' | 'not_exists' | 'non_empty' | 'contains' | 'greater_than' | 'less_than'
+    value?: unknown
+  }>
   script_path: string
   loadable: boolean
   low_confidence?: boolean
@@ -512,6 +638,8 @@ export interface E2eTestCaseEntry {
   id: string
   case_type: 'e2e'
   requirement_id: string
+  claim_id?: string
+  testpoint_id?: string
   title: string
   preconditions?: string[]
   steps: E2eTestStep[]
@@ -522,6 +650,31 @@ export interface ExecResult {
   case_id: string
   interface_id: string
   case_type?: 'api' | 'e2e'
+  requirement_id?: string
+  claim_id?: string
+  testpoint_id?: string
+  title?: string
+  category?: 'normal' | 'boundary' | 'exception' | 'e2e'
+  assertion_scope?: 'business' | 'status_only' | 'ui_steps'
+  assertion_results?: Array<{
+    path: string
+    op: string
+    expected?: unknown
+    actual?: unknown
+    found: boolean
+    passed: boolean
+  }>
+  evidence?: {
+    kind: 'http_response' | 'browser'
+    method?: string
+    path?: string
+    page_url?: string
+    page_title?: string
+    screenshot_ref?: string
+    console_errors?: string[]
+    request_failures?: string[]
+    capture_error?: string
+  }
   passed: boolean
   timeout?: boolean
   duration_ms?: number
@@ -547,6 +700,9 @@ export interface DefectEntry {
   id: string
   case_id: string
   interface_id: string
+  requirement_id?: string
+  claim_id?: string
+  testpoint_id?: string
   failure_reason: string
   triage?: {
     kind: 'input_construction' | 'assertion_or_setup' | 'product_suspect' | 'needs_evidence'
@@ -555,7 +711,8 @@ export interface DefectEntry {
   }
   interface?: { protocol?: string; method?: string; path?: string; summary?: string }
   testcase?: { title?: string; category?: string; expected?: string }
-  actual?: { status?: number; body?: unknown }
+  actual?: { status?: number; body?: unknown; assertion_results?: ExecResult['assertion_results'] }
+  evidence?: ExecResult['evidence']
   reproduce?: { script_path?: string; params?: Record<string, unknown> }
   status: 'discovered' | 'retesting' | 'passed' | 'closed_suggested' | 'retained'
   based_on_new_version?: boolean
@@ -575,6 +732,8 @@ export interface RegressionSuite {
     case_id: string
     script_path: string
     requirement_id: string
+    claim_id?: string
+    testpoint_id?: string
     interface_id: string
     archived_at: string
     version?: number
