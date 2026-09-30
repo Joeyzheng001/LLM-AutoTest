@@ -50,6 +50,8 @@ from common.response_assertions import (
     legacy_response_assertions,
     normalize_response_assertions,
 )
+from executor.nodes.e2e_surface import ProbeOptions
+from executor.nodes.e2e_surface import inspect_e2e_surface as probe_surface
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
@@ -388,8 +390,13 @@ async def run_testcase_generate(
             # 不让它把本节点打成失败并连带打断下游（曾因一条坏用例导致 4 节点降级）。
             try:
                 surface = await _inspect_e2e_surface(
-                    str(e2e.get("base_url", "")), bool(e2e.get("insecure_tls", True)), auth
+                    str(e2e.get("base_url", "")),
+                    bool(e2e.get("insecure_tls", True)),
+                    auth,
+                    ProbeOptions.from_config(e2e),
                 )
+                # 深层探测的降级原因（登录失败/未发现新路由）如实上报，便于定位 E2E 覆盖不足
+                warnings.extend(surface.get("warnings", []))
                 if surface["routes"]:
                     e2e_cases, e2e_warnings = await _generate_e2e_cases(
                         llm,
@@ -1687,145 +1694,23 @@ async def _generate_e2e_cases(
 
 
 async def _inspect_e2e_surface(
-    base_url: str, ignore_https_errors: bool, auth: dict[str, Any] | None = None
+    base_url: str,
+    ignore_https_errors: bool,
+    auth: dict[str, Any] | None = None,
+    options: ProbeOptions | None = None,
 ) -> dict[str, Any]:
-    """只读探测根路径与登录页，产出可验证的路由和语义定位器白名单。"""
-    base = base_url.rstrip("/") + "/"
-    routes: list[dict[str, Any]] = []
-    for path in ("/", "/login"):
-        try:
-            async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch()
-                context = await browser.new_context(ignore_https_errors=ignore_https_errors)
-                page = await context.new_page()
-                try:
-                    await page.goto(
-                        urljoin(base, path.lstrip("/")),
-                        wait_until="domcontentloaded",
-                        timeout=15_000,
-                    )
-                    await page.wait_for_timeout(300)
-                    elements = await page.locator(
-                        "input, textarea, select, button, a"
-                    ).evaluate_all(
-                        """nodes => nodes.slice(0, 80).map(n => ({tag:n.tagName.toLowerCase(),
-                        text:(n.innerText || n.textContent || '').trim(),
-                        aria:n.getAttribute('aria-label'),
-                        placeholder:n.getAttribute('placeholder')}))"""
-                    )
-                    selectors = _observed_selectors(elements)
-                    if selectors:
-                        routes.append(
-                            {
-                                "path": path,
-                                "title": await page.title(),
-                                "selectors": selectors,
-                                "visible_text": (await page.locator("body").inner_text())[:800],
-                            }
-                        )
-                finally:
-                    await context.close()
-                    await browser.close()
-        except PlaywrightError:
-            continue
-    if auth:
-        routes.extend(await _inspect_authenticated_routes(base_url, ignore_https_errors, auth))
-    unique = {str(route["path"]): route for route in routes}
-    normalized_base = base_url.rstrip("/")
-    return {
-        "base_url": normalized_base,
-        # goto.value 由执行端**字符串拼接**在 base_url 之后（见 auto_execute._run_e2e_step），
-        # 所以 routes[].path 是「相对 base_url」的路径，不是站内绝对路径。
-        # base_url 自带路径前缀时（如 http://host:6080/home），首页对应 path 是 "/"，
-        # 而不是 "/home"——不写清楚模型会按站内绝对路径写，全部被白名单拒绝。
-        "path_basis": (
-            f"goto/expect_url 的 value 相对 {normalized_base} 拼接；"
-            f"例如 value=\"/\" 打开 {normalized_base}/"
-        ),
-        "routes": list(unique.values()),
-    }
+    """探测前端可操作面（委托 e2e_surface 模块，见其模块文档）。
 
-
-async def _inspect_authenticated_routes(
-    base_url: str, ignore_https_errors: bool, auth: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """真实登录后探测首页与导航链接；只读访问，不提交任何业务表单。"""
-    base = base_url.rstrip("/") + "/"
-    discovered: list[dict[str, Any]] = []
-    try:
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch()
-            context = await browser.new_context(ignore_https_errors=ignore_https_errors)
-            page = await context.new_page()
-            try:
-                await page.goto(
-                    urljoin(base, "login"), wait_until="domcontentloaded", timeout=15_000
-                )
-                await page.get_by_placeholder("用户名", exact=False).fill(
-                    str(auth.get("username", ""))
-                )
-                await page.get_by_placeholder("密码", exact=False).fill(
-                    str(auth.get("password", ""))
-                )
-                await page.get_by_role("button", name="登 录", exact=False).click()
-                await page.wait_for_timeout(800)
-                paths = {urlparse(page.url).path or "/"}
-                for href in await page.locator("a").evaluate_all(
-                    "nodes => nodes.map(n => n.getAttribute('href'))"
-                ):
-                    if isinstance(href, str) and href.startswith("/") and not href.startswith("//"):
-                        paths.add(href.split("?", 1)[0])
-                for path in sorted(paths)[:10]:
-                    await page.goto(
-                        urljoin(base, path.lstrip("/")),
-                        wait_until="domcontentloaded",
-                        timeout=15_000,
-                    )
-                    await page.wait_for_timeout(200)
-                    elements = await page.locator(
-                        "input, textarea, select, button, a"
-                    ).evaluate_all(
-                        """nodes => nodes.slice(0, 80).map(n => ({
-                        tag:n.tagName.toLowerCase(),
-                        text:(n.innerText || n.textContent || '').trim(),
-                        aria:n.getAttribute('aria-label'),
-                        placeholder:n.getAttribute('placeholder')}))"""
-                    )
-                    selectors = _observed_selectors(elements)
-                    if selectors:
-                        discovered.append(
-                            {
-                                "path": path,
-                                "title": await page.title(),
-                                "selectors": selectors,
-                                "visible_text": (await page.locator("body").inner_text())[:800],
-                            }
-                        )
-            finally:
-                await context.close()
-                await browser.close()
-    except PlaywrightError:
-        return []
-    return discovered
-
-
-def _observed_selectors(elements: list[dict[str, Any]]) -> list[str]:
-    selectors: list[str] = []
-    for element in elements:
-        tag = str(element.get("tag", ""))
-        text = " ".join(str(element.get("text") or "").split())
-        placeholder = str(element.get("placeholder") or "").strip()
-        aria = str(element.get("aria") or "").strip()
-        if tag in {"input", "textarea"} and placeholder:
-            selectors.append(f"placeholder={placeholder}")
-        if aria:
-            selectors.append(f"label={aria}")
-        if tag == "button" and text:
-            selectors.append(f"role=button[name={text}]")
-        if tag == "a" and text:
-            selectors.append(f"role=link[name={text}]")
-    return list(dict.fromkeys(selectors))
-
+    保持原签名兼容（新增可选参数 options）；返回结构不变——仍是
+    ``{"base_url", "path_basis", "routes"}``，白名单消费方无需改动。
+    """
+    result = await probe_surface(base_url, ignore_https_errors, auth, options)
+    surface = result.to_surface(base_url)
+    # 探测告警挂在返回值上：调用方原以 surface["routes"] 为空判定 X-E2E-01，
+    # 这里追加 warnings 键不改变该判定，只让深层探测的降级原因可被上报。
+    if result.warnings:
+        surface["warnings"] = result.warnings
+    return surface
 
 def _parse_e2e_cases(
     text: str,
