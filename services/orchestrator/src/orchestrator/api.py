@@ -221,13 +221,42 @@ class LlmVerificationRequest(BaseModel):
 
 
 class E2eConfig(BaseModel):
-    """可选浏览器功能测试配置；默认不生成、不执行，保持 API 流程不变。"""
+    """可选浏览器功能测试配置；默认不生成、不执行，保持 API 流程不变。
+
+    探测量级字段（probe_*）控制登录后深层探测的深度与预算。默认值面向「中等规模
+    后台系统」调优：展开菜单取深层页面、点开 tab 与下拉读真实取值。探测越深越慢
+    （每个下拉多约 0.3s），前端很大或需要快速跑通时可显式调小。
+    """
 
     base_url: str
     generate_cases: bool = False
     execute_cases: bool = False
     insecure_tls: bool = True  # 测试环境常用自签名证书，默认跳过浏览器证书校验
     auth_mode: Literal["reuse", "browser"] = "browser"
+
+    # ── 深层探测（E2E 覆盖面的上游；探不到即模型不能生成）──
+    explore_menu: bool = Field(
+        default=True, description="登录后逐层展开左侧菜单，发现深层页面"
+    )
+    explore_interactions: bool = Field(
+        default=True, description="点开页内 tab，收集深层结构"
+    )
+    deep_read_options: bool = Field(
+        default=True, description="展开下拉读取真实选项值（用于枚举一致性校验，较慢）"
+    )
+    max_routes: int = Field(default=25, ge=1, le=200, description="最多探测的路由数")
+    max_elements: int = Field(
+        default=400, ge=0, le=5000, description="单页最多收集元素数，0 为不限制"
+    )
+    max_menu_depth: int = Field(default=4, ge=1, le=8, description="菜单展开最大层级")
+    max_interactions: int = Field(
+        default=12, ge=0, le=100, description="单页最多触发的交互探测次数"
+    )
+    browser_channel: str = Field(
+        default="",
+        max_length=32,
+        description="浏览器通道：空=捆绑 chromium；离线环境可用系统 msedge/chrome",
+    )
 
 
 class FixtureStep(BaseModel):
