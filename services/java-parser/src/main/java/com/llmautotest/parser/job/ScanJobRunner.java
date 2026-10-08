@@ -231,8 +231,11 @@ public class ScanJobRunner {
         if (includes.isEmpty()) {
             return true;
         }
+        // 规范化后比较：includes 是配置里的字符串（正斜杠语义），Path 在 Windows 上按
+        // 反斜杠切分，Path.startsWith("a/b") 会把 "a/b" 当成单个段而永不命中。
+        String normalized = relative.toString().replace('\\', '/');
         for (String include : includes) {
-            if (relative.startsWith(include)) {
+            if (normalized.startsWith(include.replace('\\', '/'))) {
                 return true;
             }
         }
@@ -247,7 +250,9 @@ public class ScanJobRunner {
         return Map.of(
                 "repo", repo,
                 "module", module,
-                "path", relative.toString());
+                // 统一正斜杠：files[].path 会与 changed_files（git 文本输出，恒为正斜杠）
+                // 及候选 code_location.file 做字符串比较，风格不一致会导致匹配失败。
+                "path", relative.toString().replace('\\', '/'));
     }
 
     /**

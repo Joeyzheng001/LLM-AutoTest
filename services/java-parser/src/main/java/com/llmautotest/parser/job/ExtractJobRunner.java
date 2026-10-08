@@ -386,6 +386,19 @@ public class ExtractJobRunner {
         return message.isEmpty() ? ex.getClass().getSimpleName() : message;
     }
 
+    /**
+     * 相对路径规范化为正斜杠。
+     *
+     * <p>{@code Path.toString()} 在 Windows 上产出反斜杠（{@code a\b\C.java}），而
+     * {@code changed_files} 来自 {@code git diff --name-status} 的文本输出，恒为正斜杠
+     * （{@code a/b/C.java}）。下游 {@code _filter_candidates_by_scope} 是字符串精确匹配，
+     * 两种风格永不相等 → 候选被全部过滤 → 误报 X-REV-04「变更范围内无接口候选」。
+     * 这里统一成 git 口径，跨平台一致。
+     */
+    private static String normalizeRelative(Path relative) {
+        return relative.toString().replace('\\', '/');
+    }
+
     // 快照建立与清理见 RepoSandbox：scan 与 extract 必须用同一份实现数同一版本的文件，
     // 否则工作区领先于配置提交时两边计数不等，会被完整性门禁误判为「接口成批缺失」。
 
@@ -419,7 +432,7 @@ public class ExtractJobRunner {
         int parsed = 0;
         int failed = 0;
         for (Path file : sourceFiles) {
-            String relative = root.relativize(file).toString();
+            String relative = normalizeRelative(root.relativize(file));
             try {
                 String source = Files.readString(file, StandardCharsets.UTF_8);
                 if (relative.endsWith(".proto")) {
@@ -882,7 +895,7 @@ public class ExtractJobRunner {
         Map<String, List<Span>> methods = new LinkedHashMap<>();
         Map<String, List<MethodTarget>> methodTargets = new LinkedHashMap<>();
         for (Path file : javaFiles) {
-            String relative = root.relativize(file).toString();
+            String relative = normalizeRelative(root.relativize(file));
             CompilationUnit unit = parseOrNull(file, parser);
             if (unit == null) {
                 continue;
@@ -1801,7 +1814,7 @@ public class ExtractJobRunner {
                     .flatMap(unit -> unit.getStorage())
                     .map(storage -> storage.getPath().normalize());
             if (storagePath.isPresent() && storagePath.get().startsWith(root.normalize())) {
-                file = root.normalize().relativize(storagePath.get()).toString();
+                file = normalizeRelative(root.normalize().relativize(storagePath.get()));
             }
             if (!file.isBlank()) {
                 entry.put("source_refs", List.of(Map.of("file", file, "line", begin.line)));
@@ -1913,7 +1926,7 @@ public class ExtractJobRunner {
     private static MethodDeclaration methodForTarget(
             Path root, CompilationUnit currentUnit, MethodTarget target, JavaParser parser) {
         if (target.file().equals(currentUnit.getStorage().map(storage ->
-                root.relativize(storage.getPath()).toString()).orElse(""))) {
+                normalizeRelative(root.relativize(storage.getPath()))).orElse(""))) {
             return findMethod(currentUnit, target);
         }
         Path path = root.resolve(target.file()).normalize();
@@ -2101,8 +2114,11 @@ public class ExtractJobRunner {
         if (includes.isEmpty()) {
             return true;
         }
+        // 规范化后比较：includes 是用户配置里的字符串（正斜杠语义），而 Path 在 Windows
+        // 上按反斜杠切分——Path.startsWith("a/b") 会把 "a/b" 当成单个段而永不命中。
+        String normalized = normalizeRelative(relative);
         for (String include : includes) {
-            if (relative.startsWith(include)) {
+            if (normalized.startsWith(include.replace('\\', '/'))) {
                 return true;
             }
         }
