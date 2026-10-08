@@ -195,6 +195,9 @@ async def run_testcase_generate(
         # Claim 测试点溯源缺口（接口, 未覆盖测试点数）：无论模型是否首轮输出
         # testpoint_id，都尝试一次定向补产；仍缺则告警，不把模型漏溯源伪装成完整覆盖。
         coverage_gaps: list[tuple[str, int]] = []
+        # F-GEN-05 展开不足残余（testpoint_id, hints 数, 期望, 实际）：批内补产一次
+        # 后仍不足的测试点，节点末尾统一告警。
+        expansion_gaps: list[tuple[str, int, int, int]] = []
         # 用例输出随接口数 × 三类场景增长。最多三个接口一批，避免模型只回答
         # 批次首项而把其余接口静默漏掉。
         interface_batches = _chunk_case_interfaces(interfaces)
@@ -307,6 +310,33 @@ async def run_testcase_generate(
                         len(uncovered),
                     )
                 )
+            # F-GEN-05 展开充分性：与 F-GEN-04 同层做「先修再报」。检测必须在批内
+            # （补产机制按批携带 user_content），只对本批接口归属的测试点计量；
+            # 补产一次后仍不足的残余进 expansion_gaps，由节点末尾统一告警。
+            batch_point_ids = {
+                str(point.get("id", ""))
+                for point in testpoints
+                if str(point.get("interface_id", ""))
+                in {str(b.get("id", "")) for b in batch}
+            }
+            batch_points = [
+                point
+                for point in testpoints
+                if str(point.get("id", "")) in batch_point_ids
+            ]
+            underexpanded = _underexpanded_testpoints(batch_valid, batch_points)
+            if underexpanded:
+                batch_valid = await _recover_underexpanded_testpoints(
+                    llm,
+                    prompt,
+                    user_content,
+                    batch,
+                    batch_valid,
+                    underexpanded,
+                    {str(p.get("id", "")): p for p in batch_points},
+                )
+                underexpanded = _underexpanded_testpoints(batch_valid, batch_points)
+            expansion_gaps.extend(underexpanded)
             valid.extend(batch_valid)
             checkpoint_batches = [
                 item for item in checkpoint_batches if int(item.get("index", 0)) != index
@@ -389,15 +419,17 @@ async def run_testcase_generate(
                 f"P0-assertion: {len(status_only_claim_cases)} 条需求主流程接口用例没有可执行的响应字段断言，"
                 "当前只能判定 HTTP 状态；需补充字段级 assertions 后才能作为业务结果通过。"
             )
-        underexpanded = _underexpanded_testpoints(cases, testpoints)
-        if underexpanded:
+        # F-GEN-05 展开不足：批内已做过一次定向补产（与 F-GEN-04 对称），这里只
+        # 告警补产后仍不足的残余。不在合并结果上重新检测——跨批接口归属不同，
+        # 重测会把批内已补齐的点按全局口径重复计量。
+        if expansion_gaps:
             detail = "; ".join(
                 f"{tid}（{hint_count}维度→期望≥{expected}，实际{actual}）"
-                for tid, hint_count, expected, actual in underexpanded
+                for tid, hint_count, expected, actual in expansion_gaps
             )
             warnings.append(
-                f"F-GEN-05: {len(underexpanded)} 个需求测试点挂了多条拆分维度却展开不足，"
-                f"疑似未按 case_split_hints 逐维度展开（枚举值、边界、主备源应各成用例）："
+                f"F-GEN-05: {len(expansion_gaps)} 个需求测试点挂了多条拆分维度却展开不足"
+                f"（已按维度清单定向补产一次仍未达标）："
                 f"{detail}。请人工确认是维度冗余还是漏展开。"
             )
         e2e_cases: list[dict[str, Any]] = []
@@ -1092,6 +1124,42 @@ def _underexpanded_testpoints(
     return underexpanded
 
 
+async def _recover_cases_with_targeted_prompt(
+    llm: SupportsComplete,
+    prompt: PromptSpec,
+    user_content: str,
+    interfaces: list[dict[str, Any]],
+    cases: list[dict[str, Any]],
+    instruction: str,
+    wanted_testpoints: set[str],
+    log_label: str,
+) -> list[dict[str, Any]]:
+    """定向补产通用骨架：回喂缺口清单 → 解析校验 → 只收目标测试点 → 去重合并。
+
+    F-GEN-04（溯源缺口）与 F-GEN-05（展开不足）共用此骨架，差异只在
+    ``instruction``（缺口说明与补产要求）。补产是增强路径：模型输出损坏、
+    参数违规、补产跑偏（引用了目标之外的测试点）都不让整批失败，原样返回
+    已有用例，缺口最终以告警形式进产物交人工判断。
+    """
+    targeted_content = f"{user_content}\n\n{instruction}"
+    try:
+        result = await llm.complete(NODE_NAME, prompt, targeted_content)
+        additions = _parse_llm_cases(result.text, interfaces)
+    except PipelineError as exc:
+        logger.warning("%s补产调用失败，保留已有用例：%s", log_label, exc.message)
+        return cases
+    accepted, _ = _filter_param_violations(additions, interfaces)
+    # 只接受确实指向目标测试点的条目，避免把无关用例混入产物。
+    accepted = [
+        case
+        for case in accepted
+        if str(case.get("testpoint_id", "")) in wanted_testpoints
+    ]
+    if not accepted:
+        return cases
+    return _merge_case_entries(cases, accepted)
+
+
 async def _recover_uncovered_testpoints(
     llm: SupportsComplete,
     prompt: PromptSpec,
@@ -1100,13 +1168,8 @@ async def _recover_uncovered_testpoints(
     cases: list[dict[str, Any]],
     uncovered: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """为未被引用的 REQ 测试点做一次定向补产，失败时原样返回。
-
-    只补产缺失测试点、只接受参数合规的用例；任何解析/校验失败都不让整批失败
-    （覆盖缺口最终以告警形式出现在产物 warnings，交由人工判断）。
-    """
-    targeted_content = (
-        f"{user_content}\n\n"
+    """F-GEN-04：为未被任何用例引用的 REQ 测试点做一次定向补产。"""
+    instruction = (
         "这是测试点覆盖补充请求。下列 REQ 测试点尚无对应用例，请每个测试点各产出"
         "至少一条用例，并在用例中回填其 testpoint_id；同时仍需满足每个接口"
         "normal/boundary/exception 三类各 ≥1。若源码证据支持，请给 normal 用例提供"
@@ -1119,22 +1182,71 @@ async def _recover_uncovered_testpoints(
         '"params":{},"expected":"status=...","assertions":[{"path":"data.id",'
         '"op":"exists"}]}]}。'
     )
-    try:
-        result = await llm.complete(NODE_NAME, prompt, targeted_content)
-        additions = _parse_llm_cases(result.text, interfaces)
-    except PipelineError as exc:
-        # 补产是增强路径：模型输出损坏或接口引用非法时保留已有用例，不中断批次。
-        logger.warning("测试点覆盖补产调用失败，保留已有用例：%s", exc.message)
-        return cases
-    accepted, _ = _filter_param_violations(additions, interfaces)
-    # 只接受确实覆盖了缺失测试点的条目，避免把无关用例混入产物。
-    wanted = {str(point.get("id", "")) for point in uncovered}
-    accepted = [
-        case for case in accepted if str(case.get("testpoint_id", "")) in wanted
-    ]
-    if not accepted:
-        return cases
-    return _merge_case_entries(cases, accepted)
+    return await _recover_cases_with_targeted_prompt(
+        llm,
+        prompt,
+        user_content,
+        interfaces,
+        cases,
+        instruction,
+        wanted_testpoints={str(point.get("id", "")) for point in uncovered},
+        log_label="测试点覆盖",
+    )
+
+
+async def _recover_underexpanded_testpoints(
+    llm: SupportsComplete,
+    prompt: PromptSpec,
+    user_content: str,
+    interfaces: list[dict[str, Any]],
+    cases: list[dict[str, Any]],
+    underexpanded: list[tuple[str, int, int, int]],
+    points_by_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """F-GEN-05：为展开不足的 REQ 测试点按拆分维度做一次定向补产。
+
+    与 F-GEN-04 的差异：缺的不是「有没有用例」而是「维度覆盖够不够」，
+    因此补产清单携带每个点的 case_split_hints 原文与已有用例标题——
+    要求模型只补**尚未覆盖的维度**，不重复已有场景。
+    """
+    gaps: list[dict[str, Any]] = []
+    for testpoint_id, hint_count, expected, actual in underexpanded:
+        point = points_by_id.get(testpoint_id, {})
+        existing_titles = [
+            str(case.get("title", ""))
+            for case in cases
+            if str(case.get("testpoint_id", "")) == testpoint_id
+        ]
+        gaps.append(
+            {
+                "testpoint_id": testpoint_id,
+                "case_split_hints": point.get("case_split_hints") or [],
+                "期望用例数": expected,
+                "实际用例数": actual,
+                "已有用例标题": existing_titles,
+            }
+        )
+    instruction = (
+        "这是展开充分性补充请求（F-GEN-05）。下列 REQ 测试点挂了多条拆分维度，"
+        "但已产出的用例数显著低于维度数——请对照每个点的 case_split_hints 与"
+        "已有用例标题，只为**尚未覆盖的维度**补产用例（每个缺失维度一条），"
+        "回填 testpoint_id；禁止重复已有场景、禁止输出清单之外的测试点或接口：\n"
+        f"展开不足清单：{json.dumps(gaps, ensure_ascii=False)}\n"
+        '输出格式：{"cases":[{"interface_id":"...","requirement_id":"...",'
+        '"testpoint_id":"...","category":"normal|boundary|exception","title":"...",'
+        '"params":{},"expected":"status=...","assertions":[{"path":"data.id",'
+        '"op":"exists"}]}]}。'
+    )
+    return await _recover_cases_with_targeted_prompt(
+        llm,
+        prompt,
+        user_content,
+        interfaces,
+        cases,
+        instruction,
+        wanted_testpoints={row[0] for row in underexpanded},
+        log_label="展开充分性",
+    )
 
 
 def _merge_case_entries(
