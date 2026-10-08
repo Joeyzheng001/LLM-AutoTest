@@ -60,7 +60,11 @@ logger = logging.getLogger(__name__)
 NODE_NAME = "testcase_generate"
 
 _VALID_CATEGORIES = ("normal", "boundary", "exception")
-_MAX_CASE_INTERFACES_PER_BATCH = 3
+# 单批接口数上限：从 3 收紧到 2。解除「每点 1 条、整批 40 条」软封顶后，单个 REQ
+# 测试点要按维度充分展开（枚举/边界/正反路径），单批输出会变长；把每批接口数降一档，
+# 给展开腾出生成长度空间，避免撞上限被截断。批次数变多不影响续跑——检查点按批次
+# index 记录完成项（见 _load_generation_checkpoint），批次总数变化不会使旧检查点失效。
+_MAX_CASE_INTERFACES_PER_BATCH = 2
 _CHECKPOINT_FILENAME = "testcase_generate_checkpoint.json"
 # 参数一致性违规明细：内部排查文件（非产物契约）。原有的 X-GEN-02 告警只有接口号，
 # 参数名与违规原因只活在内存与检查点里，而检查点成功后即被清除——真机排查时无从
@@ -800,7 +804,7 @@ def _build_batch_context(
 
 
 def _chunk_case_interfaces(interfaces: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """按字符预算后再按最多三个接口拆分，控制用例输出规模。"""
+    """按字符预算后再按 `_MAX_CASE_INTERFACES_PER_BATCH` 个接口拆分，控制用例输出规模。"""
     batches: list[list[dict[str, Any]]] = []
     for char_batch in chunk_json_items(interfaces):
         for index in range(0, len(char_batch), _MAX_CASE_INTERFACES_PER_BATCH):
