@@ -27,6 +27,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 from functools import partial
 from pathlib import Path
@@ -387,6 +388,17 @@ async def run_testcase_generate(
             warnings.append(
                 f"P0-assertion: {len(status_only_claim_cases)} 条需求主流程接口用例没有可执行的响应字段断言，"
                 "当前只能判定 HTTP 状态；需补充字段级 assertions 后才能作为业务结果通过。"
+            )
+        underexpanded = _underexpanded_testpoints(cases, testpoints)
+        if underexpanded:
+            detail = "; ".join(
+                f"{tid}（{hint_count}维度→期望≥{expected}，实际{actual}）"
+                for tid, hint_count, expected, actual in underexpanded
+            )
+            warnings.append(
+                f"F-GEN-05: {len(underexpanded)} 个需求测试点挂了多条拆分维度却展开不足，"
+                f"疑似未按 case_split_hints 逐维度展开（枚举值、边界、主备源应各成用例）："
+                f"{detail}。请人工确认是维度冗余还是漏展开。"
             )
         e2e_cases: list[dict[str, Any]] = []
         if e2e and bool(e2e.get("generate_cases")):
@@ -1026,6 +1038,58 @@ def _uncovered_req_testpoints(
         and str(point.get("interface_id", "")) in interface_ids
         and str(point.get("id", "")) not in referenced
     ]
+
+
+# 展开充分性阈值：实际用例数低于 ceil(hints 条数 × 系数) 判为展开不足。
+# 系数 < 1 留出余量——不是每条拆分维度都必然独立成一条用例（如「展示验证」
+# 可能并入正常路径断言），但显著低于维度数就说明模型没按维度展开，退回了
+# 「每点凑一条」的偷懒口径。0.6 由真实 hints 分布（中位 4~5 条）反推：5 条
+# 维度至少该产 3 条，低于此几乎必是漏展开。
+_EXPANSION_RATIO = 0.6
+# hints 条数低于此值不校验：1~2 条维度本就该产 1~2 条，F-GEN-04 的「≥1」已覆盖，
+# 再叠加展开校验只会制造噪声告警。
+_EXPANSION_MIN_HINTS = 3
+
+
+def _underexpanded_testpoints(
+    cases: list[dict[str, Any]],
+    testpoints: list[dict[str, Any]],
+) -> list[tuple[str, int, int, int]]:
+    """F-GEN-05：返回 case_split_hints 维度多、但实际用例数显著偏低的 REQ 测试点。
+
+    解除「每点 1 条、整批 40 条」软封顶后，展开的充分性只写在 prompt 里、无任何
+    机器校验——模型若对一个挂了 5 条拆分维度的测试点只产 1 条用例，F-GEN-04 的
+    「≥1 条即覆盖」照样放行。本函数按 `case_split_hints` 条数估算期望展开量，
+    实际显著偏低时如实告警（不强制补产，交人工确认是维度冗余还是模型偷懒）。
+
+    只统计 `source=REQ` 且挂了 ≥``_EXPANSION_MIN_HINTS`` 条维度的测试点，与
+    `_uncovered_req_testpoints` 保持同一覆盖面口径（RISK 点同构、无接口归属属
+    E2E/人工范畴，均不在本节点展开校验内）。
+
+    返回 ``[(testpoint_id, hint_count, expected, actual), ...]``。
+    """
+    counts: dict[str, int] = {}
+    for case in cases:
+        testpoint_id = str(case.get("testpoint_id", ""))
+        if testpoint_id:
+            counts[testpoint_id] = counts.get(testpoint_id, 0) + 1
+    underexpanded: list[tuple[str, int, int, int]] = []
+    for point in testpoints:
+        if str(point.get("source", "")) != "REQ":
+            continue
+        hints = point.get("case_split_hints") or []
+        hint_count = len(hints) if isinstance(hints, list) else 0
+        if hint_count < _EXPANSION_MIN_HINTS:
+            continue
+        testpoint_id = str(point.get("id", ""))
+        actual = counts.get(testpoint_id, 0)
+        # 未被任何用例引用的点归 F-GEN-04 处理，这里不重复告警。
+        if actual == 0:
+            continue
+        expected = math.ceil(hint_count * _EXPANSION_RATIO)
+        if actual < expected:
+            underexpanded.append((testpoint_id, hint_count, expected, actual))
+    return underexpanded
 
 
 async def _recover_uncovered_testpoints(
