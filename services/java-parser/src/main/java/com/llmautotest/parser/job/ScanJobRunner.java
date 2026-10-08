@@ -151,6 +151,32 @@ public class ScanJobRunner {
             return entry;
         }
 
+        // 文件清点必须在 target_sha 快照上做，与 ExtractJobRunner 同源（RepoSandbox）。
+        // 只扫工作区会让 file_count 与实际提取的版本错位——工作区领先于配置提交时，
+        // 下游完整性门禁拿两个版本的计数做等值比较，会误判成「接口成批缺失」并硬拦。
+        // 注：上面的 nameStatus/lineRanges 是提交对提交的 diff，不受检出目录影响。
+        String targetSha = (String) entry.get("target_sha");
+        if (targetSha != null && !targetSha.isBlank()) {
+            try {
+                root = RepoSandbox.at(git, root, repo, targetSha);
+                entry.put("snapshot", true);
+                entry.put("snapshot_path", root.toString());
+            } catch (IOException | InterruptedException ex) {
+                if (ex instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                // 快照建不出来时如实报错，不静默回退工作区（否则又回到版本错位）。
+                entry.put("status", "error");
+                entry.put("file_count", 0);
+                entry.put("files", List.of());
+                entry.put("error", Map.of(
+                        "code", "SNAPSHOT_FAILED",
+                        "message", "按 target_sha 检出只读快照失败（" + targetSha + "）："
+                                + reasonOf(ex)));
+                return entry;
+            }
+        }
+
         List<Path> javaFiles = listSourceFiles(root, repo.includes());
         List<String> encodingSkipped = new ArrayList<>();
         for (Path file : javaFiles) {
