@@ -388,6 +388,10 @@ class Database:
             job.lease_expires_at = now + timedelta(seconds=lease_seconds)
             job.heartbeat_at = now
             job.updated_at = now
+            # 任务重新开始运行，上一轮的终态错误不再适用。不清则前端在整段运行期里
+            # 持续展示「上一次」的失败原因，看起来像这次也在失败。
+            job.error_code = None
+            job.error_message = None
             job.version += 1
             if job.started_at is None:
                 job.started_at = now

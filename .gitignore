@@ -31,6 +31,9 @@ deploy/remote_exec.py
 # 运行时产物（按任务 ID 分目录，运行时生成，不入库）
 /data/
 volumes/
+# 本地开发用产物根（ARTIFACTS_ROOT 指到工作区内时使用）。
+# 内含 .job-credentials.enc（任务密钥密文）与需求文档原文，绝不入库。
+.local-artifacts/
 
 # IDE / OS
 .idea/
@@ -39,6 +42,8 @@ volumes/
 services/frontend/tsconfig.tsbuildinfo
 .rings/
 .playwright-mcp/
+# 本机 Claude Code 会话权限记录（含绝对路径，因人而异）
+.claude/
 
 # 本地工作记忆（会话日志/项目笔记，非源码，不入库）
 .workbuddy/

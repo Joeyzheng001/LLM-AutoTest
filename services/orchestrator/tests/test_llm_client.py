@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -169,6 +170,75 @@ async def test_connect_timeout_explains_gateway_network_boundary(tmp_path: Path)
     assert "example.test" not in excinfo.value.message
 
 
+async def test_429_is_retryable_then_succeeds(tmp_path: Path) -> None:
+    """429 是暂时性拥塞而非配置错误：应重试，不该一次判死节点。
+
+    回归背景：429 曾被并入 4xx「重试无意义」分支，一次限流即让 testcase_generate
+    节点失败——而该节点本就并发多路打网关，被限流是常态，直接失败把可自愈的拥塞
+    固化成任务失败（前端持续展示 X-LLM-01 / HTTP 429）。
+    """
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) < 3:
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    trace = tmp_path / "job-abc12345-0" / "llm_calls.jsonl"
+    client = LlmClient(
+        _settings(),
+        "job-abc12345-def-6",
+        trace,
+        transport=httpx.MockTransport(handler),
+        retry_backoff=(0.0, 0.0),
+    )
+    result = await client.complete("req_parse", _PROMPT, "内容")
+    assert result.text == "ok"
+    assert len(attempts) == 3  # 首发 + 2 次重试
+    assert json.loads(trace.read_text(encoding="utf-8").strip())["ok"] is True
+
+
+async def test_429_exhausted_mentions_throttling(tmp_path: Path) -> None:
+    """持续 429 重试耗尽后仍失败，但报错须点明「限流」而非笼统的「被拒绝」。"""
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(429, headers={"Retry-After": "0"})
+
+    trace = tmp_path / "job-abc12345-0" / "llm_calls.jsonl"
+    client = LlmClient(
+        _settings(),
+        "job-abc12345-def-6",
+        trace,
+        transport=httpx.MockTransport(handler),
+        retry_backoff=(0.0, 0.0),
+    )
+    with pytest.raises(PipelineError) as excinfo:
+        await client.complete("req_parse", _PROMPT, "内容")
+    assert excinfo.value.code == "X-LLM-01"
+    assert len(attempts) == 3  # 限流走了完整重试，不是单次判死
+    assert "限流" in excinfo.value.message
+    assert "429" in excinfo.value.message
+
+
+def test_parse_retry_after_handles_seconds_dates_and_garbage() -> None:
+    """Retry-After 解析：秒数、HTTP 日期、缺失、非法值，且超大值须截断。"""
+    from common.llm.client import _MAX_RETRY_AFTER_S, _parse_retry_after
+
+    assert _parse_retry_after("30") == 30.0
+    assert _parse_retry_after("0") == 0.0
+    # 超大值截断，避免节点长时间挂在 sleep 上
+    assert _parse_retry_after("999999") == _MAX_RETRY_AFTER_S
+    assert _parse_retry_after(None) is None
+    assert _parse_retry_after("") is None
+    assert _parse_retry_after("not-a-value") is None
+    # HTTP 日期形式
+    future = _parse_retry_after("Wed, 21 Oct 2099 07:28:00 GMT")
+    assert future is not None and future > 0
+
+
 async def test_4xx_no_retry(tmp_path: Path) -> None:
     """4xx（鉴权/参数错误）重试无意义：单次即失败。"""
     attempts: list[int] = []
@@ -189,6 +259,42 @@ async def test_4xx_no_retry(tmp_path: Path) -> None:
         await client.complete("req_parse", _PROMPT, "内容")
     assert excinfo.value.code == "X-LLM-01"
     assert len(attempts) == 1
+
+
+async def test_non_ascii_api_key_fails_fast_without_http_call(tmp_path: Path) -> None:
+    """误把中文提示语粘进密钥框：建连接前即抛 X-LLM-01，不裸抛 UnicodeEncodeError。
+
+    回归背景：httpx 编码请求头时对非 ASCII 值抛 UnicodeEncodeError，该异常不属于
+    网络异常族，会穿透重试与错误码分类直达编排层兜底 except——前端只看到笼统的
+    「后台运行异常，见服务日志」，节点状态停留在 running 且无重试。
+    """
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover —— 不该被调用
+        calls.append(1)
+        return httpx.Response(200)
+
+    bad = _settings()
+    bad = replace(bad, llm_api_key="服务重启导致任务中断；已完成产物保留，可从该节点继续重跑")
+    trace = tmp_path / "job-abc12345-0" / "llm_calls.jsonl"
+    client = LlmClient(
+        bad,
+        "job-abc12345-def-6",
+        trace,
+        transport=httpx.MockTransport(handler),
+        retry_backoff=(0.0, 0.0),
+    )
+    with pytest.raises(PipelineError) as excinfo:
+        await client.complete("req_parse", _PROMPT, "内容")
+    assert excinfo.value.code == "X-LLM-01"
+    # 配置类错误重试无意义：不应发生任何 HTTP 调用
+    assert calls == []
+    # 密钥内容不得回显（凭据不得进日志/响应）
+    assert "服务重启" not in excinfo.value.message
+    # 失败仍留痕，便于排障
+    record = json.loads(trace.read_text(encoding="utf-8").strip())
+    assert record["ok"] is False
+    assert record["error"] == "X-LLM-01"
 
 
 async def test_call_id_continues_after_restart(tmp_path: Path) -> None:

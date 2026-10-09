@@ -2,7 +2,8 @@
 
 口径全部来自 docs/12 第三章：
 - 每次调用向 llm_calls.jsonl 追加一行留痕（call_id 格式 LLM-<job 短码>-<序号>）；
-- 超时算调用失败；仅网络/超时类失败重试，最多 2 次、指数退避 5s/20s；
+- 超时算调用失败；仅网络/超时/5xx/429 类失败重试，最多 2 次、指数退避 5s/20s
+  （429 带 Retry-After 时以网关指示为准）；
 - 采样参数取 Settings 实际值（模板建议值仅供参考，禁止硬编码）；
 - token 数取 API 响应原始值，不做换算修饰。
 """
@@ -16,6 +17,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,16 +30,70 @@ from common.prompts_loader import PromptSpec
 # docs/12 §三：重试退避间隔（秒）；测试注入 0 加速
 DEFAULT_RETRY_BACKOFF: tuple[float, float] = (5.0, 20.0)
 _MAX_ATTEMPTS = 3  # 1 次首发 + 2 次重试
+# 429 的 Retry-After 上限：防止网关给出异常大值把节点长时间挂在 sleep 上
+_MAX_RETRY_AFTER_S = 60.0
 
 # C-17：推理模型思考块不属回答正文，
 # 不剥离则下游 JSON 解析节点全部 X-LLM-02。留痕 output_digest 仍取原始输出（诚实红线）。
 _THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>")
+
+# HTTP 头值必须是可 ASCII 编码的可打印字符。任务配置里若把中文提示语误粘进
+# API Key（如套餐到期提示、服务重启说明），httpx 会在编码请求头时抛
+# UnicodeEncodeError——它不属于 httpx 网络异常族，会穿透 LlmClient 的重试与错误码
+# 分类，直达编排层兜底 except，前端只看到笼统的「后台运行异常」。此处提前拦截。
+_HEADER_UNSAFE_RE = re.compile(r"[^\x21-\x7e]")
 
 
 def strip_think_blocks(text: str) -> str:
     """剥离推理模型思考块；若正文为空则保留原文供节点提取完整 JSON。"""
     stripped = _THINK_BLOCK_RE.sub("", text).strip()
     return stripped or text.strip()
+
+
+def _parse_retry_after(raw: str | None) -> float | None:
+    """解析 ``Retry-After`` 头为秒数；无法识别时返回 None（退回本地退避表）。
+
+    支持两种标准形式：秒数（``"30"``）和 HTTP 日期（``"Wed, 21 Oct 2026 07:28:00 GMT"``）。
+    上限截断到 ``_MAX_RETRY_AFTER_S``：恶意或异常的超大值（如 ``"999999"``）会把
+    节点挂在 sleep 上，反而比失败更糟。
+    """
+    if not raw:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    seconds: float | None = None
+    if value.isdigit():
+        seconds = float(value)
+    else:
+        try:
+            target = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if target is None:  # pragma: no cover —— 解析失败按无值处理
+            return None
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=UTC)
+        seconds = (target - datetime.now(UTC)).total_seconds()
+    if seconds is None:
+        return None
+    return max(0.0, min(seconds, _MAX_RETRY_AFTER_S))
+
+
+def ensure_header_safe_api_key(api_key: str) -> None:
+    """校验 API Key 可作 HTTP 头值；不可用时抛 X-LLM-01，且不回显密钥内容。
+
+    密钥含非 ASCII 是确定性配置错误，重试无意义——与 4xx 分支同类，故直接抛
+    ``PipelineError`` 而非可重试载体，避免白等退避与重复计费。
+    """
+    if api_key and _HEADER_UNSAFE_RE.search(api_key):
+        raise PipelineError(
+            code=X_LLM_01,
+            message=(
+                "LLM 中转站 API Key 含非 ASCII 或不可见字符（常见于误粘贴中文提示语），"
+                "无法作为 HTTP 请求头发送；请在任务配置中重新填写中转站密钥"
+            ),
+        )
 
 
 def describe_transport_error(exc: httpx.TimeoutException | httpx.TransportError) -> str:
@@ -186,19 +242,24 @@ class LlmClient:
     async def _request(
         self, system: str, user_content: str, max_attempts: int | None = None
     ) -> tuple[str, int | None]:
-        """带重试的 HTTP 调用；仅网络/超时类失败重试（docs/12 §三）。"""
+        """带重试的 HTTP 调用；仅网络/超时/5xx/429 类失败重试（docs/12 §三）。"""
         attempts = self._max_attempts if max_attempts is None else max_attempts
         if attempts < 1:
             raise ValueError("max_attempts 必须大于 0")
         last_error: PipelineError | None = None
+        retry_after_s: float | None = None
         for attempt in range(attempts):
             if attempt > 0:
                 backoff_index = min(attempt - 1, len(self._retry_backoff) - 1)
-                await asyncio.sleep(self._retry_backoff[backoff_index])
+                # 网关明确要求退避（429 Retry-After）时以其为准，且不小于本地退避：
+                # 限流场景下多等一会儿比立刻回冲更能恢复，也避免各批互相挤占。
+                delay = max(self._retry_backoff[backoff_index], retry_after_s or 0.0)
+                await asyncio.sleep(delay)
             try:
                 return await self._request_once(system, user_content)
             except _RetryableError as exc:
                 last_error = exc.to_pipeline_error()
+                retry_after_s = exc.retry_after_s
         if last_error is None:  # pragma: no cover —— 循环至少执行一次且必赋值
             msg = "unreachable: max_attempts >= 1"
             raise RuntimeError(msg)
@@ -206,6 +267,9 @@ class LlmClient:
 
     async def _request_once(self, system: str, user_content: str) -> tuple[str, int | None]:
         """单次 HTTP 调用；网络/超时异常转可重试错误，其余按状态码分类。"""
+        # 配置类错误在建连接前拦下：非 ASCII 密钥会让 httpx 抛 UnicodeEncodeError，
+        # 该异常不在下方 except 的捕获范围内，会绕过节点级重试直达编排层兜底。
+        ensure_header_safe_api_key(self._settings.llm_api_key)
         endpoint, payload, headers = self._request_spec(system, user_content)
         async with httpx.AsyncClient(
             base_url=self._settings.llm_base_url,
@@ -221,6 +285,14 @@ class LlmClient:
         if response.status_code >= 500:
             # 网关 5xx 视为暂时性故障：可重试
             raise _RetryableError(f"LLM 服务端错误：HTTP {response.status_code}")
+        if response.status_code == 429:
+            # 限流是暂时性拥塞，不是配置错误：可重试。此前归入 4xx「重试无意义」分支，
+            # 一次 429 即判死节点——而 testcase_generate 等节点是并发多路打网关，
+            # 被限流是常态，直接失败会把可自愈的拥塞固化成任务失败。
+            raise _RetryableError(
+                "LLM 中转站限流：HTTP 429（已等待后重试）",
+                retry_after_s=_parse_retry_after(response.headers.get("Retry-After")),
+            )
         if response.status_code != 200:
             # 4xx（鉴权/参数错误）重试无意义：直接失败（非表内场景以 X-LLM-01 记网络失败之外……
             # 遵守错误码总表纪律：LLM 段当前仅有 01/02/03，HTTP 4xx 归并 X-LLM-01 并在 message 注明
@@ -305,7 +377,15 @@ class LlmClient:
 
 
 class _RetryableError(Exception):
-    """可重试失败的内部载体（仅网络/超时/5xx）。"""
+    """可重试失败的内部载体（网络/超时/5xx/429）。
+
+    ``retry_after_s`` 为服务端明确要求的退避秒数（``Retry-After`` 头）。有值时优先于
+    本地退避表——限流场景下按网关指示等待比盲目指数退避更快恢复，也避免继续加压。
+    """
+
+    def __init__(self, message: str, retry_after_s: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
 
     def to_pipeline_error(self) -> PipelineError:
         """重试耗尽后对外抛出的 X-LLM-01。"""

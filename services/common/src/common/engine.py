@@ -224,10 +224,16 @@ class Engine:
                 )
 
     def mark_running(self, state: JobState, node_name: str) -> None:
-        """置运行中（attempts 自增——一次真实尝试计一次）。"""
+        """置运行中（attempts 自增——一次真实尝试计一次），并清除上一轮遗留错误。
+
+        不清 error 会让前端把「上一轮失败原因」当成「当前正在失败」持续展示：
+        重跑后节点已是 running，旧错误字符串却仍挂在状态里，直到本轮写下新错误或
+        成功——中间这段时间的展示是错的。
+        """
         node = state.node(node_name)
         node.status = NodeStatus.RUNNING
         node.attempts += 1
+        node.error = None
         node.updated_at = _now()
         self._save(state)
 

@@ -1303,6 +1303,30 @@ async def test_verify_llm_connection_rejects_invalid_base_url_before_calling_mod
     assert called is False
 
 
+async def test_llm_config_rejects_non_ascii_api_key_at_submit(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+) -> None:
+    """中文提示语误粘进密钥框：提交阶段即以 400 拒绝，不落到运行期才炸。
+
+    回归背景：非 ASCII 密钥在运行期让 httpx 抛 UnicodeEncodeError，穿透节点重试与
+    错误码分类，前端只看到笼统的「后台运行异常」。源头拒绝后错误定位在配置页。
+    """
+    _app, _fake, client, repo_dir = env
+    body = _submit_body(repo_dir, "job-api-badkey1")
+    body["llm"] = {
+        "api_key": "服务重启导致任务中断；已完成产物保留，可从该节点继续重跑",
+        "model": "deepseek-chat",
+        "base_url": "https://llm.htffund.com/v1",
+        "max_tokens": 8192,
+    }
+    response = await client.post("/api/v1/jobs", json=body)
+    assert response.status_code == 400
+    detail = json.dumps(response.json(), ensure_ascii=False)
+    assert "llm.api_key" in detail
+    # 密钥原文不得回显到响应体
+    assert "服务重启" not in detail
+
+
 async def test_submit_job_llm_key_is_runtime_only(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:

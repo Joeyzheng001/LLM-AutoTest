@@ -146,6 +146,25 @@ class RequirementDocumentPair(BaseModel):
 
 _AUTH_HEADER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,63}$")
 _AUTH_RESPONSE_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
+# HTTP 头值仅接受可打印 ASCII。中文提示语被误粘进密钥框时，httpx 编码请求头会抛
+# UnicodeEncodeError，穿透重试与错误码分类直达编排层兜底，前端只见「后台运行异常」。
+_API_KEY_UNSAFE_RE = re.compile(r"[^\x21-\x7e]")
+
+
+def _reject_unsafe_api_key(api_key: str | None) -> None:
+    """拒绝不可作 HTTP 头值的 API Key；不回显密钥内容，避免凭据进日志/响应。
+
+    刻意不做成 pydantic 校验器：ValidationError 的 errors() 带 input（密钥原文），
+    经 FastAPI 422 响应回显给客户端，违反「凭据不进日志/响应」红线。
+    """
+    if api_key and _API_KEY_UNSAFE_RE.search(api_key):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "llm.api_key 含非 ASCII 或不可见字符（常见于误粘贴中文提示语），"
+                "请重新填写中转站密钥"
+            ),
+        )
 
 
 def _validate_response_header_paths(mappings: dict[str, str]) -> None:
@@ -207,6 +226,8 @@ class LlmConfig(BaseModel):
     """本次任务的 LLM 中转站运行时配置；密钥只驻留后台任务内存。"""
 
     # 留空时复用已有任务密钥或服务级中转站密钥；API 层会拒绝两者均不存在的覆盖请求。
+    # api_key 的内容校验在各端点（_reject_unsafe_api_key）而非 pydantic 校验器：
+    # ValidationError 的 errors() 会把 input（密钥原文）回显进 422 响应。
     api_key: str = Field(default="", max_length=512)
     model: str = Field(default=DEFAULT_RELAY_MODEL, min_length=1, max_length=128)
     base_url: str = Field(default="https://llm.htffund.com/v1", min_length=8, max_length=256)
@@ -332,6 +353,7 @@ class EditableAuthConfig(BaseModel):
 class EditableLlmConfig(BaseModel):
     """编辑任务时的模型配置；API Key 可省略以复用 SecretStore 中的密钥。"""
 
+    # api_key 内容校验同 LlmConfig：在端点逻辑做，避免 422 回显密钥原文。
     api_key: str | None = Field(default=None, max_length=512)
     model: str = Field(default=DEFAULT_RELAY_MODEL, min_length=1, max_length=128)
     base_url: str = Field(default="https://llm.htffund.com/v1", min_length=8, max_length=256)
@@ -885,6 +907,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 status_code=400,
                 detail="未配置 LLM 中转站 API Key：请填写任务级 Key 或在服务级配置中注入密钥",
             )
+        _reject_unsafe_api_key(api_key)
         runtime_settings = replace(
             settings,
             llm_base_url=(
@@ -1070,6 +1093,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         if request.llm is not None:
             if not request.llm.base_url.startswith(("http://", "https://")):
                 raise HTTPException(status_code=400, detail="llm.base_url 须为 http(s) 地址")
+            _reject_unsafe_api_key(request.llm.api_key)
             llm_payload = request.llm.model_dump()
             if not llm_payload["api_key"] and not settings.llm_api_key:
                 raise HTTPException(
@@ -1466,6 +1490,8 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     status_code=400,
                     detail="请填写 LLM 中转站 API Key，或先在服务级配置中注入密钥",
                 )
+            # 校验合并后的最终值：历史 SecretStore 里可能已存有污染密钥
+            _reject_unsafe_api_key(str(task_api_key) if task_api_key else None)
             llm_payload = request.llm.model_dump()
             if task_api_key:
                 llm_payload["api_key"] = str(task_api_key)
@@ -1832,6 +1858,8 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     status_code=400,
                     detail="请填写 LLM 中转站 API Key，或先在服务级配置中注入密钥",
                 )
+            # 校验合并后的最终值：历史 SecretStore 里可能已存有污染密钥
+            _reject_unsafe_api_key(str(task_api_key) if task_api_key else None)
             llm_payload = request.llm.model_dump()
             if task_api_key:
                 llm_payload["api_key"] = str(task_api_key)
@@ -2567,6 +2595,9 @@ def _job_rest_url(orch_store: ArtifactStore, job_id: str) -> str | None:
 
 def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None:
     """后台驱动 PipelineRunner（同一入口 F-ORCH-01；force_node 归档留痕）。"""
+    # 本轮开始时清掉上一轮的终态错误：否则重跑后的整段运行期里，前端仍会展示
+    # 「上一次」的失败原因，看起来像这次也在失败（本轮真出错时会被重新写入）。
+    _remember_job_outcome(app, job_id, {"job_id": job_id})
     job_input = _load_job_input(app.state.orch_store, job_id)
     # C-10：新格式 doc_paths 列表；旧 job 的单值 doc_path 兼容归一为列表
     doc_paths = [Path(p) for p in job_input.get("doc_paths", [])]
