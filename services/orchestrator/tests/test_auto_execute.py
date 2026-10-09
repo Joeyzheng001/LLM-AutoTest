@@ -719,8 +719,12 @@ async def test_auto_execute_semantic_assertion(
     payload = te_store.read_json(_JOB, "execution.json")
     failed = [r for r in payload["results"] if r["passed"] is False]
     assert failed and failed[0]["failure_kind"] == "assertion"
-    assert "age=29" in failed[0]["failure_reason"]
-    assert "期望 28" in failed[0]["failure_reason"]
+    # 失配原因须同时给出字段名、期望值与实际值——只报「断言失败」无法排障。
+    # 格式见 auto_execute：`语义断言失败：age: equals 断言失败（期望 28），实际 29`
+    reason = failed[0]["failure_reason"]
+    assert "age" in reason
+    assert "期望 28" in reason
+    assert "实际 29" in reason
 
 
 async def test_auto_execute_semantic_assertion_passes_on_match(
