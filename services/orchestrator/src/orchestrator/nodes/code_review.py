@@ -43,6 +43,7 @@ from common.llm import LlmResult
 from common.llm_batch import chunk_json_items
 from common.llm_repair import complete_with_json_repair
 from common.llm_text import strip_code_fence
+from common.paths import normalize_path
 from common.prompts_loader import PromptSpec, load_prompt
 
 NODE_NAME = "code_review"
@@ -488,8 +489,10 @@ def _collect_code_evidence(
         changed_files = repo.get("changed_files")
         if not isinstance(changed_files, dict):
             continue
+        # 归一为存储口径（正斜杠）：历史任务可能存反斜杠，而接口 code_location.file
+        # 来自 java-parser（正斜杠），不归一则集合成员判定恒为 False（X-REV-04 同类）。
         changed[str(repo.get("name", ""))] = {
-            value
+            normalize_path(value)
             for key in ("added", "modified")
             for value in (changed_files.get(key) or [])
             if isinstance(value, str)
@@ -790,7 +793,7 @@ def _collect_incremental_focus(
         if not isinstance(files, dict):
             continue
         for file in (files.get("added") or []) + (files.get("modified") or []):
-            changed.add((repo_name, str(file)))
+            changed.add((repo_name, normalize_path(file)))
     result: list[dict[str, str]] = []
     for interface in interfaces:
         location = interface.get("code_location") or {}
@@ -1453,12 +1456,12 @@ def _derive_change_scope(
             continue
         file_map: dict[str, str] = {}
         for file in files.get("added") or []:
-            file_map[str(file)] = "added"
+            file_map[normalize_path(file)] = "added"
         for file in files.get("modified") or []:
-            file_map[str(file)] = "modified"
+            file_map[normalize_path(file)] = "modified"
         changed_by_repo[name] = file_map
         for file in files.get("removed") or []:
-            removed.append({"repo": name, "file": str(file)})
+            removed.append({"repo": name, "file": normalize_path(file)})
 
     if not changed_by_repo and not removed:
         return [], [], []

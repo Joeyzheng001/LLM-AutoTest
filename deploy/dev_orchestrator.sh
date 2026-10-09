@@ -26,6 +26,11 @@ export SCHEMAS_DIR="${SCHEMAS_DIR:-$ROOT/schemas}"
 export ARTIFACTS_ROOT="${ARTIFACTS_ROOT:-/tmp/llm-autotest}"
 export REPOSITORIES_ROOT="${REPOSITORIES_ROOT:-$HOME/code}"
 export AUTOTEST_SINGLE_USER_MODE="${AUTOTEST_SINGLE_USER_MODE:-true}"
+# Windows 上 Python 默认按系统 ANSI 代码页（cp936）写 stdout/stderr，中文日志落到终端
+# 或重定向文件后即乱码（容器内默认 UTF-8，不受影响）。统一为 UTF-8，使本地与生产
+# 口径一致，并让未显式指定 encoding 的文件读写也走 UTF-8。
+export PYTHONUTF8="${PYTHONUTF8:-1}"
+export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
 
 cd "$ROOT/services/orchestrator"
 exec uv run python -m orchestrator serve "$@"

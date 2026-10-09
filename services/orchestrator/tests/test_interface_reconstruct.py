@@ -383,6 +383,55 @@ def test_collect_changed_files_registers_repo_with_empty_changes() -> None:
     assert _collect_changed_files(inventory) == {"r": set()}
 
 
+def test_collect_changed_files_normalizes_legacy_backslash_paths() -> None:
+    """历史任务的反斜杠变更清单被归一为正斜杠，仍能与正斜杠候选匹配。
+
+    回归背景：Windows 上 ``str(Path)`` 产出反斜杠，git 与 java-parser 产出正斜杠。
+    本次改动已把**写入**统一为正斜杠，但磁盘上仍存有旧任务的反斜杠数据——不归一
+    则集合成员判定恒为 False，候选被全量过滤（X-REV-04）。
+    """
+    inventory: dict[str, Any] = {
+        "repositories": [
+            {
+                "name": "repo-a",
+                "changed_files": {
+                    "added": [r"com\demo\Added.java"],
+                    "modified": [r"com\demo\Modified.java"],
+                },
+            }
+        ]
+    }
+    changed = _collect_changed_files(inventory)
+    # 归一后与 git 口径（正斜杠）一致，候选 code_location.file 可直接命中
+    assert changed == {"repo-a": {"com/demo/Added.java", "com/demo/Modified.java"}}
+
+
+def test_filter_candidates_matches_legacy_backslash_scope() -> None:
+    """旧任务（反斜杠 scope）与新候选（正斜杠 file）仍能互相匹配。
+
+    候选不带 change_evidence（旧版 java-parser 口径），走文件级判定：
+    候选 file 与 scope 集合做成员比较——两侧风格不一致即永不命中。
+    """
+    inventory: dict[str, Any] = {
+        "repositories": [
+            {
+                "name": "repo-a",
+                "changed_files": {"modified": [r"src\main\java\Demo.java"]},
+            }
+        ]
+    }
+    scope = _collect_changed_files(inventory)
+    candidate = {
+        "code_location": {
+            "repo": "repo-a",
+            "file": "src/main/java/Demo.java",
+            "symbol": "Demo#run",
+        },
+    }
+    kept = _filter_candidates_by_scope([candidate], scope)
+    assert len(kept) == 1
+
+
 def test_repos_without_change_scope_names_only_unconfigured_repos() -> None:
     """只有「缺 changed_files 键」的仓库算未配范围；空集属已配。"""
     inventory = {

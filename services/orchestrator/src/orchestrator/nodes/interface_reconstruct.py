@@ -39,6 +39,7 @@ from common.llm import LlmResult
 from common.llm_batch import chunk_json_items
 from common.llm_repair import complete_with_json_repair
 from common.llm_text import strip_code_fence
+from common.paths import normalize_path
 from common.prompts_loader import PromptSpec, load_prompt
 
 from orchestrator.javaparser_client import JavaParserClient, RepositoryInput
@@ -313,8 +314,11 @@ def _collect_changed_files(inventory: dict[str, Any]) -> dict[str, set[str]]:
         changed_files = repo.get("changed_files")
         if not isinstance(changed_files, dict):
             continue
+        # 归一为存储口径（正斜杠）：历史任务存的可能是反斜杠，而候选的
+        # code_location.file 来自 java-parser（已是正斜杠），不归一则集合成员判定
+        # 恒为 False——正是 X-REV-04「候选被变更范围全量过滤」的成因。
         paths = {
-            value
+            normalize_path(value)
             for key in ("added", "modified")
             for value in (changed_files.get(key) or [])
             if isinstance(value, str) and value

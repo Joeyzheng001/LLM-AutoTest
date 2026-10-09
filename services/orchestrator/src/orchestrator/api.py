@@ -40,6 +40,7 @@ from common.errors import PipelineError
 from common.llm import LlmClient
 from common.model_catalog import DEFAULT_RELAY_MODEL
 from common.object_storage import ObjectStorageError, build_object_storage
+from common.paths import normalize_path, paths_equal
 from common.pipeline import NODE_ORDER, PipelineState
 from common.prompts_loader import PromptSpec
 from common.security import (
@@ -431,7 +432,8 @@ def _repo_metadata(repo: RepoConfig, repositories_root: str | None = None) -> di
     # 仅记录配置状态，不记录令牌本身；用于重启后配置页的脱敏展示。
     payload["access_token_configured"] = bool((repo.access_token or "").strip())
     if payload.get("source") == "local":
-        payload["path"] = str(_resolve_local_repo_path(repo.path, repositories_root))
+        # 存储口径统一正斜杠：下游与 git/java-parser 产出做字符串比较（见 common.paths）
+        payload["path"] = normalize_path(_resolve_local_repo_path(repo.path, repositories_root))
         payload.pop("remote_url", None)
         payload.pop("commit", None)
     return payload
@@ -1125,7 +1127,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
 
         job_input: dict[str, Any] = {
             "job_id": job_id,
-            "doc_paths": [str(path) for path in doc_paths],
+            "doc_paths": [normalize_path(path) for path in doc_paths],
             "repos": [_repo_metadata(repo, settings.repositories_root) for repo in request.repos],
             "rest_url": request.rest_url,
             "rest_insecure_tls": request.rest_insecure_tls,
@@ -1500,9 +1502,11 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         document_pairs = previous.get("document_pairs")
         if request.document_pairs:
             document_pairs = _replace_document_pairs(orch_store, job_id, request.document_pairs)
-            doc_paths = [str(pair["target_path"]) for pair in document_pairs]
+            doc_paths = [normalize_path(pair["target_path"]) for pair in document_pairs]
         elif request.docs:
-            doc_paths = [str(path) for path in _replace_docs(orch_store, job_id, request.docs)]
+            doc_paths = [
+                normalize_path(path) for path in _replace_docs(orch_store, job_id, request.docs)
+            ]
             document_pairs = None
         elif not request.keep_existing_docs:
             raise HTTPException(status_code=400, detail="未选择新需求文档时必须保留当前需求文档")
@@ -1609,7 +1613,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 continue
             try:
                 relative_path = path.relative_to(job_dir)
-                relative_name = str(relative_path)
+                relative_name = relative_path.as_posix()
                 run_scope = "archive" if "archive" in relative_path.parts else "current"
                 for line in path.read_text(encoding="utf-8").splitlines():
                     item = redact_secrets(json.loads(line))
@@ -2230,8 +2234,10 @@ def _save_document_pairs(
     paths = _save_docs(orch_store, job_id, flattened, target_dir=target_dir)
     return [
         {
-            "target_path": str(paths[target_index]),
-            "baseline_path": str(paths[baseline_index]) if baseline_index is not None else None,
+            "target_path": normalize_path(paths[target_index]),
+            "baseline_path": (
+                normalize_path(paths[baseline_index]) if baseline_index is not None else None
+            ),
         }
         for target_index, baseline_index in indexes
     ]
@@ -2333,9 +2339,9 @@ def _replace_document_pairs(
                 orch_store.mirror_file(job_id, f"input/{Path(str(pair['baseline_path'])).name}")
         return [
             {
-                "target_path": str(input_dir / Path(str(pair["target_path"])).name),
+                "target_path": normalize_path(input_dir / Path(str(pair["target_path"])).name),
                 "baseline_path": (
-                    str(input_dir / Path(str(pair["baseline_path"])).name)
+                    normalize_path(input_dir / Path(str(pair["baseline_path"])).name)
                     if pair.get("baseline_path")
                     else None
                 ),
@@ -2372,6 +2378,8 @@ def _materialize_job_inputs(
     job_dir = orch_store.job_dir(job_id)
 
     def materialize(value: Any) -> str:
+        # Path() 在 Windows 上同时接受 / 与 \，故历史任务的反斜杠路径无需迁移即可解析；
+        # 返回值统一为存储口径（正斜杠）。
         name = Path(str(value)).name
         target = job_dir / "input" / name
         if not target.is_file():
@@ -2380,7 +2388,7 @@ def _materialize_job_inputs(
             except (FileNotFoundError, OSError, ObjectStorageError, PipelineError):
                 # 后续节点会给出“需求文档不存在”的可诊断错误；这里不伪造内容。
                 pass
-        return str(target)
+        return normalize_path(target)
 
     if isinstance(result.get("doc_paths"), list):
         result["doc_paths"] = [materialize(value) for value in result["doc_paths"]]

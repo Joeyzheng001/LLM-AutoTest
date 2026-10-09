@@ -14,6 +14,7 @@ from common.artifacts import ArtifactStore
 from common.engine import Engine
 from common.errors import PipelineError
 from common.llm import LlmResult
+from common.paths import normalize_path
 from common.pipeline import NodeStatus
 from common.prompts_loader import PromptSpec
 
@@ -116,15 +117,15 @@ async def test_req_parse_success(env: tuple[Engine, ArtifactStore], doc: Path) -
     assert path.is_file()
     payload: dict[str, Any] = store.read_json(_JOB, "requirement_items.json")
     assert payload["job_id"] == _JOB
-    assert payload["source_file"] == str(doc)
+    assert payload["source_file"] == normalize_path(doc)
     # C-10：多文档产物 source_files 记全部（单文档时为单元素列表）
-    assert payload["source_files"] == [str(doc)]
+    assert payload["source_files"] == [normalize_path(doc)]
     assert payload["items"][0]["id"] == "REQ-001"
     assert state.node("req_parse").status is NodeStatus.COMPLETED
 
     review = store.read_json(_JOB, "requirement_review.json")
     assert review["quality_grade"] == "B"
-    assert review["source_files"] == [str(doc)]
+    assert review["source_files"] == [normalize_path(doc)]
     # 两个 Prompt 均为真实文件，且使用同一份已文本化的需求文档。
     # 只断言用了哪些 Prompt（节点口径），不锁版本号：Prompt 内容迭代不应误报此测试。
     assert [ref.split("@", 1)[0] for ref, _content in llm.received] == [
@@ -531,7 +532,7 @@ async def test_req_parse_multi_docs_merged_sections(
     await run_req_parse(engine, state, store, llm, _PROMPTS, [doc, doc_b])
 
     payload = store.read_json(_JOB, "requirement_items.json")
-    assert payload["source_files"] == [str(doc), str(doc_b)]
+    assert payload["source_files"] == [normalize_path(doc), normalize_path(doc_b)]
     # 两个子阶段均使用同一文本化输入，两份文档均带分节标题。
     assert len(llm.received) == 2
     for index, (_prompt_ref, user_content) in enumerate(llm.received):

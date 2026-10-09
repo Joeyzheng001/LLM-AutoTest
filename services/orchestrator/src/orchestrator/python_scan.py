@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from common.paths import normalize_path
+
 from orchestrator.javaparser_client import RepositoryInput
 
 HTTP_VERBS = ("get", "post", "put", "delete", "patch")
@@ -104,7 +106,7 @@ def scan_repository(repo: RepositoryInput) -> PythonScanResult:
         "file_count": len(py_files),
     }
     if scan_root != root:
-        entry["source_path"] = str(scan_root)
+        entry["source_path"] = normalize_path(scan_root)
         entry["target_sha"] = repo.target_sha
     if repo.commits:
         entry["commits"] = list(repo.commits)

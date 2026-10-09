@@ -26,6 +26,7 @@ from common.llm import LlmResult
 from common.llm_batch import chunk_json_items, chunk_text
 from common.llm_repair import complete_with_json_repair
 from common.llm_text import strip_code_fence
+from common.paths import normalize_path
 from common.prompts_loader import PromptSpec, load_prompt
 
 from orchestrator.doc_loader import load_document_text
@@ -140,8 +141,8 @@ async def run_req_parse(
             "schema_version": "2.0",
             "job_id": state.job_id,
             # C-10：source_files 记全部；source_file 保留首文档兼容旧读取方
-            "source_files": [str(path) for path in doc_paths],
-            "source_file": str(doc_paths[0]),
+            "source_files": [normalize_path(path) for path in doc_paths],
+            "source_file": normalize_path(doc_paths[0]),
             "source_catalog": _source_catalog_previews(source_catalog),
             "items": items,
         }
@@ -157,7 +158,7 @@ async def run_req_parse(
             review_payload = {
                 "schema_version": "2.0",
                 "job_id": state.job_id,
-                "source_files": [str(path) for path in doc_paths],
+                "source_files": [normalize_path(path) for path in doc_paths],
                 **legacy_review,
             }
         else:
@@ -315,7 +316,7 @@ def _build_review_payload(
     return {
         "schema_version": "2.0",
         "job_id": job_id,
-        "source_files": [str(path) for path in doc_paths],
+        "source_files": [normalize_path(path) for path in doc_paths],
         "score": score,
         "quality_grade": grade,
         "summary": summary,

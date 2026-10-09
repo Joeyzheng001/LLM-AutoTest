@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 import pytest
 from common.config import Settings
+from common.paths import normalize_path
 from common.pipeline import NODE_ORDER, NodeStatus
 from common.security import SecretStore
 from fastapi import FastAPI
@@ -58,7 +59,8 @@ class FakeRunner:
         self.calls.append(
             {
                 "job_id": job_id,
-                "doc_paths": [str(path) for path in doc_paths],
+                # 记录口径与生产一致（正斜杠），避免测试断言依赖平台分隔符
+                "doc_paths": [normalize_path(path) for path in doc_paths],
                 "repos": [(r.name, r.path) for r in repositories],
                 "rest_base_url": rest_base_url,
                 "rest_insecure_tls": rest_insecure_tls,
@@ -327,13 +329,13 @@ async def test_submit_job_happy_path(
     call = fake.calls[0]
     assert call["job_id"] == "job-api-0001"
     job_dir = Path(str(app.state.settings.artifacts_root)) / "job-api-0001"
-    assert call["doc_paths"] == [str(job_dir / "input" / "requirements.md")]
+    assert call["doc_paths"] == [normalize_path(job_dir / "input" / "requirements.md")]
     assert call["repos"] == [("repo-a", str(repo_dir))]
     assert call["rest_base_url"] == "http://127.0.0.1:9000"
     assert call["rest_insecure_tls"] is True
     assert (job_dir / "input" / "requirements.md").read_text(encoding="utf-8") == _DOC
     saved = json.loads((job_dir / "job_input.json").read_text(encoding="utf-8"))
-    assert saved["doc_paths"] == [str(job_dir / "input" / "requirements.md")]
+    assert saved["doc_paths"] == [normalize_path(job_dir / "input" / "requirements.md")]
     assert saved["rest_url"] == "http://127.0.0.1:9000"
     assert saved["rest_insecure_tls"] is True
 

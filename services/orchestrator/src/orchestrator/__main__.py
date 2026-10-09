@@ -73,7 +73,9 @@ async def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
         logger.error("需求文档不存在：%s", "、".join(missing))
         return 2
     try:
-        repositories = repository_inputs_from_config(json.loads(Path(args.repos).read_text()))
+        repositories = repository_inputs_from_config(
+            json.loads(Path(args.repos).read_text(encoding="utf-8"))
+        )
     except (json.JSONDecodeError, KeyError) as exc:
         logger.error("仓库配置非法：%s", exc)
         return 2
@@ -83,7 +85,7 @@ async def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
     auth: dict[str, object] | None = None
     if args.auth:
         try:
-            auth = json.loads(Path(args.auth).read_text())
+            auth = json.loads(Path(args.auth).read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
             logger.error("鉴权配置非法（C-15）：%s", exc)
             return 2
