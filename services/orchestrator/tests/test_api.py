@@ -1091,6 +1091,115 @@ async def test_submit_job_uses_encrypted_secret_store_when_configured(
         await secure_client.aclose()
 
 
+async def test_edit_configuration_reuses_stored_secrets_without_resubmitting(
+    env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """编辑配置时留空 api_key / 省略 auth：已存密钥必须完整保留，不得要求重填。
+
+    回归背景：SecretStore.save 是全量覆盖——PUT 省略 auth（只改模型/REST）时旧实现
+    以 auth=None 调 _persist_job_secrets，登录密码被静默清掉，下轮执行 X-EXEC-01；
+    /llm/verify 则因无 job 上下文无法回退已存密钥，逼用户重新粘贴 key 才能点「测试」。
+    """
+    app, _fake, _client, repo_dir = env
+    from cryptography.fernet import Fernet
+
+    key = Fernet.generate_key().decode("ascii")
+    secure_settings = replace(app.state.settings, secrets_encryption_key=key)
+    secure_app = create_app(secure_settings)
+    secure_app.state.runner = FakeRunner(
+        secure_settings,
+        secure_app.state.engine,
+        secure_app.state.orch_store,
+        secure_app.state.te_store,
+    )
+    secure_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=secure_app), base_url="http://test"
+    )
+    try:
+        body = _submit_body(repo_dir, "job-api-keepkey1")
+        body["auth"] = {
+            "login_url": "https://example.test/login/",
+            "username": "admin",
+            "password": "secret-password",
+        }
+        body["llm"] = {
+            "api_key": "sk-stored-key-999",
+            "model": "MiniMax-M3",
+            "base_url": "https://api.minimaxi.com/v1",
+            "max_tokens": 8192,
+        }
+        assert (await secure_client.post("/api/v1/jobs", json=body)).status_code == 202
+        await _await_task(secure_app, "job-api-keepkey1")
+        # 编辑进程态密钥映射被 finally 清空，模拟「任务结束后再编辑」的真实场景
+        secure_app.state.job_llm_configs.pop("job-api-keepkey1", None)
+
+        # 1) PUT 留空 api_key 且完全省略 auth（用户只想改模型别名）
+        update = {
+            "docs": [],
+            "keep_existing_docs": True,
+            "repos": [{"name": "repo-updated", "path": str(repo_dir), "branch": "main",
+                       "baseline_branch": "main"}],
+            "rest_url": "https://example.test:8443",
+            "llm_enabled": True,
+            "llm": {
+                "api_key": "",
+                "model": "MiniMax-M2.5",
+                "base_url": "https://api.minimaxi.com/v1",
+                "max_tokens": 4096,
+            },
+            "run_after_save": False,
+        }
+        response = await secure_client.put(
+            "/api/v1/jobs/job-api-keepkey1/configuration", json=update
+        )
+        assert response.status_code == 202
+
+        secrets = secure_app.state.secret_store.load("job-api-keepkey1")
+        # llm key 复用旧值；auth 未提交但凭据必须原样保留（全量覆盖不等于允许丢数据）
+        assert secrets.get("llm_api_key") == "sk-stored-key-999"
+        assert isinstance(secrets.get("auth"), dict)
+        assert secrets["auth"]["password"] == "secret-password"
+        # 非敏感 auth 元数据同样保留，配置页回显不丢登录地址/用户名
+        saved = json.loads(
+            (
+                Path(str(secure_app.state.settings.artifacts_root))
+                / "job-api-keepkey1"
+                / "job_input.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert saved["auth"]["username"] == "admin"
+        assert saved["llm"]["api_key_configured"] is True
+
+        # 2) /llm/verify 带 job_id 且 key 留空 → 复用已存密钥（探针可直接点）
+        captured: dict[str, Any] = {}
+
+        class FakeLlmClient:
+            def __init__(self, settings: Settings, *_args: Any, **_kwargs: Any) -> None:
+                captured["api_key"] = settings.llm_api_key
+
+            async def complete(self, *_args: Any, **_kwargs: Any) -> Any:
+                return type("ProbeResult", (), {"tokens": 1})()
+
+        monkeypatch.setattr("orchestrator.api.LlmClient", FakeLlmClient)
+        verify = await secure_client.post(
+            "/api/v1/llm/verify",
+            json={
+                "job_id": "job-api-keepkey1",
+                "llm": {
+                    "api_key": "",
+                    "model": "MiniMax-M2.5",
+                    "base_url": "https://api.minimaxi.com/v1",
+                    "max_tokens": 4096,
+                },
+            },
+        )
+        assert verify.status_code == 200
+        assert captured["api_key"] == "sk-stored-key-999"
+    finally:
+        await secure_client.aclose()
+
+
 async def test_access_policy_scopes_jobs_by_token_and_project(
     env: tuple[FastAPI, FakeRunner, httpx.AsyncClient, Path],
 ) -> None:

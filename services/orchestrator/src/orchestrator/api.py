@@ -237,9 +237,14 @@ class LlmConfig(BaseModel):
 
 
 class LlmVerificationRequest(BaseModel):
-    """配置阶段的无业务中转站连通性探针；未传 llm 时测试服务级配置。"""
+    """配置阶段的无业务中转站连通性探针；未传 llm 时测试服务级配置。
+
+    ``job_id``：编辑已有任务时传入——api_key 留空则复用该任务 SecretStore 中的
+    密钥（与保存/重跑端点同一回退链），不强迫用户为了点一次「测试」重新粘贴密钥。
+    """
 
     llm: LlmConfig | None = None
+    job_id: str | None = Field(default=None, max_length=64)
 
 
 class E2eConfig(BaseModel):
@@ -903,7 +908,22 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         source = "task" if supplied is not None else "service"
         if supplied is not None and not supplied.base_url.startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="llm.base_url 须为 http(s) 地址")
-        api_key = (supplied.api_key if supplied is not None else "") or settings.llm_api_key
+        # 回退链与保存/重跑端点一致：本次填写 → 任务 SecretStore（编辑态）→ 服务级。
+        # 编辑已有任务时 key 不回显（安全红线），用户留空属正常操作，不该被迫重新粘贴。
+        stored_key = ""
+        if supplied is not None and not supplied.api_key and request.job_id:
+            try:
+                ensure_job_id(request.job_id)
+            except PipelineError as exc:
+                raise HTTPException(status_code=400, detail=exc.message) from exc
+            _require_job_access(app, request.job_id, http_request)
+            stored = _load_job_secrets(app, request.job_id).get("llm_api_key")
+            stored_key = str(stored) if stored else ""
+        api_key = (
+            (supplied.api_key if supplied is not None else "")
+            or stored_key
+            or settings.llm_api_key
+        )
         if not api_key:
             raise HTTPException(
                 status_code=400,
@@ -1543,6 +1563,10 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 }
             else:
                 job_input["auth"] = auth_payload
+        elif isinstance(previous.get("auth"), dict):
+            # 对称于下方 llm 的保留分支：省略 auth（本次只改模型/REST）时保留
+            # 既有非敏感鉴权元数据，否则配置页回显会丢登录地址/用户名。
+            job_input["auth"] = previous["auth"]
         if llm_payload is not None:
             job_input["llm"] = {
                 key: llm_payload[key] for key in ("model", "base_url", "protocol", "max_tokens")
@@ -1570,13 +1594,21 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             )
             else None
         )
+        # SecretStore.save 是全量覆盖：请求省略 auth（本次只改模型/REST 等）时必须
+        # 回填已存凭据，否则「编辑 LLM 配置」会静默清掉登录密码，下轮执行直接
+        # X-EXEC-01。auth_payload 仅在用户显式提交 auth 时才替换旧值。
+        preserved_auth = (
+            previous_secrets.get("auth")
+            if auth_payload is None and isinstance(previous_secrets.get("auth"), dict)
+            else None
+        )
         previous_git_tokens = previous_secrets.get("git_tokens")
         git_tokens = dict(previous_git_tokens) if isinstance(previous_git_tokens, dict) else {}
         git_tokens.update(_repo_git_tokens(request.repos))
         _persist_job_secrets(
             app,
             job_id,
-            auth=auth_payload,
+            auth=auth_payload if auth_payload is not None else preserved_auth,
             llm_api_key=(llm_payload or {}).get("api_key") or preserved_llm_key,
             git_tokens=git_tokens,
         )

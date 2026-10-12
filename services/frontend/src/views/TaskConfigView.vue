@@ -466,6 +466,9 @@ async function verifyLlmBeforeSave(): Promise<void> {
             max_tokens: llm.maxTokens,
           }
         : undefined,
+      // 编辑已有任务时带 jobId：key 留空则由服务端复用 SecretStore 已存密钥，
+      // 不强迫用户为了点一次「测试」重新粘贴。
+      editingJobId.value || undefined,
     )
     llmVerificationOk.value = true
     llmVerificationMessage.value = `中转站可用 · ${result.protocol} · ${result.model} · ${result.duration_ms}ms${result.tokens == null ? '' : ` · ${result.tokens} tokens`}`

@@ -146,11 +146,15 @@ export function verifyAuthentication(
   })
 }
 
-/** 以极小无业务提示验证中转站协议、模型和凭据；不创建任务或保存模型正文。 */
-export function verifyLlmConnection(llm?: LlmConfig): Promise<LlmVerificationResponse> {
+/** 以极小无业务提示验证中转站协议、模型和凭据；不创建任务或保存模型正文。
+ *  编辑已有任务时传 jobId：api_key 留空则由服务端复用该任务已存密钥。 */
+export function verifyLlmConnection(
+  llm?: LlmConfig,
+  jobId?: string,
+): Promise<LlmVerificationResponse> {
   return request('/api/v1/llm/verify', {
     method: 'POST',
-    body: JSON.stringify(llm ? { llm } : {}),
+    body: JSON.stringify({ ...(llm ? { llm } : {}), ...(jobId ? { job_id: jobId } : {}) }),
   })
 }
 
