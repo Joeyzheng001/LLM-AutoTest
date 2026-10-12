@@ -1513,9 +1513,25 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               v-model="llm.apiKey"
               type="password"
               autocomplete="new-password"
-              placeholder="sk-…"
+              :placeholder="
+                editingJobId && existingLlmKey && !llm.apiKey
+                  ? '已保存密钥（留空即复用，无需重填）'
+                  : 'sk-…'
+              "
             />
           </label>
+          <!-- 编辑态已存密钥：把「留空即复用」提到输入框紧邻处。
+               此前提示只出现在表单底部，用户看到空白输入框会误以为密钥丢失、
+               被迫重新粘贴（key 不回显是安全红线，不能靠回显解决）。 -->
+          <p v-if="editingJobId && existingLlmKey && !llm.apiKey" class="switch-note key-reuse-hint">
+            ✓ 已保存密钥（服务端加密存储，不回显）。<strong>留空即可复用</strong>，无需重新填写。
+          </p>
+          <p
+            v-else-if="editingJobId && existingLlmKey && llm.apiKey"
+            class="switch-note key-reuse-hint"
+          >
+            将用本次填写的新 Key 覆盖已存密钥（留空则继续沿用旧密钥）。
+          </p>
           <div class="two-col">
             <label class="field">
               <span class="field-label">调用协议</span>
@@ -2287,6 +2303,12 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   margin: var(--space-2) 0 0;
   font-size: var(--text-xs);
   color: var(--text-3);
+}
+
+/* 已存密钥复用提示：紧贴输入框，用成功色与常规说明区分开 */
+.key-reuse-hint {
+  color: var(--success, var(--text-2));
+  font-weight: 500;
 }
 
 /* 按钮 */
