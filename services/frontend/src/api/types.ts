@@ -452,6 +452,9 @@ export interface ReviewMapping {
   }
   status: 'implemented' | 'partial' | 'missing' | 'undetermined'
   confidence: number
+  /** 确定性门槛封顶前的原始置信度；仅当封顶实际压低数值时存在 */
+  raw_confidence?: number
+  confidence_capped?: boolean
   evidence_quality?: 'behavior_path' | 'interface_only' | 'insufficient' | 'none'
   evidence?: { refs?: string[]; code_location?: CodeLocation; note?: string }
   claim_assessments?: ReviewClaimAssessment[]
@@ -461,6 +464,9 @@ export interface ReviewClaimAssessment {
   claim_id: string
   status: 'implemented' | 'partial' | 'missing' | 'undetermined'
   confidence: number
+  /** 确定性门槛封顶前的原始置信度；仅当封顶实际压低数值时存在 */
+  raw_confidence?: number
+  confidence_capped?: boolean
   interface_ids: string[]
   evidence_refs: string[]
   met_conditions: string[]
@@ -500,7 +506,8 @@ export interface ReviewCallChain {
   unresolved_calls?: number
   unresolved?: Array<Record<string, unknown>>
   max_depth?: number
-  confidence: 'static_recursive' | 'legacy_static_one_hop' | 'static_one_hop' | string
+  /** 调用链分析方法标注（旧产物可能仍为 confidence 键，故可选） */
+  analysis_method?: 'static_recursive' | 'legacy_static_one_hop'
 }
 
 export interface ReviewScanCoverage {
@@ -522,24 +529,6 @@ export interface ReviewScanCoverage {
   }>
 }
 
-export interface DerivedRisk {
-  requirement_id: string
-  claim_ids?: string[]
-  interface_ids?: string[]
-  description: string
-  kind?: 'partial_implementation' | 'evidence_gap'
-  severity?: 'P0' | 'P1' | 'P2'
-  action?: string
-}
-
-export interface IncrementalFinding {
-  severity: 'P0' | 'P1' | 'P2'
-  kind: string
-  description: string
-  repo: string
-  file: string
-}
-
 export interface DeterministicReviewCheck {
   requirement_id: string
   claim_id?: string
@@ -550,23 +539,35 @@ export interface DeterministicReviewCheck {
   evidence_ids?: string[]
 }
 
-export interface MissingFeature {
-  requirement_id: string
-  title: string
-  claim_id?: string
-  claim_statement?: string
-  interface_ids?: string[]
-  evidence_refs?: string[]
-  unmet_conditions?: string[]
-}
-
 export interface CoveredClaimGroup {
   requirement_id: string
   claim_ids: string[]
   status: 'implemented' | 'partial' | 'missing' | 'undetermined'
 }
 
-// C-09 视图四：变更范围（双分支 diff 程序化派生，不经 LLM）
+// C-108 视图二：LLM 影响分析（接口编号经程序校验，分析文本为模型生成）
+export interface ChangeImpactAnalysis {
+  summary: string
+  impact_surface?: string[]
+  test_suggestion?: string
+  risk_level: 'P0' | 'P1' | 'P2'
+}
+
+// C-108：LLM 变更总评（LLM 失败时后端整键缺省）
+export interface ChangeSummary {
+  nature: string
+  overall_risk: 'P0' | 'P1' | 'P2'
+  regression_advice: string
+}
+
+// C-108：盲区文件归因（引用编号经程序校验，仅保留真实存在的接口/需求）
+export interface UnmatchedAttribution {
+  likely_interfaces?: string[]
+  likely_requirements?: string[]
+  rationale?: string
+}
+
+// C-09 视图二：变更范围（事实字段双分支 diff 程序化派生；impact_analysis 由 LLM 生成，C-108）
 export interface ChangeScopeEntry {
   interface_id: string
   repo: string
@@ -577,6 +578,8 @@ export interface ChangeScopeEntry {
   matched_via?: 'definition' | 'related_file'
   related_changed_files?: Array<{ file: string; role: string; change: 'added' | 'modified' }>
   evidence_level?: 'body' | 'callee' | 'file' | 'related_file' | 'none'
+  risk_level?: 'P0' | 'P1' | 'P2' // 程序派生的回归优先级下限（LLM 失败时的兜底）
+  impact_analysis?: ChangeImpactAnalysis
 }
 
 export interface RemovedFile {
@@ -589,6 +592,7 @@ export interface UnmatchedChangedFile {
   repo: string
   file: string
   change: 'added' | 'modified'
+  attribution?: UnmatchedAttribution
 }
 
 // C-10：源码扫描清单（code_inventory.json；仓库四态 X-CODE-01~03）

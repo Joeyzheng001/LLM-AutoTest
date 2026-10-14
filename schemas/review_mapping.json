@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "llm-autotest/review_mapping",
-  "title": "Code Review 四视图（模块 4 REVIEW，主笔：甲）",
+  "title": "Code Review 双视图（映射表 + 变更范围，模块 4 REVIEW，主笔：甲；C-108 起 risks/missing_features/incremental_findings 停产）",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "job_id", "mappings", "risks", "missing_features"],
+  "required": ["schema_version", "job_id", "mappings"],
   "properties": {
-    "schema_version": { "type": "string", "enum": ["1.0", "2.0"] },
+    "schema_version": { "type": "string", "enum": ["1.0", "2.0", "2.1"] },
     "job_id": { "type": "string", "pattern": "^job-" },
     "mappings": {
       "type": "array",
@@ -34,6 +34,8 @@
           },
           "status": { "type": "string", "enum": ["implemented", "partial", "missing", "undetermined"] },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "raw_confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "确定性门槛封顶前的原始置信度；仅当封顶实际压低数值时存在" },
+          "confidence_capped": { "type": "boolean", "description": "true = confidence 被确定性证据门槛（min(x, 0.45)）压低过" },
           "evidence_quality": { "type": "string", "enum": ["behavior_path", "interface_only", "insufficient", "none"] },
           "claim_assessments": {
             "type": "array",
@@ -45,6 +47,8 @@
                 "claim_id": { "type": "string", "pattern": "^CLM-\\d{3,}$" },
                 "status": { "type": "string", "enum": ["implemented", "partial", "missing", "undetermined"] },
                 "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                "raw_confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "确定性门槛封顶前的原始置信度；仅当封顶实际压低数值时存在" },
+                "confidence_capped": { "type": "boolean", "description": "true = confidence 被确定性证据门槛（min(x, 0.45)）压低过" },
                 "interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } },
                 "evidence_refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^EVD-\\d{4,}$" } },
                 "met_conditions": { "type": "array", "items": { "type": "string" } },
@@ -160,7 +164,7 @@
     },
     "risks": {
       "type": "array",
-      "description": "视图二：风险清单（partial 自动进入，R-REVW-04；程序化派生，R-REVW-02）",
+      "description": "已停产（C-108）：仅为历史产物回读兼容保留，新产物不再写入；由视图一 claim 级状态与视图二 risk_level 取代",
       "items": {
         "type": "object",
         "required": ["requirement_id", "description"],
@@ -178,7 +182,7 @@
     },
     "missing_features": {
       "type": "array",
-      "description": "视图三：遗漏功能清单（提取 missing 条目，程序化派生保证一致）",
+      "description": "已停产（C-108）：仅为历史产物回读兼容保留，新产物不再写入；由视图一 claim 级 missing 状态取代",
       "items": {
         "type": "object",
         "required": ["requirement_id", "title"],
@@ -212,7 +216,7 @@
     },
     "change_scope": {
       "type": "array",
-      "description": "视图四：变更范围（C-09 双分支 diff）。接口命中口径=定义文件被改 **或** 任一 related_files 被改（行为级）；程序化派生不经 LLM；无基线分支时为空数组",
+      "description": "视图二：变更范围（C-09 双分支 diff）。接口命中口径=定义文件被改 **或** 任一 related_files 被改（行为级）；事实字段程序化派生，impact_analysis 由 LLM 生成（C-108，编号经程序校验）；无基线分支时为空数组",
       "items": {
         "type": "object",
         "required": ["interface_id", "repo", "file", "change", "covered_by"],
@@ -263,6 +267,23 @@
             "type": "array",
             "description": "映射到该接口的需求条目（空 = 变更接口未被需求覆盖）",
             "items": { "type": "string", "pattern": "^REQ-\\d{3}$" }
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": ["P0", "P1", "P2"],
+            "description": "程序派生的回归优先级下限（原 incremental_findings 口径：未被需求覆盖/评审状态异常=P1，待核查=P2）；LLM 影响分析失败时的兜底展示"
+          },
+          "impact_analysis": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["summary", "risk_level"],
+            "description": "LLM 影响分析（C-108）：接口编号经程序校验，分析文本为模型生成，需人工复核",
+            "properties": {
+              "summary": { "type": "string", "minLength": 1 },
+              "impact_surface": { "type": "array", "items": { "type": "string" } },
+              "test_suggestion": { "type": "string" },
+              "risk_level": { "type": "string", "enum": ["P0", "P1", "P2"] }
+            }
           }
         }
       }
@@ -272,7 +293,7 @@
       "description": "接口实现的静态递归调用链；新产物使用结构化 callee 节点，旧产物可保留一跳字符串",
       "items": {
         "type": "object",
-        "required": ["interface_id", "entry", "callees", "confidence"],
+        "required": ["interface_id", "entry", "callees", "analysis_method"],
         "properties": {
           "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
           "entry": {
@@ -307,16 +328,17 @@
           "unresolved_calls": { "type": "integer", "minimum": 0 },
           "unresolved": { "type": "array" },
           "max_depth": { "type": "integer", "minimum": 0 },
-          "confidence": {
+          "analysis_method": {
             "type": "string",
-            "enum": ["static_recursive", "legacy_static_one_hop", "static_one_hop"]
+            "description": "调用链分析方法标注（非置信度）：static_recursive=静态递归解析，legacy_static_one_hop=旧版一跳正则",
+            "enum": ["static_recursive", "legacy_static_one_hop"]
           }
         }
       }
     },
     "incremental_findings": {
       "type": "array",
-      "description": "基线 diff 的增量评审发现，程序化派生",
+      "description": "已停产（C-108）：仅为历史产物回读兼容保留，新产物不再写入；其判定已映射为 change_scope[].risk_level",
       "items": {
         "type": "object",
         "required": ["severity", "kind", "description", "repo", "file"],
@@ -350,8 +372,29 @@
         "properties": {
           "repo": { "type": "string" },
           "file": { "type": "string" },
-          "change": { "type": "string", "enum": ["added", "modified"] }
+          "change": { "type": "string", "enum": ["added", "modified"] },
+          "attribution": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "LLM 盲区归因（C-108）：引用编号经程序校验（仅保留真实存在的接口/需求），归因理由为模型生成",
+            "properties": {
+              "likely_interfaces": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } },
+              "likely_requirements": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^REQ-\\d{3}$" } },
+              "rationale": { "type": "string" }
+            }
+          }
         }
+      }
+    },
+    "change_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nature", "overall_risk", "regression_advice"],
+      "description": "LLM 变更总评（C-108）：变更性质/整体风险/回归建议；LLM 失败时整键缺省",
+      "properties": {
+        "nature": { "type": "string" },
+        "overall_risk": { "type": "string", "enum": ["P0", "P1", "P2"] },
+        "regression_advice": { "type": "string" }
       }
     },
     "review_log": {
@@ -380,6 +423,21 @@
         "required": [
           "evidence_catalog", "scan_coverage", "deterministic_checks", "change_scope", "removed_files",
           "unmatched_changed_files", "call_chains", "incremental_findings"
+        ],
+        "properties": {
+          "mappings": { "items": { "required": ["interface_ids", "claim_assessments", "evidence"] } }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "schema_version": { "const": "2.1" } },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "required": [
+          "evidence_catalog", "scan_coverage", "deterministic_checks", "change_scope", "removed_files",
+          "unmatched_changed_files", "call_chains"
         ],
         "properties": {
           "mappings": { "items": { "required": ["interface_ids", "claim_assessments", "evidence"] } }

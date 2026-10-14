@@ -87,7 +87,12 @@ _DEFAULT_TOKEN_PATHS = (
 
 
 def _value_at_path(payload: dict[str, Any], path: str) -> str | None:
-    """从受控 dotted path 读取非空字符串，兼容包装层内嵌 JSON；不记录响应值。"""
+    """从受控 dotted path 读取非空标量，兼容包装层内嵌 JSON；不记录响应值。
+
+    数值型字段（如登录响应的 userId=1）需能作为请求头值注入自定义鉴权头
+    （token/userId 等）；故字符串以外的 int/float 也转为字符串返回。bool 虽
+    是 int 子类，但 "True"/"False" 不是合法头值，显式排除。
+    """
     current: Any = payload
     for segment in path.split("."):
         # 某些网关以字符串承载 body JSON，例如 {"body":"{...}"}。
@@ -100,7 +105,11 @@ def _value_at_path(payload: dict[str, Any], path: str) -> str | None:
         if not isinstance(current, dict):
             return None
         current = current.get(segment)
-    return current.strip() if isinstance(current, str) and current.strip() else None
+    if isinstance(current, str):
+        return current.strip() or None
+    if isinstance(current, (int, float)) and not isinstance(current, bool):
+        return str(current)
+    return None
 
 
 def _authorization_value(token: str, scheme: str) -> str:

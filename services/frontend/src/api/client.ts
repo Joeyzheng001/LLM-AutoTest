@@ -18,7 +18,6 @@ import type {
   PreflightResponse,
   LlmCallLog,
   MetricsPayload,
-  MissingFeature,
   RegressionIndexPayload,
   RemovedFile,
   RepoInventory,
@@ -34,7 +33,6 @@ import type {
   ReviewLogResponse,
   ReviewMapping,
   ReviewCallChain,
-  DerivedRisk,
   AuthConfig,
   AuthVerificationResponse,
   LlmConfig,
@@ -304,8 +302,6 @@ export function getChangeSet(jobId: string): Promise<{ removed_files?: RemovedFi
 export function getReviewMapping(jobId: string): Promise<{
   mappings: ReviewMapping[]
   scan_coverage?: import('./types').ReviewScanCoverage
-  risks: DerivedRisk[]
-  missing_features: MissingFeature[]
   evidence_catalog?: import('./types').ReviewEvidence[]
   call_chains?: ReviewCallChain[]
   deterministic_checks?: import('./types').DeterministicReviewCheck[]
@@ -313,7 +309,7 @@ export function getReviewMapping(jobId: string): Promise<{
   change_scope_available?: boolean
   removed_files?: RemovedFile[]
   unmatched_changed_files?: UnmatchedChangedFile[]
-  incremental_findings?: import('./types').IncrementalFinding[]
+  change_summary?: import('./types').ChangeSummary
 }> {
   return request(`/api/v1/jobs/${jobId}/artifacts/review_mapping.json`)
 }

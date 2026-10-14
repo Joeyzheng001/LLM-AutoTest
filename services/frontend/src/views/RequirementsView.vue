@@ -4,6 +4,7 @@
 import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
 import { getRequirementItems, getRequirementReview } from '../api/client'
+import { CLAIM_KIND_LABELS } from '../api/labels'
 import type { RequirementItem, RequirementReview, RequirementSource } from '../api/types'
 
 const _jobId = ref('')
@@ -175,7 +176,7 @@ watch(_jobId, () => void load())
               <p>{{ issue.location }} · {{ issue.reason }} · 影响：{{ issue.impact }}</p>
               <p v-if="issue.claim_ids?.length || issue.source_refs?.length" class="issue-trace">
                 <span v-if="issue.claim_ids?.length"
-                  >关联声明：{{ issue.claim_ids.join('、') }}</span
+                  >关联需求点：{{ issue.claim_ids.join('、') }}</span
                 >
                 <span v-if="issue.source_refs?.length">
                   原文来源：{{ issue.source_refs.map((ref) => sourceText(ref)).join('；') }}
@@ -254,11 +255,11 @@ watch(_jobId, () => void load())
               <td>
                 <span class="desc">{{ item.description }}</span>
                 <details v-if="item.claims?.length" class="claim-details">
-                  <summary>原子声明与来源（{{ item.claims.length }}）</summary>
+                  <summary>细分需求点（{{ item.claims.length }} 条，含原文出处）</summary>
                   <article v-for="claim in item.claims" :key="claim.claim_id" class="claim-item">
                     <header>
                       <span class="mono req-id">{{ claim.claim_id }}</span>
-                      <span class="tag">{{ claim.kind }}</span>
+                      <span class="tag">{{ CLAIM_KIND_LABELS[claim.kind] ?? claim.kind }}</span>
                     </header>
                     <p>{{ claim.statement }}</p>
                     <ul v-if="claim.acceptance_criteria?.length">
@@ -271,7 +272,7 @@ watch(_jobId, () => void load())
                       :key="sourceRef"
                       class="source-ref"
                     >
-                      <span class="mono">{{ sourceText(sourceRef) }}</span>
+                      <span class="mono">原文出处：{{ sourceText(sourceRef) }}</span>
                       <blockquote v-if="sourceExcerpt(sourceRef)">
                         {{ sourceExcerpt(sourceRef) }}
                       </blockquote>

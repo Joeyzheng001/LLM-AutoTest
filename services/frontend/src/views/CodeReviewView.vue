@@ -1,20 +1,18 @@
 <script setup lang="ts">
-// Code Review 页（07 §3.3）：视图一映射表（四态+置信度）+ 视图二风险清单 +
-// 视图三遗漏功能清单（四视图同源 review_mapping.json）+ 人工审核面板（F-REVW-06）+
-// 视图四·变更范围（C-09 双分支 diff，仅配基线分支的 job 展示；旧产物无键则隐藏）。
-// 红线：全部数据来自后端产物；风险/遗漏/变更范围均由后端程序化派生，前端只渲染。
+// Code Review 页（07 §3.3，C-108 两视图）：视图一映射表（四态+置信度三档徽章）+
+// 视图二·变更范围（C-09 双分支 diff，仅配基线分支的 job 展示；旧产物无键则隐藏）+
+// 人工审核面板（F-REVW-06）。原四视图中的风险/遗漏清单已停产（C-108）。
+// 红线：视图二基础事实由后端程序化派生；影响分析/盲区归因/变更总评由 LLM 生成
+// （后端已校验编号引用，失败回退纯程序视图），前端只渲染并标注「LLM 生成」。
 // 人工审核不在 9 节点口径内（D6/D7）：approved 仅记录；rejected 回流 testcase_generate。
 import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
 import { getRequirementItems, getReviewMapping, postReviewLog } from '../api/client'
 import type {
   ChangeScopeEntry,
+  ChangeSummary,
   RequirementItem,
   ReviewMapping,
-  DerivedRisk,
-  IncrementalFinding,
-  DeterministicReviewCheck,
-  MissingFeature,
   RemovedFile,
   UnmatchedChangedFile,
   ReviewLogResponse,
@@ -23,7 +21,7 @@ import type {
   ReviewScanCoverage,
   ReviewCallChain,
 } from '../api/types'
-import { EVIDENCE_QUALITY_LABELS, MAPPING_STATUS_LABELS } from '../api/labels'
+import { CONFIDENCE_TIER_LABELS, EVIDENCE_QUALITY_LABELS, MAPPING_STATUS_LABELS } from '../api/labels'
 
 const _jobId = ref('')
 
@@ -35,11 +33,8 @@ const mappings = ref<ReviewMapping[]>([])
 const evidenceCatalog = ref<ReviewEvidence[]>([])
 const callChains = ref<ReviewCallChain[]>([])
 const scanCoverage = ref<ReviewScanCoverage | null>(null)
-const risks = ref<DerivedRisk[]>([])
-const deterministicChecks = ref<DeterministicReviewCheck[]>([])
-const incrementalFindings = ref<IncrementalFinding[]>([])
-const missing = ref<MissingFeature[]>([])
 const changeScope = ref<ChangeScopeEntry[]>([])
+const changeSummary = ref<ChangeSummary | null>(null)
 const removedFiles = ref<RemovedFile[]>([])
 const unmatchedFiles = ref<UnmatchedChangedFile[]>([])
 const hasChangeScope = ref(false)
@@ -94,12 +89,9 @@ async function load(): Promise<void> {
     evidenceCatalog.value = review.evidence_catalog ?? []
     callChains.value = review.call_chains ?? []
     scanCoverage.value = review.scan_coverage ?? null
-    risks.value = review.risks
-    deterministicChecks.value = review.deterministic_checks ?? []
-    incrementalFindings.value = review.incremental_findings ?? []
-    missing.value = review.missing_features
     // C-09：优先使用明确的 available 标志；旧产物按 change_scope 字段兼容。
     changeScope.value = review.change_scope ?? []
+    changeSummary.value = review.change_summary ?? null
     removedFiles.value = review.removed_files ?? []
     unmatchedFiles.value = review.unmatched_changed_files ?? []
     hasChangeScope.value = review.change_scope_available ?? review.change_scope !== undefined
@@ -110,11 +102,8 @@ async function load(): Promise<void> {
     evidenceCatalog.value = []
     callChains.value = []
     scanCoverage.value = null
-    risks.value = []
-    deterministicChecks.value = []
-    incrementalFindings.value = []
-    missing.value = []
     changeScope.value = []
+    changeSummary.value = null
     removedFiles.value = []
     unmatchedFiles.value = []
     hasChangeScope.value = false
@@ -163,9 +152,21 @@ async function submitDecision(decision: 'approved' | 'rejected'): Promise<void> 
   }
 }
 
-function formatConfidence(value: number): string {
-  // 展示格式化（保留两位），非计算
-  return value.toFixed(2)
+type ConfidenceTier = 'reliable' | 'review' | 'untrusted'
+
+function confidenceTier(value: number): ConfidenceTier {
+  // 展示分档（置信度本质是人工复核的优先级信号，三档比两位小数更诚实）：
+  // ≥0.7 可抽查；≥0.45 需复核（0.45 为确定性门槛封顶落点）；其余不可信
+  if (value >= 0.7) return 'reliable'
+  if (value >= 0.45) return 'review'
+  return 'untrusted'
+}
+
+function confidenceTitle(mapping: ReviewMapping): string {
+  const base = `置信度 ${mapping.confidence.toFixed(2)}`
+  return mapping.confidence_capped && mapping.raw_confidence != null
+    ? `${base}（确定性证据门槛封顶，原始 ${mapping.raw_confidence.toFixed(2)}）`
+    : base
 }
 
 function evidenceLocation(ref: string): string {
@@ -191,7 +192,7 @@ function callChainSummary(interfaceIds: string[] | undefined): string {
 function claimCountSummary(mapping: ReviewMapping): string {
   const counts = mapping.claim_counts
   if (!counts) return ''
-  return `原子声明 ${counts.total} 条 · 已实现 ${counts.implemented} · 待核查 ${counts.undetermined} · 缺失 ${counts.missing}`
+  return `细分需求点 ${counts.total} 条 · 已实现 ${counts.implemented} · 待核查 ${counts.undetermined} · 缺失 ${counts.missing}`
 }
 
 function assessmentSummary(assessment: ReviewClaimAssessment): string {
@@ -268,7 +269,7 @@ const claimTotals = computed(() =>
         <span class="tag tag-accent">视图一 · 需求-代码映射表</span>
         <span class="coverage-note">
           需求映射完整率：<span class="mono">{{ mappings.length }}/{{ items.length }}</span
-          >； 原子声明评审：<span class="mono">{{ claimTotals.total }}</span> 条； 已实现
+          >； 细分需求点评审：<span class="mono">{{ claimTotals.total }}</span> 条； 已实现
           <span class="mono">{{ claimTotals.implemented }}</span
           >， 部分实现 <span class="mono">{{ claimTotals.partial }}</span
           >， 待核查 <span class="mono">{{ claimTotals.undetermined }}</span
@@ -322,7 +323,13 @@ const claimTotals = computed(() =>
                   }}</span>
                 </td>
                 <td>
-                  <span class="mono">{{ formatConfidence(mapping.confidence) }}</span>
+                  <span
+                    class="tag"
+                    :data-confidence="confidenceTier(mapping.confidence)"
+                    :title="confidenceTitle(mapping)"
+                  >
+                    {{ CONFIDENCE_TIER_LABELS[confidenceTier(mapping.confidence)] }}
+                  </span>
                 </td>
               </tr>
               <tr
@@ -333,7 +340,7 @@ const claimTotals = computed(() =>
                 <td colspan="6">
                   <details>
                     <summary>
-                      逐条声明评审与代码证据（{{ mapping.claim_assessments.length }}）
+                      逐条需求点评审与代码证据（{{ mapping.claim_assessments.length }}）
                     </summary>
                     <article
                       v-for="assessment in mapping.claim_assessments"
@@ -382,85 +389,17 @@ const claimTotals = computed(() =>
         </table>
       </div>
 
-      <!-- 视图二 / 视图三：后端程序化派生（R-REVW-02/04），与视图一同源 -->
-      <div class="derived-stack">
-        <div class="card derived-card">
-          <header class="derived-title">视图二 · 风险清单（部分实现 / 证据不足）</header>
-          <p v-if="!risks.length" class="derived-empty">无风险条目</p>
-          <ul v-else class="derived-list">
-            <li v-for="risk in risks" :key="risk.requirement_id" class="derived-item">
-              <span class="mono req-id">{{ risk.requirement_id }}</span>
-              <span v-if="risk.claim_ids?.length" class="mono claim-ref">
-                {{ risk.claim_ids.join('、') }}
-              </span>
-              <span v-if="risk.severity" class="tag severity-tag">{{ risk.severity }}</span>
-              <span v-if="risk.kind === 'evidence_gap'" class="tag evidence-tag">待核查</span>
-              <span
-                >{{ risk.description
-                }}<template v-if="risk.action">；建议：{{ risk.action }}</template></span
-              >
-            </li>
-          </ul>
-        </div>
-        <div class="card derived-card">
-          <header class="derived-title">视图三 · 已确认遗漏功能点（程序化派生 · R-REVW-02）</header>
-          <p v-if="!missing.length" class="derived-empty">无遗漏条目</p>
-          <ul v-else class="derived-list">
-            <li v-for="feature in missing" :key="feature.requirement_id" class="derived-item">
-              <span class="mono req-id">{{ feature.requirement_id }}</span>
-              <span v-if="feature.claim_id" class="mono claim-ref">{{ feature.claim_id }}</span>
-              <span>
-                {{ feature.claim_statement || feature.title }}
-                <small v-if="feature.claim_statement" class="dim">（{{ feature.title }}）</small>
-              </span>
-            </li>
-          </ul>
-        </div>
-      </div>
-
-      <div v-if="deterministicChecks.length" class="card evidence-card">
-        <header class="derived-title">服务端行为证据检查</header>
-        <p class="panel-note">
-          程序先检查高风险需求是否存在直接代码或配置证据；“待核查”不会被判为已实现。
-        </p>
-        <ul class="derived-list">
-          <li
-            v-for="check in deterministicChecks"
-            :key="`${check.requirement_id}-${check.rule_id}`"
-            class="derived-item"
-          >
-            <span class="mono req-id">{{ check.requirement_id }}</span>
-            <span
-              class="tag"
-              :class="check.status === 'needs_verification' ? 'evidence-tag' : 'evidence-ok'"
-            >
-              {{ check.status === 'needs_verification' ? '待核查' : '已发现证据' }}
-            </span>
-            <span>{{ check.description }}</span>
-          </li>
-        </ul>
-      </div>
-
-      <div v-if="incrementalFindings.length" class="card evidence-card">
-        <header class="derived-title">增量评审优先项</header>
-        <ul class="derived-list">
-          <li
-            v-for="finding in incrementalFindings"
-            :key="`${finding.kind}-${finding.repo}-${finding.file}`"
-            class="derived-item"
-          >
-            <span class="tag severity-tag">{{ finding.severity }}</span>
-            <span>{{ finding.description }}</span>
-            <span class="mono loc">{{ finding.repo }}/{{ finding.file }}</span>
-          </li>
-        </ul>
-      </div>
-
-      <!-- 视图四：变更范围（C-09 双分支 diff，仅配基线分支的 job 展示） -->
+      <!-- 视图二：变更范围（C-09 双分支 diff；C-108 事实程序化派生 + LLM 影响分析） -->
       <div v-if="hasChangeScope" class="card change-scope-card">
         <header class="derived-title">
-          视图四 · 变更范围（C-09 基线→被测分支 diff · 程序化派生不经 LLM）
+          视图二 · 变更范围与存量回归影响（C-09 基线→被测分支 diff · 事实程序化派生 + LLM 回归影响分析）
         </header>
+        <div v-if="changeSummary" class="change-summary">
+          <span class="tag severity-tag">{{ changeSummary.overall_risk }}</span>
+          <strong>{{ changeSummary.nature }}</strong>
+          <p class="summary-advice">{{ changeSummary.regression_advice }}</p>
+          <small class="dim">变更总评由 LLM 生成，需人工复核</small>
+        </div>
         <p
           v-if="!changeScope.length && !removedFiles.length && !unmatchedFiles.length"
           class="derived-empty"
@@ -473,55 +412,85 @@ const claimTotals = computed(() =>
               <th scope="col">接口</th>
               <th scope="col">仓库 / 文件</th>
               <th scope="col">变更</th>
-              <th scope="col">需求 / Claim 覆盖</th>
+              <th scope="col">风险</th>
+              <th scope="col">需求 / 需求点覆盖</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="entry in changeScope" :key="entry.interface_id">
-              <td>
-                <span class="mono">{{ entry.interface_id }}</span>
-              </td>
-              <td>
-                <span class="mono loc">{{ entry.repo }}/{{ entry.file }}</span>
-                <span v-if="entry.matched_via || entry.evidence_level" class="mapping-meta">
-                  {{ entry.matched_via === 'related_file' ? '关联文件命中' : '接口定义命中' }}
-                  <template v-if="entry.evidence_level"> · {{ entry.evidence_level }}</template>
-                </span>
-                <span
-                  v-for="related in entry.related_changed_files ?? []"
-                  :key="related.file"
-                  class="mapping-meta"
-                >
-                  关联变更：{{ related.file }}（{{ related.role }}）
-                </span>
-              </td>
-              <td>
-                <span class="tag" :data-change="entry.change">
-                  {{ entry.change === 'added' ? '新增' : '修改' }}
-                </span>
-              </td>
-              <td>
-                <template v-if="entry.covered_by.length">
+            <template v-for="entry in changeScope" :key="entry.interface_id">
+              <tr>
+                <td>
+                  <span class="mono">{{ entry.interface_id }}</span>
+                </td>
+                <td>
+                  <span class="mono loc">{{ entry.repo }}/{{ entry.file }}</span>
+                  <span v-if="entry.matched_via || entry.evidence_level" class="mapping-meta">
+                    {{ entry.matched_via === 'related_file' ? '关联文件命中' : '接口定义命中' }}
+                    <template v-if="entry.evidence_level"> · {{ entry.evidence_level }}</template>
+                  </span>
                   <span
-                    v-for="covered in entry.covered_claims ?? []"
-                    :key="covered.requirement_id"
-                    class="coverage-group"
+                    v-for="related in entry.related_changed_files ?? []"
+                    :key="related.file"
+                    class="mapping-meta"
                   >
-                    <span class="mono">{{ covered.requirement_id }}</span>
-                    <span class="tag" :data-status="covered.status">
-                      {{ MAPPING_STATUS_LABELS[covered.status] ?? covered.status }}
-                    </span>
-                    <span v-if="covered.claim_ids.length" class="mono claim-ref">
-                      {{ covered.claim_ids.join('、') }}
-                    </span>
+                    关联变更：{{ related.file }}（{{ related.role }}）
                   </span>
-                  <span v-if="!(entry.covered_claims ?? []).length" class="mono">
-                    {{ entry.covered_by.join('、') }}
+                </td>
+                <td>
+                  <span class="tag" :data-change="entry.change">
+                    {{ entry.change === 'added' ? '新增' : '修改' }}
                   </span>
-                </template>
-                <span v-else class="uncovered">未被需求覆盖（变更风险）</span>
-              </td>
-            </tr>
+                </td>
+                <td>
+                  <span
+                    v-if="entry.impact_analysis?.risk_level ?? entry.risk_level"
+                    class="tag severity-tag"
+                    :title="entry.impact_analysis ? 'LLM 影响分析评级' : '程序派生回归优先级下限'"
+                  >
+                    {{ entry.impact_analysis?.risk_level ?? entry.risk_level }}
+                  </span>
+                  <span v-else class="dim">—</span>
+                </td>
+                <td>
+                  <template v-if="entry.covered_by.length">
+                    <span
+                      v-for="covered in entry.covered_claims ?? []"
+                      :key="covered.requirement_id"
+                      class="coverage-group"
+                    >
+                      <span class="mono">{{ covered.requirement_id }}</span>
+                      <span class="tag" :data-status="covered.status">
+                        {{ MAPPING_STATUS_LABELS[covered.status] ?? covered.status }}
+                      </span>
+                      <span v-if="covered.claim_ids.length" class="mono claim-ref">
+                        {{ covered.claim_ids.join('、') }}
+                      </span>
+                    </span>
+                    <span v-if="!(entry.covered_claims ?? []).length" class="mono">
+                      {{ entry.covered_by.join('、') }}
+                    </span>
+                  </template>
+                  <span v-else class="uncovered">未被需求覆盖（变更风险）</span>
+                </td>
+              </tr>
+              <tr v-if="entry.impact_analysis" class="claim-detail-row">
+                <td colspan="5">
+                  <div class="impact-detail">
+                    <p>
+                      <strong>影响分析</strong>
+                      <small class="dim">（LLM 生成，需人工复核）</small>：
+                      {{ entry.impact_analysis.summary }}
+                    </p>
+                    <p v-if="entry.impact_analysis.impact_surface?.length">
+                      影响面：{{ entry.impact_analysis.impact_surface.join('、') }}
+                    </p>
+                    <p v-if="entry.impact_analysis.test_suggestion">
+                      测试建议：{{ entry.impact_analysis.test_suggestion }}
+                    </p>
+                  </div>
+                </td>
+              </tr>
+            </template>
             <tr v-for="entry in unmatchedFiles" :key="`um-${entry.repo}-${entry.file}`">
               <td><span class="dim">无接口命中</span></td>
               <td>
@@ -532,8 +501,22 @@ const claimTotals = computed(() =>
                   {{ entry.change === 'added' ? '新增' : '修改' }}
                 </span>
               </td>
+              <td><span class="dim">—</span></td>
               <td>
-                <span class="uncovered"
+                <template v-if="entry.attribution">
+                  <span class="uncovered">
+                    可能影响：{{
+                      (entry.attribution.likely_interfaces ?? []).join('、') || '未知接口'
+                    }}<template v-if="entry.attribution.likely_requirements?.length">
+                      / {{ entry.attribution.likely_requirements.join('、') }}</template
+                    >
+                  </span>
+                  <span v-if="entry.attribution.rationale" class="mapping-meta">
+                    {{ entry.attribution.rationale }}
+                    <small class="dim">（LLM 归因，需人工复核）</small>
+                  </span>
+                </template>
+                <span v-else class="uncovered"
                   >业务逻辑层变更——接口签名未变但行为可能变更，需人工复核</span
                 >
               </td>
@@ -544,6 +527,7 @@ const claimTotals = computed(() =>
                 <span class="mono loc">{{ entry.repo }}/{{ entry.file }}</span>
               </td>
               <td><span class="tag" data-change="removed">删除</span></td>
+              <td><span class="dim">—</span></td>
               <td><span class="dim">被测侧已无源码，无法关联接口</span></td>
             </tr>
           </tbody>
@@ -619,7 +603,7 @@ const claimTotals = computed(() =>
   color: var(--warning);
 }
 
-/* 视图四：变更范围（C-09） */
+/* 视图二：变更范围（C-09） */
 .scope-table td,
 .scope-table th {
   text-align: left;
@@ -718,27 +702,11 @@ const claimTotals = computed(() =>
   color: var(--accent-strong);
 }
 
-.evidence-tag {
-  background: var(--warning-dim);
-  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
-  color: var(--warning);
-}
-
-.evidence-ok {
-  background: var(--accent-dim);
-  border-color: var(--accent-glow);
-  color: var(--accent-strong);
-}
-
 .severity-tag {
   background: var(--surface-2);
   border-color: var(--border-strong);
   color: var(--text-1);
   font-weight: 600;
-}
-
-.evidence-card {
-  margin-top: calc(-1 * var(--space-2));
 }
 
 .tag[data-status='implemented'] {
@@ -760,6 +728,25 @@ const claimTotals = computed(() =>
 }
 
 .tag[data-status='undetermined'] {
+  color: var(--text-3);
+}
+
+/* 置信度三档（展示分流，hover title 显示原始数值） */
+.tag[data-confidence='reliable'] {
+  background: var(--accent-dim);
+  border-color: var(--accent-glow);
+  color: var(--accent-strong);
+}
+
+.tag[data-confidence='review'] {
+  background: var(--warning-dim);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+  color: var(--warning);
+}
+
+.tag[data-confidence='untrusted'] {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
   color: var(--text-3);
 }
 
@@ -886,11 +873,35 @@ const claimTotals = computed(() =>
   word-break: break-all;
 }
 
-/* 派生卡片（视图二/三）：风险说明通常很长，固定纵向单栏，避免一侧拥挤一侧留白。 */
-.derived-stack {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-4);
+/* 视图二·变更总评横幅（C-108：LLM 生成，前端标注需人工复核） */
+.change-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.change-summary .summary-advice {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-2);
+}
+
+/* 视图二·接口影响分析展开行 */
+.impact-detail {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+.impact-detail p {
+  margin: 0 0 var(--space-1);
 }
 
 .derived-title {

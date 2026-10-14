@@ -1,21 +1,29 @@
-"""code_review 节点：四视图产出（F-REVW-01~05）——按原子声明分批审查，
-风险清单与遗漏功能清单程序化派生（R-REVW-02：与映射表 100% 一致）；
-双分支配置时程序化派生视图四·变更范围（C-09，不经 LLM）。
+"""code_review 节点：两视图产出（F-REVW-01/02/05，C-108）——按原子声明分批审查，
+产出视图一·需求-代码映射表与视图二·变更范围；原四视图中的风险清单与遗漏
+功能清单已停产（C-108）：其信息由视图一 claim 级状态与视图二 risk_level 取代。
 
-产物：review_mapping.json（映射、风险、遗漏、变更范围四视图合一单产物；
-R-REVW-03 的三文件名是规格草案表述，以 schemas/ 冻结文件名为准）。
+LLM 影响分析的侧重是**存量功能回归**（prompt 1.1）：modified/related_file 的既有
+接口从严、纯新增接口从简、盲区归因优先指向可能受影响的存量接口。
 
-程序化派生（数值/清单不经 LLM）：
-- risks：status=partial 自动进入（R-REVW-04：实现不完整即风险）；
-- missing_features：status=missing 条目提取，title 从需求条目回填；
+产物：review_mapping.json（映射表 + 变更范围两视图合一单产物，schema_version 2.1）。
+
+程序化派生（事实字段不经 LLM）：
 - evidence.code_location：从 interface_id 对应接口回填（LLM 给的忽略）；
 - change_scope（C-09）：code_inventory.changed_files × interfaces.code_location
   文件关联 → 变更接口清单，covered_by 从映射表回填（空 = 未被需求覆盖）；
+- change_scope[].risk_level：原 incremental_findings 的 P1/P2 确定性判定映射为
+  条目级回归优先级下限（未被需求覆盖/评审状态异常 = P1，待核查 = P2）；
 - unmatched_changed_files（C-09）：变更但未命中任何接口定义文件的文件
   （业务逻辑层变更等——接口签名未变但行为可能变更，需人工复核）；
 - removed_files（C-09）：被测侧已删除文件单列（无源码可关联接口）。
 
-code_inventory.json 无 changed_files 键（未配基线分支）时两视图为空数组。
+LLM 影响分析（C-108，语义层增强，失败整体回退纯程序视图、节点不失败）：
+- change_scope[].impact_analysis：接口级「改了什么/影响面/测试建议/风险等级」；
+- unmatched_changed_files[].attribution：盲区文件归因（可能影响的接口/需求）；
+- change_summary：变更总评（性质/整体风险/回归建议）。
+编号引用经程序校验（接口/需求/文件必须存在于输入，虚构条目丢弃）。
+
+code_inventory.json 无 changed_files 键（未配基线分支）时视图二为空且跳过 LLM 调用。
 
 校验（R-REVW-01 覆盖率 100% + 虚构防护）：
 - 每条输入 REQ 必须有且仅一个映射条目，缺/多/虚构 REQ → X-LLM-02；
@@ -109,6 +117,12 @@ _MAX_CALL_CHAINS = 1_000
 # （`/v1/embeddings` → 401 key_model_access_denied），语义只能交给模型判断。
 _EVIDENCE_SELECT_PROMPT = "code_review_evidence_select"
 _MAX_LLM_SELECTED_EVIDENCE = 24
+# 视图二 LLM 影响分析（C-108）：单次调用，超限截断输入并记 warning，
+# 截断条目保留程序派生的 risk_level 兜底。
+_CHANGE_IMPACT_PROMPT = "code_review_change_impact"
+_MAX_IMPACT_SCOPE_ENTRIES = 60
+_MAX_IMPACT_UNMATCHED = 80
+_RISK_LEVELS = {"P0", "P1", "P2"}
 _SECRET_VALUE = re.compile(
     r"(?i)(password|secret|api[_-]?key|access[_-]?token)\s*([:=])\s*(['\"]?)[^\s,'\"}]+"
 )
@@ -266,22 +280,45 @@ async def run_code_review(
         incremental_findings = _derive_incremental_findings(
             change_scope, removed_files, unmatched, mappings
         )
+        # C-108：incremental_findings 不再独立成视图，其确定性判定映射为条目级
+        # risk_level 兜底；LLM 影响分析在其上做语义增强，失败回退纯程序视图。
+        _attach_fallback_risk_levels(change_scope, incremental_findings)
+        change_summary: dict[str, Any] | None = None
+        if _change_scope_available(inventory) and (change_scope or unmatched or removed_files):
+            impact = await _analyze_change_impact_with_llm(
+                llm,
+                prompts_dir,
+                change_scope,
+                unmatched,
+                removed_files,
+                call_chains,
+                incremental_findings,
+                interfaces,
+                requirements,
+                mappings,
+            )
+            if impact is not None:
+                change_summary = impact.get("change_summary")
+                _attach_impact_analysis(change_scope, impact.get("impacts") or [])
+                _attach_unmatched_attributions(
+                    unmatched, impact.get("unmatched_attributions") or []
+                )
         payload: dict[str, Any] = {
-            "schema_version": "2.0",
+            "schema_version": "2.1",
             "job_id": state.job_id,
             "mappings": mappings,
             "evidence_catalog": code_evidence,
             "scan_coverage": scan_coverage,
-            "risks": _derive_risks(mappings, deterministic_checks),
-            "missing_features": _derive_missing(mappings, requirements),
             "deterministic_checks": deterministic_checks,
             "change_scope": change_scope,
             "change_scope_available": _change_scope_available(inventory),
             "removed_files": removed_files,
             "unmatched_changed_files": unmatched,
             "call_chains": call_chains,
-            "incremental_findings": incremental_findings,
         }
+        if change_summary is not None:
+            # 顶层 additionalProperties:false 且该键可选：LLM 失败时整键缺省
+            payload["change_summary"] = change_summary
         try:
             path = store.write(state.job_id, "review_mapping.json", payload)
         except PipelineError as exc:
@@ -744,7 +781,7 @@ def _derive_call_chains(
                     ),
                     "unresolved": list(interface.get("unresolved") or []),
                     "max_depth": int(graph.get("max_depth", 0) or 0),
-                    "confidence": "static_recursive",
+                    "analysis_method": "static_recursive",
                 }
             )
             continue
@@ -774,7 +811,7 @@ def _derive_call_chains(
                 "resolved_nodes": len(callees),
                 "unresolved_calls": 0,
                 "max_depth": 1,
-                "confidence": "legacy_static_one_hop",
+                "analysis_method": "legacy_static_one_hop",
             }
         )
     return chains
@@ -1262,7 +1299,9 @@ def _aggregate_claim_assessments(
         mapping: dict[str, Any] = {
             "requirement_id": parent_id,
             "status": status,
-            "confidence": round(sum(float(item["confidence"]) for item in claim_results) / len(claim_results), 2) if claim_results else 0.0,
+            # 需求级置信度取 claim 最小值（最薄弱一环决定整体），不用平均——
+            # 平均会让多条高分 claim 稀释掉一条确定缺失的低可信结论。
+            "confidence": round(min(float(item["confidence"]) for item in claim_results), 2) if claim_results else 0.0,
             "interface_ids": interface_ids,
             "claim_ids": claim_ids,
             "claim_counts": claim_counts,
@@ -1312,6 +1351,18 @@ def _derive_deterministic_checks(
     return checks
 
 
+def _cap_confidence(record: dict[str, Any], cap: float = 0.45) -> None:
+    """确定性门槛封顶置信度，并保留封顶前原值（raw_confidence / confidence_capped）。
+
+    仅在实际压低数值时留痕；setdefault 保证多个门槛连续触发时原值不被覆盖。
+    """
+    current = float(record.get("confidence", 0.0))
+    if current > cap:
+        record.setdefault("raw_confidence", current)
+        record["confidence_capped"] = True
+        record["confidence"] = cap
+
+
 def _apply_claim_deterministic_gates(
     assessments: list[dict[str, Any]], checks: list[dict[str, Any]], scan_complete: bool
 ) -> list[dict[str, Any]]:
@@ -1324,7 +1375,7 @@ def _apply_claim_deterministic_gates(
     for assessment in assessments:
         if assessment.get("status") == "missing" and not scan_complete:
             assessment["status"] = "undetermined"
-            assessment["confidence"] = min(float(assessment.get("confidence", 0)), 0.45)
+            _cap_confidence(assessment)
             needed = assessment.setdefault("verification_needed", [])
             note = "仓库扫描覆盖不完整，不能仅凭当前未发现实现判定功能缺失。"
             if note not in needed:
@@ -1340,7 +1391,7 @@ def _apply_claim_deterministic_gates(
         if not uncovered:
             continue
         assessment["status"] = "undetermined"
-        assessment["confidence"] = min(float(assessment.get("confidence", 0)), 0.45)
+        _cap_confidence(assessment)
         needed = assessment.setdefault("verification_needed", [])
         categories = "、".join(str(check["category"]) for check in uncovered)
         note = f"确定性证据门槛：当前声明的结论缺少相关 {categories} 代码/配置证据，须人工核查。"
@@ -1354,33 +1405,6 @@ def _checks_for_batch(
 ) -> list[dict[str, Any]]:
     req_ids = {str(item.get("id", "")) for item in requirements}
     return [check for check in checks if check["requirement_id"] in req_ids]
-
-
-def _apply_deterministic_gates(
-    mappings: list[dict[str, Any]], checks: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """确定性门槛优先于 LLM：缺直接证据的高风险行为不可标为已实现。"""
-    checks_by_requirement: dict[str, list[dict[str, Any]]] = {}
-    for check in checks:
-        checks_by_requirement.setdefault(str(check["requirement_id"]), []).append(check)
-    for mapping in mappings:
-        required_checks = checks_by_requirement.get(str(mapping["requirement_id"]), [])
-        cited = set((mapping.get("evidence") or {}).get("refs", []))
-        uncovered = [
-            check for check in required_checks
-            if check["status"] == "needs_verification"
-            or not (cited & set(check.get("evidence_ids", [])))
-        ]
-        if not uncovered or mapping["status"] != "implemented":
-            continue
-        mapping["status"] = "undetermined"
-        evidence = mapping.setdefault("evidence", {})
-        previous = str(evidence.get("note", "")).strip()
-        categories = "、".join(str(check["category"]) for check in uncovered)
-        gate_note = f"确定性证据门槛：未为高风险行为引用直接相关的代码/配置证据（{categories}），须人工核查"
-        evidence["note"] = f"{previous}；{gate_note}" if previous else gate_note
-        mapping["confidence"] = min(float(mapping.get("confidence", 0.0)), 0.45)
-    return mappings
 
 
 def _annotate_evidence_quality(
@@ -1436,7 +1460,7 @@ def _derive_change_scope(
     interfaces: list[dict[str, Any]],
     mappings: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """视图四（C-09）：变更接口 × 需求覆盖（程序化派生，不经 LLM）。
+    """视图二（C-09）：变更接口 × 需求覆盖（程序化派生，不经 LLM）。
 
     关联口径：interface.code_location.{repo, file} 命中仓库 changed_files
     （added/modified，文件精确匹配仓内相对路径）；covered_by 从映射表回填，
@@ -1483,7 +1507,7 @@ def _derive_change_scope(
                     or not item.get("interface_ids")
                 )
             ]
-            # 老版本映射没有 Claim 明细时，保持视图四的旧输出形状；只有
+            # 老版本映射没有 Claim 明细时，保持视图二的旧输出形状；只有
             # 真正存在原子声明评审结果时，才展示 covered_claims。
             if claim_assessments:
                 claims_by_interface.setdefault(interface_id, []).append(
@@ -1718,13 +1742,17 @@ def _merge_llm_mappings(
         confidence = raw.get("confidence")
         if not isinstance(confidence, (float, int)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
             raise PipelineError(code=X_LLM_02, message="LLM 输出的 confidence 不在 0 到 1 范围", node_id=NODE_NAME)
+        # 封顶留痕：记录首次被确定性门槛压低前的原值（仅实际压低时写入产物）
+        raw_confidence: float | None = None
         verification = raw.get("verification_needed", [])
         if not isinstance(verification, list) or any(not isinstance(entry, str) for entry in verification):
             raise PipelineError(code=X_LLM_02, message="LLM 输出的 verification_needed 必须为字符串数组", node_id=NODE_NAME)
         if status in {"implemented", "partial", "missing"} and not used_evidence:
             # 接口 ID、路径线索或搜索未命中都不是行为证据。
             status = "undetermined"
-            confidence = min(float(confidence), 0.45)
+            if float(confidence) > 0.45:
+                raw_confidence = float(confidence)
+                confidence = 0.45
             verification = list(verification)
             verification.append("需要提供可验证的实现代码/配置证据；当前判断没有引用证据片段。")
         arrays: dict[str, list[str]] = {}
@@ -1746,23 +1774,28 @@ def _merge_llm_mappings(
         )
         if missing_explanation:
             status = "undetermined"
-            confidence = min(float(confidence), 0.45)
+            if float(confidence) > 0.45:
+                if raw_confidence is None:
+                    raw_confidence = float(confidence)
+                confidence = 0.45
             verification = list(verification)
             verification.append("结论缺少与状态相匹配的已满足/未满足条件说明，需结合源码证据复核。")
         if status == "undetermined" and not verification:
             verification = ["当前证据不足以判定该声明，请核对相关实现、配置或运行行为。"]
-        assessments.append(
-            {
-                "claim_id": claim_id,
-                "status": status,
-                "confidence": float(confidence),
-                "interface_ids": used_interfaces,
-                "evidence_refs": used_evidence,
-                "met_conditions": arrays["met_conditions"],
-                "unmet_conditions": arrays["unmet_conditions"],
-                "verification_needed": verification,
-            }
-        )
+        assessment: dict[str, Any] = {
+            "claim_id": claim_id,
+            "status": status,
+            "confidence": float(confidence),
+            "interface_ids": used_interfaces,
+            "evidence_refs": used_evidence,
+            "met_conditions": arrays["met_conditions"],
+            "unmet_conditions": arrays["unmet_conditions"],
+            "verification_needed": verification,
+        }
+        if raw_confidence is not None:
+            assessment["raw_confidence"] = raw_confidence
+            assessment["confidence_capped"] = True
+        assessments.append(assessment)
 
     missing_coverage = sorted(expected - covered)
     if missing_coverage:
@@ -1996,111 +2029,252 @@ def _extract_mapping_items(data: Any) -> list[Any] | None:
     return None
 
 
-def _derive_risks(
-    mappings: list[dict[str, Any]], deterministic_checks: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """视图二：部分实现及证据不足均进入风险清单（程序派生）。"""
-    risks: list[dict[str, Any]] = []
-    checks_by_req: dict[str, list[dict[str, Any]]] = {}
-    for check in deterministic_checks:
-        checks_by_req.setdefault(str(check["requirement_id"]), []).append(check)
-    for entry in mappings:
-        status = entry["status"]
-        if status not in {"partial", "undetermined"}:
+def _attach_fallback_risk_levels(
+    change_scope: list[dict[str, Any]], incremental_findings: list[dict[str, Any]]
+) -> None:
+    """把 incremental_findings 的确定性 P1/P2 判定映射为条目级 risk_level 兜底（C-108）。
+
+    finding 不带 interface_id，按 (repo, file) 关联接口类 finding；同一文件命中多条时
+    取更高优先级（P1 < P2 按字典序恰好成立）。LLM 影响分析失败时视图二仍有程序派生
+    的回归优先级可展示。
+    """
+    interface_kinds = {"changed_interface_uncovered", "changed_interface_risk"}
+    level_by_file: dict[tuple[str, str], str] = {}
+    for finding in incremental_findings:
+        if str(finding.get("kind", "")) not in interface_kinds:
             continue
-        is_undetermined = status == "undetermined"
-        risk: dict[str, Any] = {
-            "requirement_id": entry["requirement_id"],
-            "kind": "evidence_gap" if is_undetermined else "partial_implementation",
-            "severity": "P2" if is_undetermined else "P1",
-            "action": (
-                "补充服务端配置或实现证据后复核"
-                if is_undetermined
-                else "补齐实现与对应测试后复核"
-            ),
-            "description": (
-                "证据不足（R-REVW-05）：高风险服务端行为待核查，不能按已实现关闭"
-                if is_undetermined
-                else "部分实现（R-REVW-04）：实现不完整即风险，须复核覆盖缺口"
-            ),
-        }
-        risky_claims = [
-            item for item in entry.get("claim_assessments") or []
-            if isinstance(item, dict) and item.get("status") != "implemented"
-        ]
-        risk["claim_ids"] = [str(item.get("claim_id")) for item in risky_claims if item.get("claim_id")]
-        risk["interface_ids"] = list(dict.fromkeys(
-            str(value)
-            for item in risky_claims
-            for value in item.get("interface_ids") or []
-            if str(value)
-        ))
-        if entry.get("interface_id"):
-            risk["interface_id"] = entry["interface_id"]
-        note = (entry.get("evidence") or {}).get("note")
-        if note:
-            risk["description"] += f"；LLM 判定依据：{note}"
-        missing_categories = sorted({
-            str(check["category"])
-            for check in checks_by_req.get(str(entry["requirement_id"]), [])
-            if check["status"] == "needs_verification"
-        })
-        if missing_categories:
-            risk["description"] += f"；待核对证据：{'、'.join(missing_categories)}"
-            critical = {"authorization", "password", "transaction", "data_consistency"} & set(missing_categories)
-            if critical:
-                risk["severity"] = "P1" if is_undetermined else "P0"
-                if not is_undetermined:
-                    risk["action"] = "阻断发布，补齐关键行为实现与安全/一致性回归测试"
-            elif {"session", "state_transition", "idempotency"} & set(missing_categories):
-                risk["severity"] = "P1"
-        risks.append(risk)
-    return risks
+        severity = str(finding.get("severity", ""))
+        if severity not in _RISK_LEVELS:
+            continue
+        key = (str(finding.get("repo", "")), str(finding.get("file", "")))
+        current = level_by_file.get(key)
+        if current is None or severity < current:
+            level_by_file[key] = severity
+    for entry in change_scope:
+        level = level_by_file.get((str(entry.get("repo", "")), str(entry.get("file", ""))))
+        if level:
+            entry["risk_level"] = level
 
 
-def _derive_missing(
-    mappings: list[dict[str, Any]], requirements: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """视图三（R-REVW-02）：提取确认缺失 Claim，并回填原子声明文本。"""
-    title_by_id: dict[str, str] = {
-        str(item["id"]): str(item.get("title", "")) for item in requirements if item.get("id")
-    }
-    statement_by_claim_id = {
-        str(item["claim_id"]): str(item.get("statement", ""))
-        for item in _flatten_requirement_claims(requirements)
-        if item.get("claim_id")
-    }
-    missing: list[dict[str, Any]] = []
-    for entry in mappings:
-        missing_claims = [
-            item for item in entry.get("claim_assessments") or []
-            if isinstance(item, dict) and item.get("status") == "missing"
-        ]
-        if missing_claims:
-            for claim in missing_claims:
-                missing.append(
-                    {
-                        "requirement_id": entry["requirement_id"],
-                        "title": title_by_id.get(entry["requirement_id"], ""),
-                        "claim_id": str(claim.get("claim_id", "")),
-                        "claim_statement": statement_by_claim_id.get(
-                            str(claim.get("claim_id", "")), ""
-                        ),
-                        "interface_ids": list(claim.get("interface_ids") or []),
-                        "evidence_refs": list(claim.get("evidence_refs") or []),
-                        "unmet_conditions": list(claim.get("unmet_conditions") or []),
-                    }
-                )
-            continue
-        if entry["status"] != "missing":
-            continue
-        missing.append(
-            {
-                "requirement_id": entry["requirement_id"],
-                "title": title_by_id.get(entry["requirement_id"], ""),
-            }
+async def _analyze_change_impact_with_llm(
+    llm: SupportsComplete,
+    prompts_dir: Path,
+    change_scope: list[dict[str, Any]],
+    unmatched: list[dict[str, Any]],
+    removed_files: list[dict[str, Any]],
+    call_chains: list[dict[str, Any]],
+    incremental_findings: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+    requirements: list[dict[str, Any]],
+    mappings: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """视图二 LLM 影响分析（C-108）：变更总评 + 接口级影响 + 盲区归因。
+
+    与证据语义召回同口径：任何失败（prompt 缺失/调用失败/非 JSON/结构错/全量虚构）
+    一律返回 None，回退纯程序视图，节点不因此失败。编号引用经程序校验，虚构条目丢弃。
+    """
+    try:
+        prompt = load_prompt(prompts_dir, _CHANGE_IMPACT_PROMPT)
+    except PipelineError as exc:
+        logger.warning("变更影响分析 Prompt 加载失败，回退纯程序视图：%s", exc.message)
+        return None
+
+    scope_input = change_scope
+    if len(scope_input) > _MAX_IMPACT_SCOPE_ENTRIES:
+        logger.warning(
+            "变更接口 %d 条超过影响分析上限 %d，超限条目仅保留程序派生 risk_level",
+            len(scope_input), _MAX_IMPACT_SCOPE_ENTRIES,
         )
-    return missing
+        scope_input = scope_input[:_MAX_IMPACT_SCOPE_ENTRIES]
+    unmatched_input = unmatched
+    if len(unmatched_input) > _MAX_IMPACT_UNMATCHED:
+        logger.warning(
+            "未匹配变更文件 %d 条超过归因上限 %d，超限条目不做归因",
+            len(unmatched_input), _MAX_IMPACT_UNMATCHED,
+        )
+        unmatched_input = unmatched_input[:_MAX_IMPACT_UNMATCHED]
+
+    scope_interface_ids = {str(item.get("interface_id", "")) for item in scope_input}
+    status_by_requirement = {
+        str(item.get("requirement_id", "")): str(item.get("status", ""))
+        for item in mappings
+    }
+    chain_summaries = [
+        {
+            "interface_id": str(chain.get("interface_id", "")),
+            "status": chain.get("status"),
+            "callees": [
+                {"file": item.get("file"), "role": item.get("role")}
+                if isinstance(item, dict)
+                else str(item)
+                for item in (chain.get("callees") or [])[:8]
+            ],
+        }
+        for chain in call_chains
+        if str(chain.get("interface_id", "")) in scope_interface_ids
+    ]
+    user_content = json.dumps(
+        {
+            "change_scope": scope_input,
+            "removed_files": removed_files,
+            "unmatched_changed_files": unmatched_input,
+            "call_chains": chain_summaries,
+            "requirements": [
+                {
+                    "id": str(item.get("id", "")),
+                    "title": str(item.get("title", "")),
+                    "review_status": status_by_requirement.get(str(item.get("id", "")), ""),
+                }
+                for item in requirements
+            ],
+            "interfaces": [
+                {"id": str(item.get("id", "")), "summary": str(item.get("summary", ""))[:120]}
+                for item in interfaces
+                if item.get("id")
+            ],
+            "incremental_findings": incremental_findings,
+        },
+        ensure_ascii=False,
+    )
+    try:
+        result = await llm.complete(_CHANGE_IMPACT_PROMPT, prompt, user_content)
+    except PipelineError as exc:
+        logger.warning("变更影响分析调用失败，回退纯程序视图：%s", exc.message)
+        return None
+    try:
+        data = json.loads(strip_code_fence(result.text))
+    except json.JSONDecodeError:
+        logger.warning("变更影响分析输出不是合法 JSON，回退纯程序视图")
+        return None
+    if not isinstance(data, dict):
+        logger.warning("变更影响分析输出不是 JSON 对象，回退纯程序视图")
+        return None
+    return _validate_change_impact(
+        data,
+        scope_interface_ids,
+        {(str(item.get("repo", "")), str(item.get("file", ""))) for item in unmatched_input},
+        {str(item.get("id", "")) for item in interfaces if item.get("id")},
+        {str(item.get("id", "")) for item in requirements if item.get("id")},
+    )
+
+
+def _validate_change_impact(
+    data: dict[str, Any],
+    scope_interface_ids: set[str],
+    unmatched_keys: set[tuple[str, str]],
+    interface_ids: set[str],
+    requirement_ids: set[str],
+) -> dict[str, Any] | None:
+    """校验 LLM 影响分析输出：编号引用必须真实存在，虚构条目丢弃（与溯源硬校验同口径）。"""
+    summary = data.get("change_summary")
+    if not isinstance(summary, dict) or str(summary.get("overall_risk", "")) not in _RISK_LEVELS:
+        logger.warning("变更影响分析缺少合法 change_summary，回退纯程序视图")
+        return None
+    change_summary = {
+        "nature": str(summary.get("nature", "")),
+        "overall_risk": str(summary["overall_risk"]),
+        "regression_advice": str(summary.get("regression_advice", "")),
+    }
+
+    raw_impacts = data.get("impacts")
+    impacts: list[dict[str, Any]] = []
+    seen_interfaces: set[str] = set()
+    if isinstance(raw_impacts, list):
+        for item in raw_impacts:
+            if not isinstance(item, dict):
+                continue
+            interface_id = str(item.get("interface_id", ""))
+            risk_level = str(item.get("risk_level", ""))
+            impact_summary = str(item.get("summary", "")).strip()
+            if (
+                interface_id not in scope_interface_ids
+                or interface_id in seen_interfaces
+                or risk_level not in _RISK_LEVELS
+                or not impact_summary
+            ):
+                logger.warning("影响分析条目被丢弃（虚构/重复/缺字段）：%s", interface_id or "<空>")
+                continue
+            seen_interfaces.add(interface_id)
+            impacts.append(
+                {
+                    "interface_id": interface_id,
+                    "summary": impact_summary,
+                    "impact_surface": [
+                        str(value) for value in item.get("impact_surface") or [] if str(value)
+                    ],
+                    "test_suggestion": str(item.get("test_suggestion", "")),
+                    "risk_level": risk_level,
+                }
+            )
+    if isinstance(raw_impacts, list) and raw_impacts and not impacts:
+        logger.warning("影响分析条目全部无效（疑似整体虚构），回退纯程序视图")
+        return None
+
+    raw_attrs = data.get("unmatched_attributions")
+    attributions: list[dict[str, Any]] = []
+    if isinstance(raw_attrs, list):
+        for item in raw_attrs:
+            if not isinstance(item, dict):
+                continue
+            key = (str(item.get("repo", "")), str(item.get("file", "")))
+            if key not in unmatched_keys:
+                logger.warning("盲区归因引用了不存在的变更文件，丢弃：%s", "/".join(key))
+                continue
+            attributions.append(
+                {
+                    "repo": key[0],
+                    "file": key[1],
+                    "likely_interfaces": [
+                        str(value)
+                        for value in item.get("likely_interfaces") or []
+                        if str(value) in interface_ids
+                    ],
+                    "likely_requirements": [
+                        str(value)
+                        for value in item.get("likely_requirements") or []
+                        if str(value) in requirement_ids
+                    ],
+                    "rationale": str(item.get("rationale", "")),
+                }
+            )
+    return {
+        "change_summary": change_summary,
+        "impacts": impacts,
+        "unmatched_attributions": attributions,
+    }
+
+
+def _attach_impact_analysis(
+    change_scope: list[dict[str, Any]], impacts: list[dict[str, Any]]
+) -> None:
+    """把已校验的接口级影响分析回挂到 change_scope 条目。"""
+    by_interface = {str(item["interface_id"]): item for item in impacts}
+    for entry in change_scope:
+        impact = by_interface.get(str(entry.get("interface_id", "")))
+        if impact is None:
+            continue
+        entry["impact_analysis"] = {
+            "summary": impact["summary"],
+            "impact_surface": impact["impact_surface"],
+            "test_suggestion": impact["test_suggestion"],
+            "risk_level": impact["risk_level"],
+        }
+
+
+def _attach_unmatched_attributions(
+    unmatched: list[dict[str, Any]], attributions: list[dict[str, Any]]
+) -> None:
+    """把已校验的盲区归因回挂到 unmatched_changed_files 条目。"""
+    by_key = {(item["repo"], item["file"]): item for item in attributions}
+    for entry in unmatched:
+        attr = by_key.get((str(entry.get("repo", "")), str(entry.get("file", ""))))
+        if attr is None:
+            continue
+        entry["attribution"] = {
+            "likely_interfaces": attr["likely_interfaces"],
+            "likely_requirements": attr["likely_requirements"],
+            "rationale": attr["rationale"],
+        }
 
 
 def _change_scope_available(inventory: dict[str, Any]) -> bool:

@@ -1,6 +1,6 @@
-"""code_review 节点测试：四视图全链路 + 程序化派生一致性 + 覆盖率/虚构校验。
+"""code_review 节点测试：两视图全链路（C-108）+ 程序化派生一致性 + 覆盖率/虚构校验。
 
-覆盖：Claim 状态汇总、partial→risks 派生、missing→missing_features 派生、
+覆盖：Claim 状态汇总、变更范围派生（risk_level 兜底 + LLM 影响分析）、
 覆盖率缺口/虚构 REQ/虚构 IF/非法 status（X-LLM-02）、前置产物缺失（X-ORCH-01）、跳序。
 """
 
@@ -205,8 +205,8 @@ def env(tmp_path: Path) -> tuple[Engine, ArtifactStore]:
     return engine, store
 
 
-async def test_code_review_three_views(env: tuple[Engine, ArtifactStore]) -> None:
-    """四视图成功：映射表 + partial→风险派生 + missing→遗漏派生；LLM 谎报位置被忽略。"""
+async def test_code_review_two_views(env: tuple[Engine, ArtifactStore]) -> None:
+    """两视图成功（C-108）：映射表完整；risks/missing/incremental 三键停产；LLM 谎报位置被忽略。"""
     engine, store = env
     state = engine.open_job(_JOB)
     llm = _StubLlm(_LLM_GOOD)
@@ -215,20 +215,17 @@ async def test_code_review_three_views(env: tuple[Engine, ArtifactStore]) -> Non
 
     assert path.is_file()
     payload = store.read_json(_JOB, "review_mapping.json")
+    assert payload["schema_version"] == "2.1"
     # 视图一：三条映射，覆盖率 100%
     assert len(payload["mappings"]) == 3
     m1 = payload["mappings"][0]
     assert m1["status"] == "implemented"
     # evidence.code_location 从接口回填（LLM 不输出该字段，由系统回填接口位置）
     assert m1["evidence"]["code_location"]["repo"] == "user-service"
-    # 视图二：partial 自动进风险清单（R-REVW-04），含判定依据
-    assert [r["requirement_id"] for r in payload["risks"]] == ["REQ-002"]
-    assert "部分实现" in payload["risks"][0]["description"]
-    assert "仅查询，无导出端点" in payload["risks"][0]["description"]
-    # 视图三：missing 提取，title 从需求回填（程序派生）
-    assert payload["missing_features"] == [
-        {"requirement_id": "REQ-003", "title": "批量删除"}
-    ]
+    # C-108：视图二/三及增量清单停产，新产物不再写入
+    assert "risks" not in payload
+    assert "missing_features" not in payload
+    assert "incremental_findings" not in payload
     assert state.node("code_review").status is NodeStatus.COMPLETED
     # LLM 入参含双视图（需求 + 接口）
     _, user_content = llm.received[0]
@@ -329,7 +326,7 @@ async def test_code_review_skip_order_guard(env: tuple[Engine, ArtifactStore]) -
 
 
 async def test_code_review_change_scope_without_baseline(env: tuple[Engine, ArtifactStore]) -> None:
-    """C-09 向后兼容：未配基线分支（无 changed_files 键）→ 视图四为空数组。"""
+    """C-09 向后兼容：未配基线分支（无 changed_files 键）→ 视图二为空数组。"""
     engine, store = env
     state = engine.open_job(_JOB)
 
@@ -342,7 +339,7 @@ async def test_code_review_change_scope_without_baseline(env: tuple[Engine, Arti
 
 
 async def test_code_review_change_scope_derivation(env: tuple[Engine, ArtifactStore]) -> None:
-    """C-09 视图四：变更文件 × 接口文件关联 + covered_by 回填 + removed 单列。"""
+    """C-09 视图二：变更文件 × 接口文件关联 + covered_by 回填 + removed 单列。"""
     engine, store = env
     state = engine.open_job(_JOB)
     inventory = store.read_json(_JOB, "code_inventory.json")
@@ -364,6 +361,7 @@ async def test_code_review_change_scope_derivation(env: tuple[Engine, ArtifactSt
 
     payload = store.read_json(_JOB, "review_mapping.json")
     # 变更接口两条：UserController（modified，REQ-001 覆盖）与 OrderGrpc（added，REQ-002 覆盖）
+    # OrderGrpc 的需求评审状态为 partial → 程序兜底 risk_level=P1（C-108）
     assert payload["change_scope"] == [
         {
             "interface_id": "IF-REST-001",
@@ -380,6 +378,7 @@ async def test_code_review_change_scope_derivation(env: tuple[Engine, ArtifactSt
             "change": "added",
             "matched_via": "definition",
             "covered_by": ["REQ-002"],
+            "risk_level": "P1",
         },
     ]
     assert payload["removed_files"] == [
@@ -411,6 +410,7 @@ async def test_code_review_change_scope_uncovered(env: tuple[Engine, ArtifactSto
     await run_code_review(engine, state, store, _StubLlm(llm_uncovered), _PROMPTS)
 
     payload = store.read_json(_JOB, "review_mapping.json")
+    # 未被需求覆盖 → 程序兜底 risk_level=P1（changed_interface_uncovered 口径）
     assert payload["change_scope"] == [
         {
             "interface_id": "IF-GRPC-001",
@@ -419,6 +419,7 @@ async def test_code_review_change_scope_uncovered(env: tuple[Engine, ArtifactSto
             "change": "modified",
             "matched_via": "definition",
             "covered_by": [],
+            "risk_level": "P1",
         }
     ]
     assert payload["removed_files"] == []
@@ -542,31 +543,71 @@ async def test_code_review_schema_accepts_recursive_call_graph_and_evidence_role
 
     payload = store.read_json(_JOB, "review_mapping.json")
     chain = payload["call_chains"][0]
-    assert chain["confidence"] == "static_recursive"
+    assert chain["analysis_method"] == "static_recursive"
     assert chain["callees"][0]["role"] == "service"
     assert any(item.get("role") == "service" for item in payload["evidence_catalog"])
 
 
-def test_evidence_gate_downgrades_session_requirement_without_direct_evidence() -> None:
-    from orchestrator.nodes.code_review import (
-        _apply_deterministic_gates,
-        _derive_deterministic_checks,
-        _derive_risks,
-    )
+def test_claim_gate_records_raw_confidence_when_capped() -> None:
+    from orchestrator.nodes.code_review import _apply_claim_deterministic_gates
 
-    requirements = [
-        {"id": "REQ-001", "title": "登录 Session 有效期", "description": "会话有效期 30 分钟"}
+    assessments = [
+        {
+            "claim_id": "CLM-001",
+            "status": "missing",
+            "confidence": 0.9,
+            "evidence_refs": [],
+        },
+        {
+            "claim_id": "CLM-002",
+            "status": "missing",
+            "confidence": 0.3,
+            "evidence_refs": [],
+        },
     ]
-    checks = _derive_deterministic_checks(requirements, [])
-    mappings = _apply_deterministic_gates(
-        [{"requirement_id": "REQ-001", "status": "implemented", "confidence": 0.9}], checks
+
+    result = _apply_claim_deterministic_gates(assessments, [], scan_complete=False)
+
+    # 0.9 被封顶到 0.45 → 留痕原值
+    assert result[0]["status"] == "undetermined"
+    assert result[0]["confidence"] == 0.45
+    assert result[0]["raw_confidence"] == 0.9
+    assert result[0]["confidence_capped"] is True
+    # 0.3 本就低于封顶值 → 不写留痕字段（封顶未实际压低）
+    assert result[1]["confidence"] == 0.3
+    assert "raw_confidence" not in result[1]
+    assert "confidence_capped" not in result[1]
+
+
+def test_merge_llm_mappings_records_raw_confidence_when_evidence_missing() -> None:
+    import json as _json
+
+    from orchestrator.nodes.code_review import _merge_llm_mappings
+
+    text = _json.dumps(
+        {
+            "assessments": [
+                {
+                    "claim_id": "CLM-001",
+                    "status": "implemented",
+                    "confidence": 0.9,
+                    "interface_ids": [],
+                    "evidence_refs": [],
+                    "met_conditions": ["已实现"],
+                    "unmet_conditions": [],
+                    "verification_needed": [],
+                }
+            ]
+        }
     )
 
-    assert mappings[0]["status"] == "undetermined"
-    assert mappings[0]["confidence"] == 0.45
-    assert "确定性证据门槛" in mappings[0]["evidence"]["note"]
-    risks = _derive_risks(mappings, checks)
-    assert risks[0]["kind"] == "evidence_gap"
+    assessments = _merge_llm_mappings(text, [{"claim_id": "CLM-001"}], [], [])
+
+    # implemented 无证据引用 → 降为 undetermined 且封顶留痕
+    assert assessments[0]["status"] == "undetermined"
+    assert assessments[0]["confidence"] == 0.45
+    assert assessments[0]["raw_confidence"] == 0.9
+    assert assessments[0]["confidence_capped"] is True
 
 
 def test_collect_code_evidence_is_scoped_and_redacts_values(tmp_path: Path) -> None:
@@ -698,7 +739,8 @@ def test_requirement_with_implemented_and_undetermined_claims_is_partial() -> No
     mappings = _aggregate_claim_assessments(requirements, assessments)
 
     assert mappings[0]["status"] == "partial"
-    assert mappings[0]["confidence"] == 0.65
+    # 需求级置信度取 claim 最小值（最薄弱一环），不是平均
+    assert mappings[0]["confidence"] == 0.4
     assert mappings[0]["claim_ids"] == ["CLM-001", "CLM-002"]
     assert mappings[0]["claim_counts"] == {
         "total": 2,
@@ -709,47 +751,12 @@ def test_requirement_with_implemented_and_undetermined_claims_is_partial() -> No
     }
 
 
-def test_missing_view_contains_claim_statement() -> None:
-    from orchestrator.nodes.code_review import _aggregate_claim_assessments, _derive_missing
-
-    requirements = [
-        {
-            "id": "REQ-001",
-            "title": "自动审批配置",
-            "claims": [{"claim_id": "CLM-001", "statement": "支持按业务类型配置审批规则"}],
-        }
-    ]
-    mappings = _aggregate_claim_assessments(
-        requirements,
-        [
-            {
-                "claim_id": "CLM-001",
-                "status": "missing",
-                "confidence": 0.9,
-                "interface_ids": [],
-                "evidence_refs": [],
-                "met_conditions": [],
-                "unmet_conditions": ["未找到对应审批规则配置入口"],
-                "verification_needed": [],
-            }
-        ],
-    )
-
-    assert _derive_missing(mappings, requirements) == [
-        {
-            "requirement_id": "REQ-001",
-            "title": "自动审批配置",
-            "claim_id": "CLM-001",
-            "claim_statement": "支持按业务类型配置审批规则",
-            "interface_ids": [],
-            "evidence_refs": [],
-            "unmet_conditions": ["未找到对应审批规则配置入口"],
-        }
-    ]
-
-
 def test_call_chain_and_incremental_findings_are_static(tmp_path: Path) -> None:
-    from orchestrator.nodes.code_review import _derive_call_chains, _derive_incremental_findings
+    from orchestrator.nodes.code_review import (
+        _attach_fallback_risk_levels,
+        _derive_call_chains,
+        _derive_incremental_findings,
+    )
 
     (tmp_path / "UserController.java").write_text(
         "class UserController { void get() { userService.find(); } }", encoding="utf-8"
@@ -759,41 +766,23 @@ def test_call_chain_and_incremental_findings_are_static(tmp_path: Path) -> None:
         {"id": "IF-REST-001", "code_location": {"repo": "demo", "file": "UserController.java"}}
     ]
     chains = _derive_call_chains(inventory, interfaces)
-    findings = _derive_incremental_findings(
-        [
-            {
-                "interface_id": "IF-REST-001",
-                "repo": "demo",
-                "file": "UserController.java",
-                "covered_by": [],
-            }
-        ],
-        [],
-        [],
-        [],
-    )
+    change_scope = [
+        {
+            "interface_id": "IF-REST-001",
+            "repo": "demo",
+            "file": "UserController.java",
+            "covered_by": [],
+        }
+    ]
+    findings = _derive_incremental_findings(change_scope, [], [], [])
 
     assert chains[0]["callees"] == ["userService"]
+    assert chains[0]["analysis_method"] == "legacy_static_one_hop"
     assert findings[0]["kind"] == "changed_interface_uncovered"
     assert findings[0]["severity"] == "P1"
-
-
-def test_partial_authorization_gap_is_release_blocking() -> None:
-    from orchestrator.nodes.code_review import _derive_risks
-
-    risks = _derive_risks(
-        [{"requirement_id": "REQ-001", "status": "partial", "confidence": 0.7}],
-        [
-            {
-                "requirement_id": "REQ-001",
-                "category": "authorization",
-                "status": "needs_verification",
-            }
-        ],
-    )
-
-    assert risks[0]["severity"] == "P0"
-    assert "阻断发布" in risks[0]["action"]
+    # C-108：finding 严重度映射为 change_scope 条目的 risk_level 兜底
+    _attach_fallback_risk_levels(change_scope, findings)
+    assert change_scope[0]["risk_level"] == "P1"
 
 
 def test_select_interfaces_full_recall_when_few_interfaces() -> None:
@@ -1005,3 +994,131 @@ def test_scan_coverage_rejects_missing_interface_evidence() -> None:
 
     assert coverage["complete"] is False
     assert coverage["interface_evidence_missing"] == ["IF-REST-002"]
+
+
+# ---------------------------------------------------------------------------
+# C-108：视图二 LLM 影响分析（变更总评 + 接口级影响 + 盲区归因）
+
+
+_IMPACT_GOOD = """{
+  "change_summary": {"nature": "功能新增", "overall_risk": "P1", "regression_advice": "重点回归用户查询链路"},
+  "impacts": [
+    {"interface_id": "IF-REST-001", "summary": "查询接口定义文件被改", "impact_surface": ["查询链路"],
+     "test_suggestion": "覆盖查询正常/异常场景", "risk_level": "P1"}
+  ],
+  "unmatched_attributions": [
+    {"repo": "user-service", "file": "UserService.java",
+     "likely_interfaces": ["IF-REST-001"], "likely_requirements": ["REQ-001"],
+     "rationale": "服务实现类承载查询逻辑"}
+  ]
+}"""
+
+
+class _DispatchStub:
+    """按 Prompt 名分流的桩：主评审/证据召回回 mappings，影响分析回 impact JSON。"""
+
+    def __init__(self, impact_text: str, impact_error: bool = False) -> None:
+        self._impact_text = impact_text
+        self._impact_error = impact_error
+        self.calls: list[str] = []
+
+    async def complete(self, node: str, prompt: PromptSpec, user_content: str) -> LlmResult:
+        """记录 prompt 名；影响分析走专属文本/异常，其余回主评审 JSON。"""
+        self.calls.append(prompt.name)
+        if prompt.name == "code_review_change_impact":
+            if self._impact_error:
+                raise PipelineError(code="X-LLM-01", message="网关超时", node_id=node)
+            return LlmResult(text=self._impact_text, tokens=32, call_id="LLM-imp-001")
+        return LlmResult(text=_LLM_GOOD, tokens=88, call_id="LLM-stub-003")
+
+
+def _configure_changed_files(store: ArtifactStore) -> None:
+    """给 fixture 的 user-service 仓库配上变更清单（触发视图二 + LLM 影响分析）。"""
+    inventory = store.read_json(_JOB, "code_inventory.json")
+    inventory["repositories"][0]["baseline_branch"] = "main"
+    inventory["repositories"][0]["changed_files"] = {
+        "added": [],
+        "modified": ["UserController.java", "UserService.java"],
+        "removed": [],
+    }
+    store.write(_JOB, "code_inventory.json", inventory)
+
+
+async def test_change_impact_llm_attaches_analysis_and_summary(
+    env: tuple[Engine, ArtifactStore],
+) -> None:
+    """合法影响分析 → change_summary / impact_analysis / attribution 三类产物齐全且过 Schema。"""
+    engine, store = env
+    _configure_changed_files(store)
+    llm = _DispatchStub(_IMPACT_GOOD)
+
+    await run_code_review(engine, engine.open_job(_JOB), store, llm, _PROMPTS)
+
+    payload = store.read_json(_JOB, "review_mapping.json")
+    assert payload["change_summary"] == {
+        "nature": "功能新增",
+        "overall_risk": "P1",
+        "regression_advice": "重点回归用户查询链路",
+    }
+    entry = next(
+        item for item in payload["change_scope"] if item["interface_id"] == "IF-REST-001"
+    )
+    assert entry["impact_analysis"]["summary"] == "查询接口定义文件被改"
+    assert entry["impact_analysis"]["risk_level"] == "P1"
+    unmatched = payload["unmatched_changed_files"][0]
+    assert unmatched["file"] == "UserService.java"
+    assert unmatched["attribution"]["likely_interfaces"] == ["IF-REST-001"]
+    assert unmatched["attribution"]["likely_requirements"] == ["REQ-001"]
+    assert "code_review_change_impact" in llm.calls
+
+
+async def test_change_impact_rejects_fabricated_interface_id(
+    env: tuple[Engine, ArtifactStore],
+) -> None:
+    """虚构接口编号的影响条目被丢弃；归因中的虚构编号被过滤（防虚构口径）。"""
+    engine, store = env
+    _configure_changed_files(store)
+    fabricated = _IMPACT_GOOD.replace(
+        '"interface_id": "IF-REST-001", "summary": "查询接口定义文件被改"',
+        '"interface_id": "IF-REST-999", "summary": "编造的接口"',
+    ).replace('"likely_interfaces": ["IF-REST-001"]', '"likely_interfaces": ["IF-REST-777"]')
+
+    await run_code_review(
+        engine, engine.open_job(_JOB), store, _DispatchStub(fabricated), _PROMPTS
+    )
+
+    payload = store.read_json(_JOB, "review_mapping.json")
+    # 全部影响条目被判虚构 → 整体回退：无 change_summary、无 impact_analysis
+    assert "change_summary" not in payload
+    assert all("impact_analysis" not in item for item in payload["change_scope"])
+    assert all("attribution" not in item for item in payload["unmatched_changed_files"])
+
+
+async def test_change_impact_llm_failure_falls_back_to_program_view(
+    env: tuple[Engine, ArtifactStore],
+) -> None:
+    """影响分析调用失败 → 节点仍完成，保留程序派生 risk_level，无 change_summary。"""
+    engine, store = env
+    _configure_changed_files(store)
+    state = engine.open_job(_JOB)
+
+    await run_code_review(
+        engine, state, store, _DispatchStub("", impact_error=True), _PROMPTS
+    )
+
+    payload = store.read_json(_JOB, "review_mapping.json")
+    assert state.node("code_review").status is NodeStatus.COMPLETED
+    assert "change_summary" not in payload
+    assert all("impact_analysis" not in item for item in payload["change_scope"])
+
+
+async def test_change_impact_skipped_without_baseline(
+    env: tuple[Engine, ArtifactStore],
+) -> None:
+    """未配基线（无 changed_files）→ 不发起影响分析调用。"""
+    engine, store = env
+    llm = _DispatchStub(_IMPACT_GOOD)
+
+    await run_code_review(engine, engine.open_job(_JOB), store, llm, _PROMPTS)
+
+    assert "code_review_change_impact" not in llm.calls

@@ -65,3 +65,23 @@ export const CASE_CATEGORY_LABELS: Record<string, string> = {
   boundary: '边界',
   exception: '异常',
 }
+
+// F-REQ-01：claims[].kind 九枚举（与 prompts/req_parse.md 输出契约一致）
+export const CLAIM_KIND_LABELS: Record<string, string> = {
+  normal: '正常流程',
+  validation: '输入校验',
+  boundary: '边界条件',
+  exception: '异常处理',
+  authorization: '权限控制',
+  state_transition: '状态流转',
+  data_consistency: '数据一致性',
+  non_functional: '非功能要求',
+  dependency: '外部依赖',
+}
+
+// Code Review 置信度三档（展示分流：≥0.7 可抽查 / 0.45–0.7 需复核 / <0.45 不可信）
+export const CONFIDENCE_TIER_LABELS: Record<string, string> = {
+  reliable: '可抽查',
+  review: '需复核',
+  untrusted: '不可信',
+}
