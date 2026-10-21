@@ -867,6 +867,9 @@ def _merge_llm_output(text: str, candidates: list[dict[str, Any]]) -> list[dict[
             entry["returns"] = item["returns"]
         if cand.get("confidence") is not None:
             entry["confidence"] = cand["confidence"]
+        for key in ("controller_name", "controller_annotations"):
+            if cand.get(key) is not None:
+                entry[key] = cand[key]
         # 溯源/判定字段一律由代码回填（评审 §5）：related_files / code_spans /
         # change_evidence / unresolved 必须一路带到 interfaces.json。否则下游
         # `_derive_change_scope` 只看 code_location.file，Service/DTO 改动会被记成
@@ -970,16 +973,23 @@ def _enrich_params_from_candidate(
         for field in body.get("fields") or []
         if isinstance(field, dict) and field.get("name")
     }
+    for existing_field in existing.values():
+        existing_field.setdefault("description_origin", "inferred")
     for field in request_body:
         name = str(field.get("name", ""))
         if not name:
             continue
         if name not in existing:
             existing[name] = dict(field)
+            existing[name]["description_origin"] = (
+                "source" if field.get("description") else "unknown"
+            )
             continue
         for key in ("type", "description", "required", "required_evidence", "source_refs"):
             if key in field:
                 existing[name][key] = field[key]
+        if field.get("description"):
+            existing[name]["description_origin"] = "source"
         if "required" not in field:
             # 静态侧未找到 required 证据时，清掉 LLM 擅自给出的布尔结论，回到未判定。
             existing[name].pop("required", None)

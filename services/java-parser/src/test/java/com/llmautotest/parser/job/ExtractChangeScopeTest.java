@@ -460,6 +460,30 @@ class ExtractChangeScopeTest {
     // ---- #52 change_evidence 行级求交 ----
 
     @Test
+    void keepsEveryLineOfLargeChangedMethod() throws Exception {
+        Path repo = repoWithTwoCommits();
+        StringBuilder source = new StringBuilder(
+                "@RestController public class DemoController {\n"
+                + "@PostMapping(\"/large\") public String trial() {\n");
+        for (int i = 0; i < 100; i++) {
+            source.append("String value").append(i).append(" = \"")
+                    .append("x".repeat(100)).append("\";\n");
+        }
+        source.append("return \"TAIL_MARKER\";\n}\n}\n");
+        write(repo, "com/demo/DemoController.java", source.toString());
+        runGit(repo, "add", "-A");
+        runGit(repo, "commit", "-m", "large method");
+        String target = runGit(repo, "rev-parse", "HEAD").trim();
+        Map<String, Object> candidate = firstCandidate(extract(
+                repo, target, Map.of("com/demo/DemoController.java", added(Map.of(1, 105)))));
+        Map<String, Object> evidence = evidenceOf(candidate);
+        assertThat(evidence.get("truncated")).isEqualTo(false);
+        assertThat((List<Map<String, Object>>) evidence.get("changed_snippets"))
+                .singleElement().satisfies(item -> assertThat(String.valueOf(item.get("text")))
+                        .hasSizeGreaterThan(10000).contains("value99", "TAIL_MARKER"));
+    }
+
+    @Test
     void bodyChangeIsDetectedWithChangedSnippet() throws Exception {
         Path repo = repoWithTwoCommits();
         String first = runGit(repo, "rev-parse", "HEAD~1").trim();

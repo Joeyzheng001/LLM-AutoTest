@@ -28,6 +28,20 @@
             }
           },
           "snippet": { "type": "string", "description": "接口定义源码片段（LLM 上下文）" },
+          "controller_name": { "type": "string", "description": "接口所在的 Java Controller 类型名，由 AST 确定" },
+          "controller_annotations": {
+            "type": "array",
+            "description": "Controller 类级注解及其完整 AST 行范围，用于精确读取状态码与路由语义",
+            "items": {
+              "type": "object",
+              "required": ["name", "start_line", "end_line"],
+              "properties": {
+                "name": { "type": "string" },
+                "start_line": { "type": "integer", "minimum": 1 },
+                "end_line": { "type": "integer", "minimum": 1 }
+              }
+            }
+          },
           "method_body": { "type": "string", "description": "接口方法完整源码（参数语义解析的主要证据）" },
           "method_body_truncated": { "type": "boolean", "description": "完整方法源码是否因上限截断" },
           "method_body_char_count": { "type": "integer", "minimum": 0 },
@@ -59,6 +73,8 @@
                 "file": { "type": "string", "description": "仓库内相对路径" },
                 "role": { "type": "string", "enum": ["controller", "service", "dto", "proto", "wsdl", "listener", "other"] },
                 "kind": { "type": "string", "enum": ["body", "callee"], "description": "body=接口本体方法；callee=递归调用链中已定位的定义" },
+                "method_name": { "type": "string" },
+                "parameter_count": { "type": "integer", "minimum": 0 },
                 "start_line": { "type": "integer", "minimum": 1 },
                 "end_line": { "type": "integer" }
               }
@@ -73,7 +89,29 @@
               "resolved_calls": { "type": "integer", "minimum": 0 },
               "resolved_nodes": { "type": "integer", "minimum": 0 },
               "unresolved_calls": { "type": "integer", "minimum": 0 },
-              "max_depth": { "type": "integer", "minimum": 0 }
+              "max_depth": { "type": "integer", "minimum": 0 },
+              "edges": {
+                "type": "array",
+                "description": "静态解析确认的直接调用边；caller/callee 文件与方法起止行对应实际源码定义，call_line 对应调用表达式行",
+                "items": {
+                  "type": "object",
+                  "required": ["caller_file", "caller_start_line", "callee_file", "callee_start_line", "depth"],
+                  "properties": {
+                    "caller_file": { "type": "string" },
+                    "caller_role": { "type": "string", "enum": ["controller", "service", "dto", "proto", "wsdl", "listener", "other"] },
+                    "caller_method": { "type": "string" },
+                    "caller_start_line": { "type": "integer", "minimum": 1 },
+                    "caller_end_line": { "type": "integer", "minimum": 1 },
+                    "callee_file": { "type": "string" },
+                    "callee_role": { "type": "string", "enum": ["controller", "service", "dto", "proto", "wsdl", "listener", "other"] },
+                    "callee_method": { "type": "string" },
+                    "callee_start_line": { "type": "integer", "minimum": 1 },
+                    "callee_end_line": { "type": "integer", "minimum": 1 },
+                    "depth": { "type": "integer", "minimum": 1 },
+                    "call_line": { "type": "integer", "minimum": 1 }
+                  }
+                }
+              }
             }
           },
           "unresolved": {

@@ -3,54 +3,343 @@
   "$id": "llm-autotest/testcases",
   "title": "用例与脚本元数据（模块 5 GEN，主笔：丙）",
   "type": "object",
-  "required": ["schema_version", "job_id", "cases"],
+  "required": [
+    "schema_version",
+    "job_id",
+    "cases"
+  ],
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0" },
-    "job_id": { "type": "string", "pattern": "^job-" },
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^job-"
+    },
     "cases": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "interface_id", "category", "title", "expected", "script_path", "loadable"],
+        "required": [
+          "id",
+          "interface_id",
+          "category",
+          "title",
+          "expected",
+          "script_path",
+          "loadable"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^TC-\\d{3}$" },
-          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$", "description": "F-GEN-04 溯源" },
-          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$", "description": "F-GEN-04 溯源（可追溯即携带）" },
-          "claim_id": { "type": "string", "pattern": "^CLM-\\d{3,}$", "description": "P0：原子需求声明溯源" },
-          "testpoint_id": { "type": "string", "pattern": "^TP-\\d{3}$", "description": "F-GEN-04 溯源扩展：本条用例主要覆盖的测试点编号；程序兜底用例可省略" },
-          "category": { "type": "string", "enum": ["normal", "boundary", "exception"], "description": "F-GEN-01：每接口三类各 ≥1" },
-          "title": { "type": "string", "minLength": 1 },
+          "id": {
+            "type": "string",
+            "pattern": "^TC-\\d{3}$"
+          },
+          "interface_id": {
+            "type": "string",
+            "pattern": "^IF-[A-Z]+-\\d{3}$",
+            "description": "F-GEN-04 溯源"
+          },
+          "requirement_id": {
+            "type": "string",
+            "pattern": "^REQ-\\d{3}$",
+            "description": "F-GEN-04 溯源（可追溯即携带）"
+          },
+          "claim_id": {
+            "type": "string",
+            "pattern": "^CLM-\\d{3,}$",
+            "description": "P0：原子需求声明溯源"
+          },
+          "testpoint_id": {
+            "type": "string",
+            "pattern": "^TP-\\d{3}$",
+            "description": "F-GEN-04 溯源扩展：本条用例主要覆盖的测试点编号；程序兜底用例可省略"
+          },
+          "oracle_id": {
+            "type": "string",
+            "pattern": "^ORC-IF-[A-Z]+-\\d{3}-\\d{3}$",
+            "description": "Code Review 源码预期契约编号"
+          },
+          "oracle_status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "unverified"
+            ],
+            "description": "执行预期是否由 Code Review 源码证据确认；unverified 用例执行时跳过"
+          },
+          "oracle_evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^EVD-\\d{4,}$"
+            }
+          },
+          "oracle_scenario": {
+            "type": "string",
+            "description": "Code Review 源码分支场景，用于选择单用例控制夹具"
+          },
+          "oracle_control_kinds": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "downstream_response",
+                "application_config",
+                "service_registry"
+              ]
+            }
+          },
+          "fixture_plan": {
+            "type": "object",
+            "description": "Code Review 源码证实的单用例造数、查回 ID 和软删除计划",
+            "required": [
+              "kind",
+              "add_interface_id",
+              "query_interface_id",
+              "delete_interface_id",
+              "marker_field",
+              "add_body",
+              "query_body",
+              "target_body",
+              "id_field",
+              "cleanup_mode"
+            ],
+            "properties": {
+              "kind": {
+                "const": "create_query_soft_delete"
+              },
+              "add_interface_id": {
+                "type": "string"
+              },
+              "query_interface_id": {
+                "type": "string"
+              },
+              "delete_interface_id": {
+                "type": "string"
+              },
+              "marker_field": {
+                "type": "string"
+              },
+              "add_body": {
+                "type": "object"
+              },
+              "query_body": {
+                "type": "object"
+              },
+              "target_body": {
+                "type": "object"
+              },
+              "id_field": {
+                "enum": [
+                  "id",
+                  "ids"
+                ]
+              },
+              "cleanup_mode": {
+                "const": "soft_delete"
+              }
+            }
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "boundary",
+              "exception"
+            ],
+            "description": "F-GEN-01：每接口三类各 ≥1"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
           "params": {
             "type": "object",
             "description": "F-GEN-02：参数名与结构仅来自 interfaces.json，出现清单外参数即打回",
             "additionalProperties": true
           },
-          "auth_mode": { "type": "string", "enum": ["inherit", "missing", "invalid"], "description": "认证会话模式：继承任务登录、缺失认证或伪造认证" },
-          "expected": { "type": "string", "description": "预期结果描述（断言依据）" },
+          "auth_mode": {
+            "type": "string",
+            "enum": [
+              "inherit",
+              "missing",
+              "invalid"
+            ],
+            "description": "认证会话模式：继承任务登录、缺失认证或伪造认证"
+          },
+          "expected": {
+            "type": "string",
+            "description": "预期结果描述（断言依据）"
+          },
           "assertions": {
             "type": "array",
             "description": "可执行的响应体业务断言；空缺时执行器明确标记为仅状态码断言",
             "items": {
               "type": "object",
-              "required": ["path", "op"],
+              "required": [
+                "path",
+                "op"
+              ],
               "properties": {
-                "path": { "type": "string", "minLength": 1 },
-                "op": { "type": "string", "enum": ["equals", "not_equals", "exists", "not_exists", "non_empty", "contains", "greater_than", "less_than"] },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "op": {
+                  "type": "string",
+                  "enum": [
+                    "equals",
+                    "not_equals",
+                    "exists",
+                    "not_exists",
+                    "null_or_missing",
+                    "non_empty",
+                    "contains",
+                    "greater_than",
+                    "less_than",
+                    "not_blank",
+                    "equals_request",
+                    "in",
+                    "not_in"
+                  ]
+                },
                 "value": {}
               },
               "additionalProperties": false
             }
           },
-          "script_path": { "type": "string", "description": "生成的 pytest 脚本相对路径" },
-          "loadable": { "type": "boolean", "description": "R-GEN-03：py_compile + 收集零 error 的校验结果" },
-          "low_confidence": { "type": "boolean", "description": "X-GEN-03：unknown 参数用例低置信度注明" }
+          "script_path": {
+            "type": "string",
+            "description": "生成的 pytest 脚本相对路径"
+          },
+          "loadable": {
+            "type": "boolean",
+            "description": "R-GEN-03：py_compile + 收集零 error 的校验结果"
+          },
+          "low_confidence": {
+            "type": "boolean",
+            "description": "X-GEN-03：unknown 参数用例低置信度注明"
+          },
+          "state_conditions": {
+            "type": "array",
+            "description": "本接口处理逻辑所需的下游/环境状态；独立于请求参数，不代表已准备",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "description",
+                "mode",
+                "evidence_ref",
+                "quote"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "downstream_response",
+                    "application_config",
+                    "service_registry",
+                    "test_data"
+                  ]
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mode": {
+                  "enum": [
+                    "integration",
+                    "controlled"
+                  ]
+                },
+                "evidence_ref": {
+                  "type": "string",
+                  "pattern": "^EVD-\\d{4,}$"
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "execution_readiness": {
+            "enum": [
+              "ready",
+              "conditional",
+              "blocked"
+            ],
+            "description": "设计时的执行准备状态；执行阶段重新检查"
+          },
+          "execution_blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "request_conditions": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "HTTP 输入必须满足的条件；未补齐有效请求时仍保留设计"
+          },
+          "expected_behavior": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "description",
+              "evidence_ref",
+              "quote"
+            ],
+            "properties": {
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence_ref": {
+                "type": "string",
+                "pattern": "^EVD-\\d{4,}$"
+              },
+              "quote": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "oracle_basis": {
+            "enum": [
+              "spring_required_body",
+              "integration_entry"
+            ]
+          },
+          "assertion_scope": {
+            "type": "string",
+            "enum": [
+              "business",
+              "response_structure",
+              "framework_boundary",
+              "status_only",
+              "ui_steps",
+              "unverified"
+            ]
+          },
+          "design_status": {
+            "enum": [
+              "pending_expectation"
+            ]
+          }
         }
       }
     },
     "warnings": {
       "type": "array",
       "description": "生成质量告警（v1.1 新增可选字段：X-GEN-01 接口跳过 / X-GEN-02 参数一致性二次不过放弃）",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "testpoints": {
       "type": "array",
@@ -61,18 +350,169 @@
       "description": "可选浏览器端到端用例；仅在任务启用时生成",
       "items": {
         "type": "object",
-        "required": ["id", "case_type", "requirement_id", "title", "steps", "expected"],
+        "required": [
+          "id",
+          "case_type",
+          "requirement_id",
+          "title",
+          "steps",
+          "expected"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^E2E-\\d{3}$" },
-          "case_type": { "const": "e2e" },
-          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
-          "claim_id": { "type": "string", "pattern": "^CLM-\\d{3,}$" },
-          "testpoint_id": { "type": "string", "pattern": "^TP-\\d{3}$" },
-          "title": { "type": "string", "minLength": 1 },
-          "preconditions": { "type": "array", "items": { "type": "string" } },
-          "steps": { "type": "array", "minItems": 1, "items": { "type": "object" } },
-          "expected": { "type": "string", "minLength": 1 }
-        }
+          "id": {
+            "type": "string",
+            "pattern": "^E2E-\\d{3,}$"
+          },
+          "case_type": {
+            "const": "e2e"
+          },
+          "requirement_id": {
+            "type": "string",
+            "pattern": "^REQ-\\d{3}$"
+          },
+          "claim_id": {
+            "type": "string",
+            "pattern": "^CLM-\\d{3,}$"
+          },
+          "testpoint_id": {
+            "type": "string",
+            "pattern": "^TP-\\d{3}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "preconditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object"
+            }
+          },
+          "expected": {
+            "type": "string",
+            "minLength": 1
+          },
+          "contract_version": {
+            "type": "string",
+            "enum": [
+              "2.0"
+            ]
+          },
+          "design_id": {
+            "type": "string"
+          },
+          "rule_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "scenario_type": {
+            "enum": [
+              "normal",
+              "boundary",
+              "exception",
+              "permission",
+              "state_transition",
+              "consistency"
+            ]
+          },
+          "priority": {
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "setup": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "cleanup": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "precondition_checks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "execution_blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "execution_readiness": {
+            "enum": [
+              "ready",
+              "blocked"
+            ]
+          },
+          "source_observations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "contract_version": {
+                  "const": "2.0"
+                }
+              },
+              "required": [
+                "contract_version"
+              ]
+            },
+            "then": {
+              "required": [
+                "rule_refs",
+                "scenario_type",
+                "setup",
+                "precondition_checks",
+                "cleanup",
+                "execution_readiness"
+              ],
+              "properties": {
+                "steps": {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "action",
+                      "basis",
+                      "intent"
+                    ],
+                    "properties": {
+                      "action": {
+                        "pattern": "^expect_"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
       }
     }
   }

@@ -19,6 +19,7 @@ class CaseParameterIssues:
     missing_required: tuple[str, ...] = ()
     unknown: tuple[str, ...] = ()
     invalid_structured: tuple[str, ...] = ()
+    invalid_field_types: tuple[str, ...] = ()
     params_not_object: bool = False
 
     def messages(self, *, allow_missing_for_error: bool = False) -> list[str]:
@@ -32,6 +33,11 @@ class CaseParameterIssues:
             messages.append(
                 "unknown body/query 参数必须是具体 JSON 对象："
                 + ", ".join(self.invalid_structured)
+            )
+        if self.invalid_field_types:
+            messages.append(
+                "请求体字段 JSON 类型与接口源码类型不符："
+                + ", ".join(self.invalid_field_types)
             )
         if self.missing_required and not allow_missing_for_error:
             messages.append("缺少必填参数：" + ", ".join(self.missing_required))
@@ -101,6 +107,9 @@ def materialize_declared_defaults(
     normalized = dict(case)
     raw_params = case.get("params")
     params = dict(raw_params) if isinstance(raw_params, dict) else {}
+    intentional_bodies = _intentional_missing_bodies(
+        case, [item for item in interface.get("params") or [] if isinstance(item, dict)], params,
+    )
     if not expected_client_error(str(case.get("expected", ""))):
         for definition in interface.get("params") or []:
             if not isinstance(definition, dict):
@@ -108,6 +117,8 @@ def materialize_declared_defaults(
             if is_runtime_injected_param(definition):
                 continue
             name = str(definition.get("name", ""))
+            if name in intentional_bodies:
+                continue
             if not name or name in params or definition.get("required") is not True:
                 continue
             if "default" in definition:
@@ -130,6 +141,7 @@ def inspect_case_parameters(
     if not isinstance(raw_params, dict):
         return CaseParameterIssues(params_not_object=True)
     params = {str(key): value for key, value in raw_params.items()}
+    intentional_bodies = _intentional_missing_bodies(case, definitions, params)
     allowed = {str(item.get("name")) for item in definitions if item.get("name")}
     unknown = tuple(sorted(set(params) - allowed))
     missing = tuple(
@@ -140,6 +152,7 @@ def inspect_case_parameters(
             and item.get("name")
             # 框架运行时注入的容器参数不算缺失：用例无从提供、也不需要提供。
             and not is_runtime_injected_param(item)
+            and str(item["name"]) not in intentional_bodies
             and (str(item["name"]) not in params or params[str(item["name"])] is None)
         )
     )
@@ -151,10 +164,72 @@ def inspect_case_parameters(
             and str(item.get("type")) == "unknown"
             and str(item.get("in", "")) in {"body", "query"}
             and str(item["name"]) in params
+            and str(item["name"]) not in intentional_bodies
             and not isinstance(params[str(item["name"])], dict)
         )
     )
-    return CaseParameterIssues(missing, unknown, invalid_structured)
+    invalid_field_types: set[str] = set()
+    for definition in definitions:
+        if definition.get("in") != "body" or not definition.get("name"):
+            continue
+        param_name = str(definition["name"])
+        body = params.get(param_name)
+        declared_fields = definition.get("fields") or []
+        if body is None:
+            continue
+        if not isinstance(body, dict):
+            if declared_fields:
+                invalid_field_types.add(f"{param_name} (JSON object)")
+            continue
+        for field in declared_fields:
+            if not isinstance(field, dict) or not field.get("name"):
+                continue
+            field_name = str(field["name"])
+            if field_name not in body or body[field_name] is None:
+                # JSON null can be an intentional @NotNull/@NotEmpty negative case.
+                continue
+            if not _json_value_matches_java_type(body[field_name], str(field.get("type", ""))):
+                invalid_field_types.add(
+                    f"{param_name}.{field_name} ({field.get('type', 'unknown')})"
+                )
+    return CaseParameterIssues(
+        missing, unknown, invalid_structured, tuple(sorted(invalid_field_types))
+    )
+
+
+def _intentional_missing_bodies(
+    case: dict[str, Any], definitions: list[dict[str, Any]], params: dict[str, Any],
+) -> set[str]:
+    """Only a source-bound required-body oracle authorizes this negative input."""
+    if (case.get("oracle_status") != "verified" or case.get("oracle_basis") != "spring_required_body"
+            or case.get("category") != "boundary" or not case.get("oracle_id")):
+        return set()
+    return {str(item["name"]) for item in definitions
+            if item.get("in") == "body" and item.get("required") is True and item.get("name")
+            and params.get(str(item["name"])) is None
+            and any(isinstance(condition, dict) and condition.get("path") == item["name"]
+                    and condition.get("op") == "equals" and condition.get("value") is None
+                    for condition in case.get("request_conditions") or [])}
+
+
+def _json_value_matches_java_type(value: Any, field_type: str) -> bool:
+    """Check only unambiguous JSON shapes; unknown/custom Java types stay unchecked."""
+    normalized = re.sub(r"\s+", "", field_type)
+    raw = normalized.split("<", 1)[0].rsplit(".", 1)[-1]
+    if raw in {"List", "Set", "Collection", "Iterable"} or normalized.endswith("[]"):
+        return isinstance(value, list)
+    if raw == "Map":
+        return isinstance(value, dict)
+    if raw in {"String", "Character", "char"}:
+        return isinstance(value, str)
+    if raw in {"Boolean", "boolean"}:
+        return isinstance(value, bool)
+    if raw in {
+        "Byte", "byte", "Short", "short", "Integer", "int", "Long", "long",
+        "Float", "float", "Double", "double", "BigInteger", "BigDecimal",
+    }:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return True
 
 
 def blocking_parameter_messages(

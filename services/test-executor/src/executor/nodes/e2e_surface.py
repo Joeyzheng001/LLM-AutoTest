@@ -328,7 +328,7 @@ async def _collect_menu_items(page: Any) -> list[dict[str, Any]]:
     except PlaywrightError:
         total = 0
     items: list[dict[str, Any]] = []
-    for index in range(min(total, 200)):
+    for index in range(total):
         try:
             node = nodes.nth(index)
             # 刻意不过滤可见性：本项目的子菜单默认隐藏、hover 后才显示
@@ -386,7 +386,7 @@ async def _collect_menu_items_by_structure(page: Any) -> list[dict[str, Any]]:
         except PlaywrightError:
             continue
         items: list[dict[str, Any]] = []
-        for index in range(min(total, 200)):
+        for index in range(total):
             try:
                 node = nodes.nth(index)
                 if not await node.is_visible():

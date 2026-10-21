@@ -1,0 +1,52 @@
+{
+  "job_id": "job-precodetest",
+  "model_run_id": "a85c38eeeb08",
+  "model_calls": 92,
+  "models": {
+    "deepseek-chat": 92
+  },
+  "failed_model_calls": 0,
+  "finish_reasons": {
+    "stop": 92
+  },
+  "payload_integrity_errors": [],
+  "nodes": {
+    "req_parse": "completed",
+    "code_scan": "completed",
+    "interface_reconstruct": "completed",
+    "code_review": "completed",
+    "testcase_generate": "completed",
+    "auto_execute": "completed",
+    "test_report": "completed",
+    "defect_list": "completed",
+    "retest_regression": "completed"
+  },
+  "source_design_count": 42,
+  "case_count": 42,
+  "execution_summary": {
+    "total": 42,
+    "passed": 20,
+    "failed_assertion": 0,
+    "failed_environment": 0,
+    "skipped": 22
+  },
+  "actual_requests": 24,
+  "passed_by_scope": {
+    "response_structure": 9,
+    "business": 4,
+    "status_only": 7
+  },
+  "framework_observations_pending": 4,
+  "duplicate_oracle_requests": 0,
+  "normal_requests_by_interface": {
+    "IF-REST-001": 2,
+    "IF-REST-002": 2,
+    "IF-REST-003": 14,
+    "IF-REST-004": 2
+  },
+  "source_design_diagnostics": [
+    "接口 IF-REST-001 的“O32风控试算成功且存在业务处理器时，处理风控明细并返回结果”修复后仍无可证断言，已隔离该分支：state_conditions 缺少本接口的源码原文依据",
+    "接口 IF-REST-002 的“开启自动审批时，autoApprovalStage参数校验失败”未进入执行清单：DTO 校验场景没有可验证的请求字段前置条件",
+    "接口 IF-REST-003 的“请求不包含 riskChannel 参数时，默认使用所有配置的风控通道”未作为可执行预期：请求前置条件不能证明选中的源码比较条件；参数存在或取其它值不代表命中该分支"
+  ]
+}

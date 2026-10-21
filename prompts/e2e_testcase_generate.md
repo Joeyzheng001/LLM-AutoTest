@@ -1,62 +1,32 @@
-<!-- 可选 E2E 用例生成：需求级测试点 → 受限浏览器动作。 -->
-
 ---
-version: 1.2
-spec: F-GEN-E2E-01
-owner: 甲
+version: 2.0
+spec: F-E2E-CASE
+owner: QA
 changelog:
-  - 1.2 | 2026-09-29 | surface 增加深层路由与 interactions/option_values，要求覆盖深层路径并利用真实取值做枚举一致性校验
-  - 1.1 | 2026-09-27 | 明确 goto.value 相对 surface.base_url 拼接（base_url 自带路径时首页是 /，不是 /home）
-  - 1.0 | 2026-09-22 | 初版：基于真实页面探测的路由/selector 白名单
+  - 2.0 | 2026-10-20 | 单业务场景生成可执行准备、操作、断言与清理；引用需求原文，保留 frame 与状态
 sampling:
   temperature: 0.2
-  top_p: 0.9
 ---
+为输入的唯一场景生成一条完整 E2E 用例。真实页面 facts 来自完整观察分页，source_page 可追溯。只输出 {"cases":[{...}]}。
+用例字段：requirement_id、rule_refs（当前 rule_id 数组）、title、scenario_type、priority、role、preconditions（文字数组）、setup（准备步骤）、precondition_checks（检查步骤）、steps（业务步骤及断言）、cleanup（清理步骤）、expected、execution_blockers（确实无法满足的条件数组）。
+每个步骤含 action、intent（业务意图）；按需含 selector、target_intent、within（语义容器数组）、frame、page、value、variable、resource、destination。顶层 frame=null；iframe 必须引用实际 url/name。页面默认 main。
+所有业务断言必须含 basis={"rule_id":"当前规则","quote":"当前规则原文"}。steps 至少包含一条验证业务结果的断言；不能只有打开页面、填写、点击或自然语言 expected。
+允许操作：goto/click/dblclick/fill/press/check/uncheck/select/hover/scroll/drag/upload/download/open_popup/open_actor/close_page/capture_text/capture_value/screenshot/fixture。
+允许断言：expect_text/expect_exact_text/expect_url/expect_visible/expect_hidden/expect_value/expect_count/expect_checked/expect_unchecked/expect_enabled/expect_disabled/expect_options/expect_response。
+selector 使用真实 role=button[name=保存]、label=字段名、placeholder=提示、text=文本、testid=标识；保留页面/frame 归属。尚未出现的业务提示可以按需求原文使用 text=... 做断言，不能把实际缺失当作禁止验证的理由。
+role 只能使用 available_roles 的身份名，默认 default，未登录用 anonymous。goto/expect_url 的 value 为该站点 origin 下的 /路径；不可使用完整 URL。expect_count.value 为整数；expect_options.value 为完整选项数组。
+expect_response 使用 method、path、assertions（path/op/value 形式，检查对象包含 status/body）。来源必须是已配置或已观察的业务请求，不能仅 HTTP 200 代替业务结果。
+变量 {{UNIQUE}}/{{RUN_ID}}/{{CASE_ID}} 由程序生成；{{AUTH_USERNAME}}/{{AUTH_PASSWORD}} 仅运行时替换。提取动作通过 variable=RECORD_ID 生成后续 {{RECORD_ID}}，不猜历史 ID。
+open_actor 使用 resource=available_roles 中的角色和 page=窗口名称，新身份打开后通过 page 指定后续步骤；跨角色业务使用提取变量传递真实记录 ID。fixture/upload 必须引用输入 available_resources 的名称 resource，不能指定任意文件或执行任意代码。没有所需资源时保留 execution_blockers。
+文字前置必须有对应 setup 或 precondition_checks；无法准备时保留阻断，不把数据条件假设为已成立。只生成本场景，不替换为首页检查。
+预期不可因实际页面结果不同而修改。正常新增应验证列表重新查询等最终业务后置条件，不能只有短暂成功提示。每步截图与过程证据由执行器自动保存，不需要插入大量 screenshot 步骤。
 
-## 输出格式要求（必须）
+动态表单或弹窗未在设计时展开：先使用已观察到的业务入口；后续步骤可以用 target_intent 描述需求规定的目标字段/控件而不填写猜测的 selector。执行器在该步重新观察并调用模型定位真实控件，再执行原动作。不能因此删除整个业务流程。目标不存在时保留现场定位缺口。
+业务反馈文字的正确值仍来自需求，使用 expect_text/expect_exact_text 等断言；不得把预期文字改成实际返回的错误文字以通过。
 
-只输出纯 JSON，不要 Markdown 或解释：
+准备和 precondition_checks 的可达性、登录、数据存在性检查是就绪检查，可以不填 basis；steps 中每个 expect_* 都必须填 basis。不要为了引用需求而把无关的首页标题检查说成业务断言。
+expect_exact_text/expect_text 必须同时填写 selector（或 target_intent）及 value，value 为需求规定的文本。身份未配置时 role="default"，禁止凭空填写 admin。
+最小结构示例（仅说明协议，实际内容必须使用当前输入，不要照抄）：
+{"cases":[{"requirement_id":"输入 requirement_id","rule_refs":["输入 rule_id"],"title":"输入场景标题","scenario_type":"normal","role":"default","priority":"P1","preconditions":[],"setup":[{"action":"goto","intent":"进入入口","value":"/"}],"precondition_checks":[],"steps":[{"action":"click","intent":"打开业务入口","target_intent":"输入中真实业务入口"},{"action":"expect_exact_text","intent":"核对需求结果","target_intent":"业务反馈区域","value":"需求规定的结果","basis":{"rule_id":"输入 rule_id","quote":"逐字复制当前规则原文"}}],"cleanup":[],"expected":"需求规定的结果","execution_blockers":[]}]}
 
-```
-{
-  "cases": [
-    {
-      "requirement_id": "REQ-001",
-      "testpoint_id": "TP-001",
-      "title": "用户可见的功能场景",
-      "preconditions": ["可选前置条件"],
-      "steps": [
-        {"action": "goto", "value": "/login"},
-        {"action": "fill", "selector": "placeholder=用户名", "value": "{{AUTH_USERNAME}}"},
-        {"action": "click", "selector": "role=button[name=登 录]"},
-        {"action": "expect_url", "selector": "", "value": "/dashboard"}
-      ],
-      "expected": "登录成功后展示用户名称"
-    }
-  ]
-}
-```
-
-规则：
-
-- 只为输入中的 `requirements` 和 `testpoints` 生成；`requirement_id` 与 `testpoint_id` 必须来自同一条测试点，禁止虚构或跨需求关联。程序会从测试点回填 `claim_id`。
-- 每个需求优先覆盖主业务路径；`source=RISK` 的测试点补充异常、权限、空状态或关键提示的可见行为。
-- 输入 `surface.routes` 是浏览器刚刚真实探测到的页面。`goto.value` 只能使用其中的 `path`；每个 selector 必须逐字使用其中的 `selectors`，禁止凭需求猜测路由、控件或文案。
-- **`path` 是相对 `surface.base_url` 的路径**（见输入里的 `surface.path_basis`），执行端把它直接接在 `base_url` 之后。所以当 `base_url` 自带路径前缀（如 `http://host:6080/home`）时，首页对应的 `path` 是 `/`（拼成 `http://host:6080/home/`），**不要写 `/home`**——那会拼成 `/home/home` 并被白名单拒绝。判断依据：以 `routes[].path` 的字面值为准，不要从 `base_url` 反推页面路径。
-- `goto` 的 `value` 只能是站内相对路径（以 `/` 开头），不能填写完整 URL。
-- 仅允许动作：`goto`、`click`、`fill`、`check`、`select`、`expect_text`、`expect_url`。不得输出 JavaScript、shell、下载、上传、等待或任意代码。
-- selector 优先按可访问语义写：`role=button[name=保存]`、`label=用户名`、`placeholder=用户名`、`text=提交成功`、`testid=save-button`。页面结构不确定时，不要猜测 CSS class、XPath、路由或控件。
-- 登录用户名和密码一律使用 `{{AUTH_USERNAME}}`、`{{AUTH_PASSWORD}}`；运行时才替换，禁止在产物中写真实或猜测凭据。
-- 输入中的 `auth_mode` 决定登录前置：`reuse` 表示执行端会为目标页面同源请求复用已验证会话，用例从登录后的页面状态开始，不要生成登录页填写/提交步骤；`browser` 表示用例需要验证登录流程时，才使用上述占位符生成浏览器登录步骤。
-- `expect_text` 使用 selector 指向可见文本；`expect_url` 的 value 写预期站内路径，selector 置空字符串。
-- 最多生成输入 `max_cases` 条。不能确认选择器、页面路径或用户可见结果时宁可少产或输出空数组，不能杜撰页面元素。
-- **覆盖深层路径，不要只测首页**：`surface.routes` 已包含登录后逐层展开菜单探测到的深层页面（每条 route 的 `menu_text` 标明它在菜单中的位置，如「审批设置」）。若某条需求/测试点对应的是深层页面里的功能，**必须** `goto` 到该 `path`，而不是在首页做替代验证。只测首页的用例视为未覆盖该需求。
-- **优先使用页面内真实取值**：route 里的 `interactions` 记录了该页真实存在的 tab（`kind=tab` 的 `label` 逐字可用作 `role=tab[name=...]`），`option_values` 记录了展开下拉读到的**真实选项值**。设计枚举类校验用例时以这些真实值为准，不要凭空写取值。
-- **枚举一致性校验（发现缺陷的机会）**：把 `option_values` 里的真实选项与需求条目（`requirements[].description`、测试点的 `acceptance_criteria`）中出现的枚举值逐一比对。若页面上实际显示的选项与需求描述**不一致**（措辞不同、缺失取值、多出取值），说明存在前端与需求的口径偏差——在对应用例的 `title` 中点明差异（例如「存单申购豁免结果下拉显示『指令审批』，需求写『审批』」），`expected` 按**需求原文**写，让用例在执行时暴露该不一致。
-- 若 `surface.routes` 里找不到与某需求匹配的页面，**不要**用首页或登录页凑一条；跳过该需求（少产优于错产）。
-
-## 任务
-
-你是功能测试设计师。根据需求、程序化测试点和目标前端地址，生成面向真实用户操作的浏览器自动化用例。重点验证页面流程、输入校验、状态变化和用户可见反馈，不要把 REST 接口调用改写成 E2E 用例。
-
-探测到的深层页面（含 tab 与真实枚举值）是你发现「前端与需求不一致」缺陷的主要依据——首页之外的真实页面行为才是提测阶段最值得验证的部分。
+expect_text/expect_exact_text 的固定 value 必须是需求原文规定的文字（或明确的运行变量）；不能因观察到侧栏名称不同，就把工作台页签名称替换为侧栏的文字。场景原文与观察文本不一致时仍保留需求预期。

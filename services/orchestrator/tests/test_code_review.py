@@ -118,6 +118,28 @@ class _StubLlm:
     async def complete(self, node: str, prompt: PromptSpec, user_content: str) -> LlmResult:
         """记录调用并返回预设文本。"""
         self.received.append((prompt.ref, user_content))
+        if prompt.name == "code_review_test_oracles":
+            item = json.loads(user_content)["interfaces"][0]
+            evidence = next(
+                (entry for entry in item["evidence"] if 'return Map.of("code", "OK");' in entry["excerpt"]),
+                None,
+            )
+            oracles = []
+            if evidence:
+                ref = evidence["evidence_id"]
+                quote = 'return Map.of("code", "OK");'
+                oracles.append({
+                    "interface_id": item["interface"]["id"], "category": "normal",
+                    "scenario": "固定返回源码业务码", "preconditions": [],
+                    "expected_status": "status=200",
+                    "assertions": [{"path": "code", "op": "equals", "value": "OK"}],
+                    "evidence_refs": [ref],
+                    "evidence_quotes": [
+                        {"target": "expected_status", "evidence_ref": ref, "quote": quote},
+                        {"target": "assertions[0]", "evidence_ref": ref, "quote": quote},
+                    ],
+                })
+            return LlmResult(text=json.dumps({"oracles": oracles}), tokens=1, call_id="LLM-oracle")
         return LlmResult(text=self._text, tokens=88, call_id="LLM-stub-003")
 
 
@@ -125,8 +147,17 @@ class _StubLlm:
 def env(tmp_path: Path) -> tuple[Engine, ArtifactStore]:
     """引擎 + 产物卷 + 前三节点已完成的前置状态。"""
     store = ArtifactStore(tmp_path, _SCHEMAS, "orchestrator")
+    (tmp_path / "UserController.java").write_text(
+        "@RestController\npublic class UserController {\n" + "\n" * 27
+        + '@GetMapping("/api/v1/users")\npublic Object query() {\n'
+        + 'return Map.of("code", "OK");\n}\n' + "\n" * 15 + "}\n",
+        encoding="utf-8",
+    )
     engine = Engine(store)
     state = engine.init_job(_JOB)
+    (store.job_dir(_JOB) / "job_input.json").write_text(
+        '{"auto_record_fixtures": false}', encoding="utf-8"
+    )
     store.write(_JOB, "requirement_review.json", requirement_review_payload(_JOB))
     for node_name, filename, payload in (
         (
@@ -152,7 +183,7 @@ def env(tmp_path: Path) -> tuple[Engine, ArtifactStore]:
             "repositories": [
                 {
                     "name": "user-service",
-                    "path": "/data/repos/user-service",
+                    "path": str(tmp_path),
                     "branch": "release/v2.3",
                     "is_fallback": False,
                     "status": "ok",
@@ -215,7 +246,7 @@ async def test_code_review_two_views(env: tuple[Engine, ArtifactStore]) -> None:
 
     assert path.is_file()
     payload = store.read_json(_JOB, "review_mapping.json")
-    assert payload["schema_version"] == "2.1"
+    assert payload["schema_version"] == "2.2"
     # 视图一：三条映射，覆盖率 100%
     assert len(payload["mappings"]) == 3
     m1 = payload["mappings"][0]
@@ -228,8 +259,8 @@ async def test_code_review_two_views(env: tuple[Engine, ArtifactStore]) -> None:
     assert "incremental_findings" not in payload
     assert state.node("code_review").status is NodeStatus.COMPLETED
     # LLM 入参含双视图（需求 + 接口）
-    _, user_content = llm.received[0]
-    assert "REQ-001" in user_content and "IF-REST-001" in user_content
+    user_content = "\n".join(content for _, content in llm.received)
+    assert "CLM-0001" in user_content and "IF-REST-001" in user_content
 
 
 @pytest.mark.parametrize(
@@ -459,8 +490,8 @@ async def test_change_scope_matches_related_files_and_shrinks_unmatched(
                     "code_location": {
                         "repo": "user-service",
                         "file": "UserController.java",
-                        "start_line": 1,
-                        "end_line": 5,
+                        "start_line": 30,
+                        "end_line": 45,
                     },
                     "is_fallback": False,
                     "related_files": [
@@ -507,7 +538,7 @@ async def test_code_review_schema_accepts_recursive_call_graph_and_evidence_role
 ) -> None:
     """递归调用链与证据 role 都属于程序派生字段，必须能通过最终产物 Schema。"""
     engine, store = env
-    for name in ("UserController.java", "UserService.java"):
+    for name in ("UserService.java",):
         (tmp_path / name).write_text("\n".join([f"class {name[:-5]} {{"] * 50), encoding="utf-8")
 
     inventory = store.read_json(_JOB, "code_inventory.json")
@@ -821,7 +852,7 @@ def test_select_interfaces_lexical_prefilter_when_many_interfaces() -> None:
         for index in range(45)
     ]
     result = _select_interfaces_for_claims(claims, interfaces)
-    assert len(result) <= 40
+    assert len(result) == len(interfaces)
     assert result[0]["id"] == "IF-000"
 
 
@@ -887,7 +918,7 @@ def test_lexical_recall_finds_evidence_after_camel_split() -> None:
 
 async def test_semantic_recall_adopts_llm_picked_evidence() -> None:
     """语义层：采纳模型给出的编号，虚构与重复编号一律忽略。"""
-    llm = _EvidenceSelectStub('{"evidence_ids": ["EVD-0002", "EVD-9999", "EVD-0002"]}')
+    llm = _EvidenceSelectStub('{"claim_ids": ["CLM-0001"], "evidence_ids": ["EVD-0002", "EVD-0002"]}')
     chosen = await _select_evidence_with_llm(
         llm, _PROMPTS, _APPROVAL_CLAIM, _EVIDENCE_SAMPLE, set()
     )
@@ -899,12 +930,9 @@ async def test_semantic_recall_adopts_llm_picked_evidence() -> None:
 async def test_semantic_recall_falls_back_when_llm_output_unusable() -> None:
     """语义层：非 JSON / 缺字段 / 全虚构编号一律返回 None，交给词面召回兜底。"""
     for bad in ("不是 JSON", '{"items": []}', '{"evidence_ids": ["EVD-9999"]}'):
-        assert (
-            await _select_evidence_with_llm(
-                _EvidenceSelectStub(bad), _PROMPTS, _APPROVAL_CLAIM, _EVIDENCE_SAMPLE, set()
-            )
-            is None
-        )
+        assert await _select_evidence_with_llm(
+            _EvidenceSelectStub(bad), _PROMPTS, _APPROVAL_CLAIM, _EVIDENCE_SAMPLE, set()
+        ) == _EVIDENCE_SAMPLE
     # 目录为空时直接返回空数组，不调用模型
     llm = _EvidenceSelectStub('{"evidence_ids": []}')
     assert await _select_evidence_with_llm(llm, _PROMPTS, _APPROVAL_CLAIM, [], set()) == []
@@ -921,12 +949,10 @@ async def test_semantic_recall_falls_back_on_llm_failure() -> None:
             """恒抛网络类失败。"""
             raise PipelineError(code="X-LLM-01", message="网关超时", node_id=node)
 
-    assert (
+    with pytest.raises(PipelineError, match="网关超时"):
         await _select_evidence_with_llm(
             _Boom(), _PROMPTS, _APPROVAL_CLAIM, _EVIDENCE_SAMPLE, set()
         )
-        is None
-    )
 
 
 def test_scan_coverage_reports_truncation_and_integrity_gate() -> None:
@@ -936,19 +962,17 @@ def test_scan_coverage_reports_truncation_and_integrity_gate() -> None:
     下游据此把「模型没看到」读成「不存在」。
     """
     from orchestrator.nodes.code_review import (
-        _MAX_CALL_CHAINS,
-        _MAX_INTERFACE_EVIDENCE,
         _scan_coverage,
     )
 
     inventory = {"repositories": [{"name": "r", "status": "ok", "files": [{"path": "A.java"}]}]}
-    over = [{"id": f"IF-REST-{index:03d}"} for index in range(1, _MAX_INTERFACE_EVIDENCE + 2)]
+    over = [{"id": f"IF-REST-{index:03d}"} for index in range(1, 1002)]
 
     coverage = _scan_coverage(inventory, [], over, {"complete": True, "reasons": []})
     assert coverage["interface_evidence_truncated"] is True
-    assert coverage["call_chain_truncated"] is True
-    assert coverage["interface_evidence_limit"] == _MAX_INTERFACE_EVIDENCE
-    assert coverage["call_chain_limit"] == _MAX_CALL_CHAINS
+    assert coverage["call_chain_truncated"] is False
+    assert coverage["interface_evidence_limit"] == 0
+    assert coverage["call_chain_limit"] == 0
     assert coverage["complete"] is False
 
     # 未触顶 + 门禁通过 + 完整性记录齐备 → 才算完整
@@ -1029,6 +1053,8 @@ class _DispatchStub:
             if self._impact_error:
                 raise PipelineError(code="X-LLM-01", message="网关超时", node_id=node)
             return LlmResult(text=self._impact_text, tokens=32, call_id="LLM-imp-001")
+        if prompt.name == "code_review_test_oracles":
+            return await _StubLlm(_LLM_GOOD).complete(node, prompt, user_content)
         return LlmResult(text=_LLM_GOOD, tokens=88, call_id="LLM-stub-003")
 
 

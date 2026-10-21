@@ -39,6 +39,8 @@ from executor.nodes.auto_execute import (
     RestRunner,
     _expects_success,
     _judge_assertion,
+    _job_scope_fixtures,
+    _matching_case_control_fixtures,
     _run_fixture_phase,
     auth_exempt_paths,
     interface_service_base_url,
@@ -165,7 +167,7 @@ async def retest_defects(
             auth_headers,
             verify,
             auth_exempt_paths(auth),
-            prefers_django_trailing_slash(auth),
+            prefers_django_trailing_slash(auth, url),
         )
         for url in route_urls
     }
@@ -177,7 +179,12 @@ async def retest_defects(
 
     # 首次执行和复测必须共享同一组前置条件，否则“复测通过/失败”可能只是
     # 造数或清理状态不同造成的假象。夹具响应只保留状态与原因，不扩散 token。
-    fixture_configs = fixtures or []
+    all_fixture_configs = fixtures or []
+    fixture_configs = _job_scope_fixtures(all_fixture_configs)
+    control_fixture_configs = [
+        fixture for fixture in all_fixture_configs
+        if isinstance(fixture, dict) and fixture.get("scope") == "case"
+    ]
     setup_block_reason: str | None = None
     if fixture_configs:
         setup_records, setup_block_reason = await _run_fixture_phase(
@@ -204,6 +211,12 @@ async def retest_defects(
             continue
         case_id = str(defect.get("case_id", ""))
         case = case_by_id.get(case_id)
+        if (case or {}).get("case_type") == "e2e":
+            warnings.append(
+                f"E2E 缺陷 {defect.get('id')} 保留在独立浏览器闭环；"
+                "请使用 E2E 工作台复测原始用例快照，不通过 REST 脚本判定。"
+            )
+            continue
         script_rel = str((case or {}).get("script_path", ""))
         script_path = job_dir / script_rel if script_rel else None
         if_id = str(defect.get("interface_id", ""))
@@ -225,13 +238,6 @@ async def retest_defects(
         route_url = interface_service_base_url(
             interface, default_service_url, service_base_urls
         )
-        if protocol == "rest" and not rest_ready_by_url.get(route_url, False):
-            warnings.append(
-                f"复测环境不可达（X-EXEC-01 同源）：缺陷 {defect.get('id')}"
-                f"（用例 {case_id}）跳过复测，状态保持不变"
-            )
-            continue
-
         # X-DEF-02：脚本已被人工删除/修改 → 指明缺失用例，该项跳过
         if case is None or script_path is None or not script_path.is_file():
             warnings.append(
@@ -240,13 +246,111 @@ async def retest_defects(
             )
             continue
 
+        case_control_fixtures = _matching_case_control_fixtures(
+            case, control_fixture_configs
+        )
+        required_control_kinds = {
+            str(kind) for kind in (
+                case.get("oracle_control_kinds")
+                if isinstance(case.get("oracle_control_kinds"), list) else []
+            )
+            if isinstance(kind, str)
+        }
+        available_control_kinds = {
+            str(fixture.get("control_kind")) for fixture in case_control_fixtures
+        }
+        missing_control_kinds = required_control_kinds - available_control_kinds
+        if missing_control_kinds:
+            warnings.append(
+                f"X-EXEC-05：缺陷 {defect.get('id')}（用例 {case_id}）复测跳过，"
+                "缺少 Code Review oracle 要求的控制夹具："
+                + ", ".join(sorted(missing_control_kinds))
+            )
+            continue
+        fixture_setup_block_reason: str | None = None
+        if case_control_fixtures:
+            setup_records, fixture_setup_block_reason = await _run_fixture_phase(
+                case_control_fixtures,
+                "setup",
+                rest_base_url,
+                transport,
+                verify,
+                auth_headers,
+                case_id=case_id,
+            )
+            for record in setup_records:
+                if not record.get("passed"):
+                    warnings.append(
+                        f"X-EXEC-05：复测控制夹具 {record.get('name')} 执行失败："
+                        f"{record.get('failure_reason', '前置条件未满足')}"
+                    )
+        if fixture_setup_block_reason:
+            warnings.append(
+                f"缺陷 {defect.get('id')}（用例 {case_id}）复测跳过：{fixture_setup_block_reason}"
+            )
+            if case_control_fixtures:
+                teardown_records, teardown_block_reason = await _run_fixture_phase(
+                    case_control_fixtures,
+                    "teardown",
+                    rest_base_url,
+                    transport,
+                    verify,
+                    auth_headers,
+                    case_id=case_id,
+                )
+                if teardown_block_reason:
+                    warnings.append(teardown_block_reason + "；控制夹具清理也未完成")
+            continue
+
+        case_rest_ready = rest_ready_by_url.get(route_url, False)
+        if protocol == "rest" and case_control_fixtures:
+            case_rest_ready = await probe_rest(route_url, transport, verify)
+        if protocol == "rest" and not case_rest_ready:
+            warnings.append(
+                f"复测环境不可达（X-EXEC-01 同源）：缺陷 {defect.get('id')}"
+                f"（用例 {case_id}）跳过复测，状态保持不变"
+            )
+            if case_control_fixtures:
+                teardown_records, teardown_block_reason = await _run_fixture_phase(
+                    case_control_fixtures,
+                    "teardown",
+                    rest_base_url,
+                    transport,
+                    verify,
+                    auth_headers,
+                    case_id=case_id,
+                )
+                if teardown_block_reason:
+                    warnings.append(teardown_block_reason + "；控制夹具清理也未完成")
+            continue
+
         # 复测重跑（R-DEF-02：重跑关联用例；判定与 auto_execute 同源：
         # 状态码 + 同一套结构化业务断言；404 归环境失败不判缺陷修复）
         runner = rest_runners[route_url] if protocol == "rest" else demo_runner
         params = case.get("params") if isinstance(case.get("params"), dict) else {}
-        response = await runner.invoke(
-            InvokeRequest(interface=interface, params=params)
-        )
+        fixture_teardown_block_reason: str | None = None
+        try:
+            response = await runner.invoke(
+                InvokeRequest(interface=interface, params=params)
+            )
+        finally:
+            if case_control_fixtures:
+                teardown_records, fixture_teardown_block_reason = await _run_fixture_phase(
+                    case_control_fixtures,
+                    "teardown",
+                    rest_base_url,
+                    transport,
+                    verify,
+                    auth_headers,
+                    case_id=case_id,
+                )
+                if fixture_teardown_block_reason:
+                    warnings.append(
+                        f"缺陷 {defect.get('id')}（用例 {case_id}）控制夹具清理失败："
+                        f"{fixture_teardown_block_reason}"
+                    )
+        if fixture_teardown_block_reason:
+            continue
         retest_passed = False
         if response.ok and response.status is not None:
             if response.status == 404:
@@ -258,6 +362,7 @@ async def retest_defects(
                     response.status,
                     response.body,
                     case.get("assertions"),
+                    case.get("params"),
                 )
                 if response.status in {401, 403} and _expects_success(
                     str(case.get("expected", ""))
@@ -328,6 +433,7 @@ async def retest_defects(
         case = case_by_id.get(case_id)
         if (
             result.get("passed") is not True
+            or result.get("execution_state") in {"reused_response", "observed_unjudged", "not_executed"}
             or result.get("case_type") == "e2e"
             or case is None
             or case_id in archived_case_ids

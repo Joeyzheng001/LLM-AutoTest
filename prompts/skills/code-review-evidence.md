@@ -20,7 +20,8 @@ sampling:
 - 每条输入 claim 有 `claim_id`、父需求 ID、声明、可选验收条件和来源引用。
 - 接口目录只用于定位候选入口；`interface_id` 不是实现证据。
 - `code_evidence` 是系统从允许范围中提取、脱敏并编号的接口实现及服务端行为/配置片段。每项有唯一 `evidence_id`、路径、行范围和类别；接口实现片段只作为当前需求相关的代码入口，不等于完整调用链。
-- `scan_coverage.complete=false`、截断范围或仓库读取错误意味着“未发现”不能解释成“不存在”。`complete=false` 的成因至少四类，都要看：`review_evidence_limited`（证据池打满）、`interface_evidence_truncated`（接口证据按上限截断，见 `interface_evidence_limit`/`interfaces_total`）、`call_chain_truncated`（调用链按上限截断）、`scan_integrity_complete=false`（接口还原阶段发现文件数与解析数不守恒，见 `scan_integrity_reasons`）。仅当这些全为 false/true（即全部完整）时才可把“没查到”当作“不存在”。
+- `excerpt_part` / `excerpt_parts` 存在时，表示同一证据因长度而连续分页；当前页只能证明实际展示的代码，不能因本页未出现某分支就断言其它部分也不存在。程序会把各页结论合并。
+- Code Review 会按 claim、接口和证据页完整传递内容；分页本身不代表缺失。`interfaces_complete=false` 时当前接口批次不能用于判断仓库范围内的能力不存在。`scan_coverage.complete=false` 时应查看 `interface_evidence_missing`、仓库读取错误及 `scan_integrity_reasons`，只将受影响结论标成待核查。
 - 一批只审输入中的 claims。不得引用未传入本批的 claim、interface 或 evidence ID。
 
 ## 工作步骤

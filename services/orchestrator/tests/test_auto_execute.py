@@ -24,6 +24,8 @@ from executor.nodes.auto_execute import (
     _summarize,
     login_for_headers,
     mutates_auth_session,
+    prefers_django_trailing_slash,
+    probe_rest,
     resolved_auth_mode,
 )
 
@@ -113,6 +115,9 @@ def env(tmp_path: Path) -> tuple[Engine, ArtifactStore, ArtifactStore]:
     te_store = ArtifactStore(tmp_path, _SCHEMAS, "test-executor")
     engine = Engine(orch_store)
     state = engine.init_job(_JOB)
+    (orch_store.job_dir(_JOB) / "job_input.json").write_text(
+        '{"auto_record_fixtures": false}', encoding="utf-8"
+    )
     # （节点名，产物文件，写入卷，载荷）
     orch_artifacts: list[tuple[str, str, dict[str, Any]]] = [
         ("req_parse", "requirement_review.json", requirement_review_payload(_JOB)),
@@ -932,15 +937,14 @@ async def test_login_for_headers_applies_configured_password_transform() -> None
 
 
 async def test_login_for_headers_maps_response_fields_to_custom_headers() -> None:
-    """C-15：非标准服务可把登录 body 中的身份字段回带为后续请求头。"""
+    """C-15：非标准服务可把登录 body 中的字符串/整数身份字段映射为请求头。"""
     def login_service(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
             json={
                 "body": {
                     "token": "header-token",
-                    "userId": "42",
-                    "userName": "tester",
+                    "userId": 1,
                 }
             },
         )
@@ -949,14 +953,13 @@ async def test_login_for_headers_maps_response_fields_to_custom_headers() -> Non
         {
             **_AUTH,
             "response_header_paths": {
-                "usertoken": "body.token",
-                "userid": "body.userId",
-                "username": "body.userName",
+                "token": "body.token",
+                "userId": "body.userId",
             },
         },
         httpx.MockTransport(login_service),
     )
-    assert headers == {"usertoken": "header-token", "userid": "42", "username": "tester"}
+    assert headers == {"token": "header-token", "userId": "1"}
 
 
 async def test_login_for_headers_cookie_fallback() -> None:
@@ -1163,6 +1166,27 @@ async def test_rest_runner_prefers_django_trailing_slash() -> None:
     assert hits == ["/api/products/"]
 
 
+def test_login_slash_does_not_change_a_different_service_route() -> None:
+    auth = {"login_url": "http://example.test:6080/login/"}
+    assert not prefers_django_trailing_slash(auth, "http://example.test:9002")
+    assert prefers_django_trailing_slash(auth, "http://example.test:6080")
+
+
+async def test_rest_probe_rejects_frontend_spa_fallback() -> None:
+    def frontend(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/html"},
+            text="<html><head></head><body><script src='/assets/app.js'></script></body></html>",
+        )
+
+    issues: dict[str, str] = {}
+    ready = await probe_rest(
+        "http://mock:9002", httpx.MockTransport(frontend), issues=issues
+    )
+    assert not ready
+    assert "前端网页" in issues["http://mock:9002"]
+
+
 async def test_rest_runner_301_to_other_path_not_compensated() -> None:
     """301 指向不同路径（真实重定向）不补偿——防把页面重定向当成功。"""
     hits: list[str] = []
@@ -1229,6 +1253,70 @@ async def test_rest_runner_unwraps_unknown_container_and_can_omit_auth() -> None
     )
     assert response.status == 200
     assert captured == {"json": {"name": "Alice"}, "authorization": None}
+
+
+async def test_rest_runner_sends_typed_body_dto_fields_at_json_root() -> None:
+    """Java @RequestBody DTO 的形参名不应成为 JSON 包装层。"""
+    captured: dict[str, Any] = {}
+
+    def service(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        captured["token"] = request.headers.get("token")
+        captured["userId"] = request.headers.get("userId")
+        return httpx.Response(200, json={"returnCode": 0})
+
+    runner = RestRunner(
+        "http://mock:9000",
+        httpx.MockTransport(service),
+        {"token": "tok-x", "userId": "1"},
+    )
+    response = await runner.invoke(
+        InvokeRequest(
+            interface={
+                "signature": {"method": "POST", "path": "/autoApproval/add"},
+                "params": [{
+                    "name": "request",
+                    "in": "body",
+                    "type": "AutoApprovalAddRequest",
+                    "fields": [
+                        {"name": "businessType", "type": "String"},
+                        {"name": "riskSystem", "type": "String"},
+                    ],
+                }],
+            },
+            params={"request": {"businessType": "01", "riskSystem": "riskwkb"}},
+        )
+    )
+    assert response.status == 200
+    assert captured == {
+        "json": {"businessType": "01", "riskSystem": "riskwkb"},
+        "token": "tok-x",
+        "userId": "1",
+    }
+
+
+async def test_rest_runner_sends_java_jsonobject_without_param_wrapper() -> None:
+    captured: dict[str, Any] = {}
+
+    def service(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json={})
+
+    runner = RestRunner("http://mock:9000", httpx.MockTransport(service))
+    response = await runner.invoke(InvokeRequest(
+        interface={
+            "signature": {"method": "POST", "path": "/risk/approval/trial"},
+            "code_location": {"file": "RiskApprovalController.java"},
+            "params": [{"name": "param", "in": "body", "type": "JSONObject", "fields": []}],
+        },
+        params={"param": {"autoApprovalFlag": "1", "autoApprovalStage": "invalid"}},
+    ))
+    assert response.status == 200
+    assert captured == {
+        "path": "/risk/approval/trial",
+        "json": {"autoApprovalFlag": "1", "autoApprovalStage": "invalid"},
+    }
 
 
 async def test_rest_runner_unwraps_unknown_query_container() -> None:

@@ -52,6 +52,26 @@ class ExtractJobRunnerTest {
             """;
 
     @Test
+    void keepsCompleteLongMethodAndSnippet() throws IOException {
+        Path repo = Files.createDirectories(tempDir.resolve("long-service"));
+        String source = "@RestController class LongController {\n"
+                + "@PostMapping(\"/long\") String trial(@RequestBody String body) {\n"
+                + "String padding = \"" + "x".repeat(12000) + "\";\n"
+                + "return \"TAIL_MARKER\" + body;\n}}";
+        Files.writeString(repo.resolve("LongController.java"), source);
+        Map<String, Object> payload = runner.run(new ExtractRequest(
+                "job-long", List.of(input(repo, false)), null));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> candidates = (List<Map<String, Object>>) payload.get("candidates");
+        assertThat(candidates).hasSize(1);
+        assertThat((String) candidates.get(0).get("method_body"))
+                .hasSizeGreaterThan(12000).contains("TAIL_MARKER");
+        assertThat((String) candidates.get(0).get("snippet"))
+                .hasSizeGreaterThan(12000).contains("TAIL_MARKER");
+        assertThat(candidates.get(0).get("method_body_truncated")).isEqualTo(false);
+    }
+
+    @Test
     void extractsRestCandidatesWithSignatureAndLocation() throws IOException {
         Path repo = Files.createDirectories(tempDir.resolve("user-service"));
         Files.createDirectories(repo.resolve("src/main/java/com/demo"));

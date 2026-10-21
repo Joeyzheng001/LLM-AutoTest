@@ -1501,6 +1501,12 @@ async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
 ) -> None:
     """完整配置读取脱敏；编辑可保留文档/密码并从 req_parse 全量重跑。"""
     app, fake, client, repo_dir = env
+    from cryptography.fernet import Fernet
+
+    # 此测试验证运行结束后的密钥复用，需启用与实际本机部署相同的加密存储。
+    app.state.secret_store = SecretStore(
+        Path(app.state.settings.artifacts_root), Fernet.generate_key().decode("ascii")
+    )
     body = _submit_body(repo_dir, "job-api-edit1")
     body["auth"] = {
         "login_url": "https://example.test/login/",
@@ -1557,7 +1563,10 @@ async def test_edit_full_job_configuration_preserves_secrets_and_reruns(
             Path(str(app.state.settings.artifacts_root)) / "job-api-edit1" / "job_input.json"
         ).read_text()
     )
-    assert saved["auth"]["password"] == body["auth"]["password"]
+    assert "password" not in saved["auth"]
+    secrets = app.state.secret_store.load("job-api-edit1")
+    assert secrets["auth"]["password"] == body["auth"]["password"]
+    assert fake.calls[-1]["auth"]["password"] == body["auth"]["password"]
     assert saved["llm"]["model"] == "MiniMax-M2.5"
     assert saved["llm"]["protocol"] == "openai-chat"
     assert "api_key" not in saved["llm"]
@@ -1778,6 +1787,9 @@ async def test_retest_full_and_single(
         }
     ]
     (job_dir / "defects.json").write_text(json.dumps(defects), encoding="utf-8")
+    script = job_dir / "scripts/test_TC_001.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("def test_tc_001():\n    pass\n", encoding="utf-8")
     single = await client.post("/api/v1/jobs/job-api-0004/retest", json={"defect_id": "DEF-001"})
     assert single.status_code == 200
     payload = single.json()

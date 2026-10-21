@@ -42,7 +42,7 @@ def _ok_response(request: httpx.Request) -> httpx.Response:
     return httpx.Response(
         200,
         json={
-            "choices": [{"message": {"content": "解析结果"}}],
+            "choices": [{"message": {"content": "解析结果"}, "finish_reason": "stop"}],
             "usage": {"total_tokens": 128},
         },
     )
@@ -73,6 +73,33 @@ async def test_complete_success_writes_trace(tmp_path: Path) -> None:
     assert record["ok"] is True
     assert record["input_digest"] and record["output_digest"]
     assert record["timestamp"].endswith("+00:00")  # UTC ISO-8601
+    payload = json.loads((trace.parent / record["payload_file"]).read_text(encoding="utf-8"))
+    assert payload == {"system": _PROMPT.body, "user": "需求文档内容", "output": "解析结果"}
+    assert (trace.parent / record["payload_file"]).stat().st_mode & 0o077 == 0
+
+
+async def test_complete_keeps_full_unicode_payload_for_offline_replay(tmp_path: Path) -> None:
+    """完整传输与原文留痕一致，大输入和返回不能只保存摘要或截取部分。"""
+    user_text = "接口源码与证据\n" * 20000
+    output_text = '{"items":[' + ",".join('"完整中文返回"' for _ in range(20000)) + "]}"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["messages"][-1]["content"] == user_text
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": output_text}, "finish_reason": "stop"}],
+            },
+        )
+
+    trace = tmp_path / "llm_calls.jsonl"
+    client = LlmClient(_settings(), "job-replay", trace, transport=httpx.MockTransport(handler))
+    result = await client.complete("code_review", _PROMPT, user_text)
+    record = json.loads(trace.read_text(encoding="utf-8"))
+    payload = json.loads((trace.parent / record["payload_file"]).read_text(encoding="utf-8"))
+    assert result.text == output_text
+    assert payload["user"] == user_text
+    assert payload["output"] == output_text
 
 
 async def test_retry_on_5xx_then_success(tmp_path: Path) -> None:
@@ -83,7 +110,9 @@ async def test_retry_on_5xx_then_success(tmp_path: Path) -> None:
         calls.append(1)
         if len(calls) < 3:
             return httpx.Response(503)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
 
     trace = tmp_path / "job-abc12345-0" / "llm_calls.jsonl"
     client = LlmClient(
@@ -183,7 +212,9 @@ async def test_429_is_retryable_then_succeeds(tmp_path: Path) -> None:
         attempts.append(1)
         if len(attempts) < 3:
             return httpx.Response(429, headers={"Retry-After": "0"})
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
 
     trace = tmp_path / "job-abc12345-0" / "llm_calls.jsonl"
     client = LlmClient(
@@ -315,7 +346,11 @@ async def test_think_blocks_stripped(tmp_path: Path) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"choices": [{"message": {"content": raw}}], "usage": {"total_tokens": 64}}
+            200,
+            json={
+                "choices": [{"message": {"content": raw}, "finish_reason": "stop"}],
+                "usage": {"total_tokens": 64},
+            },
         )
 
     trace = tmp_path / "job-abc12345-0" / "llm_calls.jsonl"
@@ -346,6 +381,7 @@ async def test_openai_responses_protocol_extracts_output_text_and_usage(tmp_path
             200,
             json={
                 "output_text": "Responses 结果",
+                "status": "completed",
                 "usage": {"input_tokens": 7, "output_tokens": 11},
             },
         )
@@ -375,6 +411,7 @@ async def test_anthropic_messages_protocol_extracts_content_and_usage(tmp_path: 
             200,
             json={
                 "content": [{"type": "text", "text": "Anthropic 结果"}],
+                "stop_reason": "end_turn",
                 "usage": {"input_tokens": 13, "output_tokens": 17},
             },
         )
@@ -407,7 +444,12 @@ async def test_reasoner_content_falls_back_to_reasoning_content(tmp_path: Path) 
         return httpx.Response(
             200,
             json={
-                "choices": [{"message": {"content": "", "reasoning_content": "推理通道正文"}}],
+                "choices": [
+                    {
+                        "message": {"content": "", "reasoning_content": "推理通道正文"},
+                        "finish_reason": "stop",
+                    }
+                ],
                 "usage": {"total_tokens": 64},
             },
         )

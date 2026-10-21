@@ -91,6 +91,16 @@ function accessHeaders(): Record<string, string> {
     : {}
 }
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   headers.set('Content-Type', 'application/json')
@@ -107,7 +117,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* 非 JSON 错误体：退回状态码 */
     }
-    throw new Error(detail)
+    throw new ApiError(detail, response.status)
   }
   return (await response.json()) as T
 }
@@ -299,8 +309,18 @@ export function getChangeSet(jobId: string): Promise<{ removed_files?: RemovedFi
   return request(`/api/v1/jobs/${jobId}/artifacts/change_set.json`)
 }
 
+export function getReviewDiagnostics(
+  jobId: string,
+): Promise<{ items: import('./types').OracleDiagnostic[] }> {
+  return request(`/api/v1/jobs/${jobId}/review-diagnostics`)
+}
+
 export function getReviewMapping(jobId: string): Promise<{
   mappings: ReviewMapping[]
+  test_oracles?: import('./types').ReviewTestOracle[]
+  test_oracle_warnings?: string[]
+  test_oracle_diagnostics?: import('./types').OracleDiagnostic[]
+  field_value_contracts?: import('./types').FieldValueContract[]
   scan_coverage?: import('./types').ReviewScanCoverage
   evidence_catalog?: import('./types').ReviewEvidence[]
   call_chains?: ReviewCallChain[]
@@ -343,4 +363,54 @@ export function getRegressionIndex(jobId: string): Promise<RegressionIndexPayloa
 
 export function getMetrics(jobId: string): Promise<MetricsPayload> {
   return request(`/api/v1/jobs/${jobId}/artifacts/metrics.json`)
+}
+
+export function getE2eStatus(jobId: string): Promise<import('./types').E2eOperationStatus> {
+  return request(`/api/v1/jobs/${jobId}/e2e`)
+}
+export function getE2eDesign(jobId: string): Promise<import('./types').E2eDesign> {
+  return request(`/api/v1/jobs/${jobId}/artifacts/e2e_design.json`)
+}
+export function getE2eExecution(jobId: string): Promise<import('./types').E2eExecution> {
+  return request(`/api/v1/jobs/${jobId}/artifacts/e2e_execution.json`)
+}
+export function getE2eDefects(jobId: string): Promise<{ defects: DefectEntry[] }> {
+  return request(`/api/v1/jobs/${jobId}/artifacts/e2e_defects.json`)
+}
+export function getE2eRegression(jobId: string): Promise<{
+  entries: Array<{
+    case_id: string
+    case_fingerprint: string
+    successful_runs: string[]
+    archived_at: string
+    version: number
+    case_snapshot: E2eTestCaseEntry
+  }>
+}> {
+  return request(`/api/v1/jobs/${jobId}/artifacts/e2e_regression.json`)
+}
+export function runE2e(
+  jobId: string,
+  operation: 'generate' | 'execute' | 'run' | 'retest' | 'regress',
+  options: {
+    resume?: boolean
+    case_ids?: string[]
+    defect_ids?: string[]
+    fingerprints?: string[]
+  } = {},
+): Promise<{ status: string }> {
+  return request(`/api/v1/jobs/${jobId}/e2e/${operation}`, {
+    method: 'POST',
+    body: JSON.stringify(options),
+  })
+}
+
+export function saveE2eConfiguration(
+  jobId: string,
+  config: import('./types').E2eConfig,
+): Promise<{ configuration: import('./types').E2eConfig }> {
+  return request(`/api/v1/jobs/${jobId}/e2e/configuration`, {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  })
 }

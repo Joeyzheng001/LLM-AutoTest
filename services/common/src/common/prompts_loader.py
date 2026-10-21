@@ -113,6 +113,14 @@ _NODE_KNOWLEDGE: dict[str, tuple[str, ...]] = {
         # 必须最后注入：将本节点唯一允许的顶层 JSON 结构置于模型上下文末尾。
         "skills/testcase-output-contract.md",
     ),
+    "e2e_scenario_plan": ("skills/structured-output-compatibility.md",),
+    "e2e_grounding": ("skills/structured-output-compatibility.md",),
+    "e2e_relocate": ("skills/structured-output-compatibility.md",),
+    "e2e_case_review": (
+        "skills/e2e-automation.md",
+        "skills/structured-output-compatibility.md",
+        "skills/e2e-output-contract.md",
+    ),
     "e2e_testcase_generate": (
         "skills/e2e-automation.md",
         "skills/structured-output-compatibility.md",

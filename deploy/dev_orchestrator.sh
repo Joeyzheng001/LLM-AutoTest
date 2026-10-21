@@ -22,8 +22,27 @@ fi
 export JAVA_PARSER_URL="${JAVA_PARSER_URL:-http://localhost:8081}"
 export LLM_BASE_URL="${LLM_BASE_URL:-https://llm.htffund.com/v1}"
 export LLM_MODEL_NAME="${LLM_MODEL_NAME:-deepseek-reasoner-code}"
+export CODE_REVIEW_MAX_CONCURRENCY="${CODE_REVIEW_MAX_CONCURRENCY:-4}"
 export SCHEMAS_DIR="${SCHEMAS_DIR:-$ROOT/schemas}"
-export ARTIFACTS_ROOT="${ARTIFACTS_ROOT:-/tmp/llm-autotest}"
+# 本地任务产物固定落在仓库的忽略目录，避免 /tmp 下多个临时根目录造成
+# 服务重启后任务列表为空。检测到遗留环境变量指向别处时拒绝静默启动。
+CANONICAL_ARTIFACTS_ROOT="$ROOT/.local-artifacts/jobs"
+if [[ -n "${ARTIFACTS_ROOT:-}" \
+  && "$ARTIFACTS_ROOT" != "$CANONICAL_ARTIFACTS_ROOT" \
+  && "${ALLOW_CUSTOM_ARTIFACTS_ROOT:-}" != "1" ]]; then
+  echo "检测到 ARTIFACTS_ROOT 指向非本地标准目录：$ARTIFACTS_ROOT" >&2
+  echo "为避免任务列表读空，已停止启动。需使用自定义目录时先迁移任务，再设置 ALLOW_CUSTOM_ARTIFACTS_ROOT=1。" >&2
+  exit 2
+fi
+export ARTIFACTS_ROOT="${ARTIFACTS_ROOT:-$CANONICAL_ARTIFACTS_ROOT}"
+if [[ "$ARTIFACTS_ROOT" != /* ]]; then
+  echo "ARTIFACTS_ROOT 必须是绝对路径：$ARTIFACTS_ROOT" >&2
+  exit 2
+fi
+mkdir -p "$ARTIFACTS_ROOT"
+ARTIFACTS_ROOT="$(cd "$ARTIFACTS_ROOT" && pwd -P)"
+export ARTIFACTS_ROOT
+printf '本地任务目录：%s\n' "$ARTIFACTS_ROOT"
 export REPOSITORIES_ROOT="${REPOSITORIES_ROOT:-$HOME/code}"
 export AUTOTEST_SINGLE_USER_MODE="${AUTOTEST_SINGLE_USER_MODE:-true}"
 # Windows 上 Python 默认按系统 ANSI 代码页（cp936）写 stdout/stderr，中文日志落到终端

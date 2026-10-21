@@ -1,0 +1,147 @@
+{
+  "date": "2026-10-20",
+  "model": "deepseek-chat",
+  "model_base_url": "https://llm.htffund.com/v1",
+  "scope": "接口源码预期提取及请求/脚本生成；未重跑 Claim 审查或业务 HTTP 请求",
+  "audits": {
+    "company-oracle-autofix-final-20261020": {
+      "company_calls": 47,
+      "all_ok": true,
+      "finish_reasons": {
+        "stop": 47
+      },
+      "payload_integrity_issues": [],
+      "model_wall_seconds": 290.65,
+      "peak_model_concurrency": 4,
+      "audit_directory": "/tmp/company-oracle-autofix-final-20261020",
+      "source_designs": 67,
+      "normal_interface_ids": [
+        "IF-REST-001",
+        "IF-REST-003",
+        "IF-REST-004",
+        "IF-REST-005",
+        "IF-REST-006",
+        "IF-REST-007",
+        "IF-REST-008",
+        "IF-REST-009",
+        "IF-REST-010",
+        "IF-REST-011",
+        "IF-REST-012"
+      ],
+      "pending_expectations": 6
+    },
+    "company-oracle-entry-final-20261020": {
+      "company_calls": 7,
+      "all_ok": true,
+      "finish_reasons": {
+        "stop": 7
+      },
+      "payload_integrity_issues": [],
+      "model_wall_seconds": 107.11,
+      "peak_model_concurrency": 1,
+      "audit_directory": "/tmp/company-oracle-entry-final-20261020",
+      "source_designs": 6,
+      "normal_interface_ids": [
+        "IF-REST-002"
+      ],
+      "pending_expectations": 0
+    },
+    "company-case-autofix-final-20261020": {
+      "company_calls": 12,
+      "all_ok": true,
+      "finish_reasons": {
+        "stop": 12
+      },
+      "payload_integrity_issues": [],
+      "model_wall_seconds": 228.65,
+      "peak_model_concurrency": 1,
+      "audit_directory": "/tmp/company-case-autofix-final-20261020",
+      "source_designs": 69,
+      "generated_cases": 71,
+      "bound_designs": 69,
+      "unbound_designs": [],
+      "loadable_scripts": 71,
+      "normal_interface_ids": [
+        "IF-REST-001",
+        "IF-REST-002",
+        "IF-REST-003",
+        "IF-REST-004",
+        "IF-REST-005",
+        "IF-REST-006",
+        "IF-REST-007",
+        "IF-REST-008",
+        "IF-REST-009",
+        "IF-REST-010",
+        "IF-REST-011",
+        "IF-REST-012"
+      ],
+      "framework_body_cases": 10,
+      "framework_unknown_http_observable": 8,
+      "business_http_requests_sent": 0,
+      "node_states": {
+        "req_parse": "completed",
+        "code_scan": "completed",
+        "interface_reconstruct": "completed",
+        "code_review": "completed",
+        "testcase_generate": "completed",
+        "auto_execute": "pending",
+        "test_report": "pending",
+        "defect_list": "pending",
+        "retest_regression": "pending"
+      },
+      "schema_errors": []
+    },
+    "company-oracle-branch-final-20261020": {
+      "company_calls": 5,
+      "all_ok": true,
+      "finish_reasons": {
+        "stop": 5
+      },
+      "payload_integrity_issues": [],
+      "model_wall_seconds": 73.64,
+      "peak_model_concurrency": 1,
+      "audit_directory": "/tmp/company-oracle-branch-final-20261020",
+      "source_designs": 7,
+      "normal_interface_ids": [
+        "IF-REST-001"
+      ],
+      "pending_expectations": 0
+    },
+    "company-case-branch-final-20261020": {
+      "company_calls": 1,
+      "all_ok": true,
+      "finish_reasons": {
+        "stop": 1
+      },
+      "payload_integrity_issues": [],
+      "model_wall_seconds": 17.82,
+      "peak_model_concurrency": 1,
+      "audit_directory": "/tmp/company-case-branch-final-20261020",
+      "source_designs": 7,
+      "generated_cases": 7,
+      "bound_designs": 7,
+      "unbound_designs": [],
+      "loadable_scripts": 7,
+      "normal_interface_ids": [
+        "IF-REST-001"
+      ],
+      "framework_body_cases": 1,
+      "framework_unknown_http_observable": 0,
+      "business_http_requests_sent": 0,
+      "node_states": {
+        "req_parse": "completed",
+        "code_scan": "completed",
+        "interface_reconstruct": "completed",
+        "code_review": "completed",
+        "testcase_generate": "completed",
+        "auto_execute": "pending",
+        "test_report": "pending",
+        "defect_list": "pending",
+        "retest_regression": "pending"
+      },
+      "schema_errors": []
+    }
+  },
+  "total_company_calls": 72,
+  "all_payloads_match": true
+}

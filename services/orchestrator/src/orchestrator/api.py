@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from common.e2e_contracts import evidence_path
+
 import asyncio
 import base64
 import binascii
@@ -32,6 +34,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from common.artifacts import ArtifactStore, ensure_job_id
 from common.config import Settings
@@ -61,16 +64,18 @@ from orchestrator.artifact_lifecycle import find_expired_jobs, purge_quarantine,
 from orchestrator.javaparser_client import JavaParserClient
 from orchestrator.job_queue import LocalJobQueue, QueueConflict
 from orchestrator.metrics import MetricsRegistry
+from orchestrator.oracle_diagnostics import build_oracle_diagnostics
 from orchestrator.persistence import Database
 from orchestrator.repository_resolver import preview_branch_diff, resolve_repository_inputs
 from orchestrator.runner import PipelineOutcome, PipelineRunner
+from orchestrator.runtime_revision import RuntimeRevision
 
 logger = logging.getLogger(__name__)
 
 # 产物读取白名单（9 节点产物 + 留痕文件；job_input.json 属服务内部元数据不外露）
 _ARTIFACT_WHITELIST: frozenset[str] = frozenset(
     name for names in NODE_ARTIFACTS.values() for name in names
-) | {"requirement_diff.json", "llm_calls.jsonl", "review_log.jsonl"}
+) | {"requirement_diff.json", "llm_calls.jsonl", "review_log.jsonl", "e2e_design.json", "e2e_execution.json", "e2e_defects.json", "e2e_history.json", "e2e_regression.json"}
 
 _DOC_SUFFIXES = frozenset({".md", ".docx", ".xlsx"})
 
@@ -239,12 +244,17 @@ class LlmConfig(BaseModel):
 class LlmVerificationRequest(BaseModel):
     """配置阶段的无业务中转站连通性探针；未传 llm 时测试服务级配置。
 
-    ``job_id``：编辑已有任务时传入——api_key 留空则复用该任务 SecretStore 中的
-    密钥（与保存/重跑端点同一回退链），不强迫用户为了点一次「测试」重新粘贴密钥。
+    ``job_id``：编辑已有任务时传入——api_key 留空则依次复用该任务 SecretStore、
+    当前进程运行期配置中的密钥，再回退服务级配置，不强迫用户为了点一次「测试」重贴。
     """
 
     llm: LlmConfig | None = None
     job_id: str | None = Field(default=None, max_length=64)
+
+
+class E2eRoleConfig(AuthConfig):
+    password: str = ""
+    browser_login_url: str | None = None
 
 
 class E2eConfig(BaseModel):
@@ -261,6 +271,17 @@ class E2eConfig(BaseModel):
     insecure_tls: bool = True  # 测试环境常用自签名证书，默认跳过浏览器证书校验
     auth_mode: Literal["reuse", "browser"] = "browser"
 
+    max_concurrency: int = Field(default=4, ge=1, le=16)
+    step_timeout_ms: int = Field(default=15000, ge=1000, le=120000)
+    navigation_timeout_ms: int = Field(default=30000, ge=1000, le=180000)
+    auto_login: bool = True
+    browser_login_url: str | None = None
+    roles: dict[str, E2eRoleConfig] = Field(default_factory=dict)
+    files: dict[str, str] = Field(default_factory=dict)
+    data_fixtures: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    storage_state: str | None = None
+    retain_trace: bool = False
+
     # ── 深层探测（E2E 覆盖面的上游；探不到即模型不能生成）──
     explore_menu: bool = Field(
         default=True, description="登录后逐层展开左侧菜单，发现深层页面"
@@ -271,9 +292,9 @@ class E2eConfig(BaseModel):
     deep_read_options: bool = Field(
         default=True, description="展开下拉读取真实选项值（用于枚举一致性校验，较慢）"
     )
-    max_routes: int = Field(default=25, ge=1, le=200, description="最多探测的路由数")
+    max_routes: int = Field(default=0, ge=0, le=10000, description="页面状态探索预算；0 为不限制，超预算节点保留待续跑")
     max_elements: int = Field(
-        default=400, ge=0, le=5000, description="单页最多收集元素数，0 为不限制"
+        default=0, ge=0, le=5000, description="旧版兼容字段；新版观察完整保留元素"
     )
     max_menu_depth: int = Field(default=4, ge=1, le=8, description="菜单展开最大层级")
     max_interactions: int = Field(
@@ -286,17 +307,87 @@ class E2eConfig(BaseModel):
     )
 
 
+class E2eOperationRequest(BaseModel):
+    fingerprints: list[str] | None = None
+    resume: bool = True
+    case_ids: list[str] = Field(default_factory=list)
+    defect_ids: list[str] = Field(default_factory=list)
+
+
 class FixtureStep(BaseModel):
-    """可审计的接口前置动作（造数/清理）；不经 LLM。"""
+    """可审计的接口前置动作（造数/清理）；配置正文不经 LLM。"""
 
     name: str = Field(min_length=1, max_length=128)
     phase: Literal["setup", "teardown"] = "setup"
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
     path: str = Field(min_length=1, max_length=512, pattern=r"^/")
+    base_url: str | None = Field(default=None, min_length=8, max_length=512)
     query: dict[str, Any] = Field(default_factory=dict)
     body: dict[str, Any] = Field(default_factory=dict)
     expected: str = Field(default="status_class=2xx", min_length=1, max_length=512)
     required: bool = True
+    scope: Literal["job", "case"] = "job"
+    control_kind: Literal[
+        "downstream_response", "application_config", "service_registry"
+    ] | None = None
+    interface_id: str | None = Field(default=None, pattern=r"^IF-[A-Z]+-\d{3}$")
+    scenario_contains: str | None = Field(default=None, min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def validate_scope_and_control(self) -> "FixtureStep":
+        if self.path.startswith("//") or ".." in self.path.split("/"):
+            raise ValueError("夹具 path 必须是不含上跳路径的安全相对路径")
+        if self.base_url:
+            parsed = urlsplit(self.base_url)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(
+                    "夹具 base_url 必须是无凭据、无 query/fragment 的绝对 HTTP(S) 地址"
+                )
+        if self.control_kind:
+            if self.scope != "case" or not self.interface_id or not self.scenario_contains:
+                raise ValueError(
+                    "分支控制夹具必须设置 scope=case、interface_id 和 scenario_contains"
+                )
+            if not self.base_url:
+                raise ValueError("分支控制夹具必须填写独立的 base_url")
+            if not self.required:
+                raise ValueError("分支控制夹具必须设置 required=true")
+        elif self.scope != "job" or self.interface_id or self.scenario_contains:
+            raise ValueError("只有分支控制夹具可以使用 case scope 或场景选择器")
+        return self
+
+
+def _validate_fixture_pairs(fixtures: list[FixtureStep]) -> list[FixtureStep]:
+    grouped: dict[tuple[str, str, str, str, str], dict[str, int]] = {}
+    for fixture in fixtures:
+        if not fixture.control_kind:
+            continue
+        key = (
+            fixture.name,
+            fixture.control_kind,
+            str(fixture.interface_id),
+            str(fixture.scenario_contains),
+            str(fixture.base_url),
+        )
+        phases = grouped.setdefault(key, {"setup": 0, "teardown": 0})
+        phases[fixture.phase] += 1
+    incomplete = [
+        key[0] for key, phases in grouped.items()
+        if phases != {"setup": 1, "teardown": 1}
+    ]
+    if incomplete:
+        raise ValueError(
+            "分支控制夹具必须按同名、同类型和同场景提供 setup/teardown 成对步骤："
+            + ", ".join(sorted(set(incomplete)))
+        )
+    return fixtures
 
 
 class JobSubmitRequest(BaseModel):
@@ -322,6 +413,14 @@ class JobSubmitRequest(BaseModel):
     llm: LlmConfig | None = None
     e2e: E2eConfig | None = None
     fixtures: list[FixtureStep] = Field(default_factory=list)
+    auto_record_fixtures: bool = False
+    # 明确开启时，Code Review 对源码确认无副作用的异常入口做运行时响应观测。
+    observe_runtime_contracts: bool = False
+
+    @model_validator(mode="after")
+    def validate_fixture_pairs(self) -> "JobSubmitRequest":
+        _validate_fixture_pairs(self.fixtures)
+        return self
 
 
 class PreflightRequest(JobSubmitRequest):
@@ -390,6 +489,13 @@ class JobConfigurationUpdateRequest(BaseModel):
     e2e: E2eConfig | None = None
     fixtures: list[FixtureStep] = Field(default_factory=list)
     replace_fixtures: bool = False
+    auto_record_fixtures: bool | None = None
+    observe_runtime_contracts: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_fixture_pairs(self) -> "JobConfigurationUpdateRequest":
+        _validate_fixture_pairs(self.fixtures)
+        return self
 
 
 class RetestRequest(BaseModel):
@@ -413,6 +519,7 @@ class RerunRequest(BaseModel):
     llm: LlmConfig | None = None
     rest_url: str | None = None
     e2e: E2eConfig | None = None
+    observe_runtime_contracts: bool | None = None
 
 
 def _resolve_local_repo_path(path: str, repositories_root: str | None = None) -> Path:
@@ -503,6 +610,7 @@ def _validate_repo_config(repo: RepoConfig, repositories_root: str | None = None
 def create_app(settings: Settings, runner: PipelineRunner | None = None) -> FastAPI:
     """构建 FastAPI 应用实例（runner 可注入：测试替身）。"""
     app = FastAPI(title="LLM-AutoTest orchestrator", version="0.2.0")
+    app.state.runtime_revision = RuntimeRevision(Path(__file__).resolve().parents[4])
     app.state.settings = settings
     app.state.metrics = MetricsRegistry()
     object_storage = build_object_storage(settings)
@@ -547,6 +655,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
     # 保留原有观察入口，实际提交由队列统一管理。
     app.state.job_tasks = app.state.job_queue.tasks
     app.state.job_outcomes: dict[str, PipelineOutcome | dict[str, Any]] = {}  # type: ignore[misc]
+    app.state.e2e_operations = {}
     app.state.job_llm_configs = {}  # 仅运行期，禁止落盘 API key
     app.state.job_repo_tokens: dict[str, dict[str, str]] = {}  # type: ignore[misc]
     app.state.job_auth_headers: dict[str, dict[str, str]] = {}  # type: ignore[misc]
@@ -739,6 +848,16 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         """健康检查（docker-compose 编排依赖）。"""
         return {"status": "ok"}
 
+    @app.get("/api/v1/runtime")
+    async def runtime_revision() -> dict[str, Any]:
+        """返回运行版本，供确认重启与诊断旧进程，不暴露源码或配置。"""
+        revision = app.state.runtime_revision
+        return {
+            "code_revision": revision.revision,
+            "loaded_at": revision.loaded_at,
+            "restart_required": revision.restart_required,
+        }
+
     @app.get("/ready")
     async def readiness() -> Any:
         """就绪检查：进程存活之外，确认数据库可用且 Schema 已迁移。"""
@@ -908,9 +1027,10 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         source = "task" if supplied is not None else "service"
         if supplied is not None and not supplied.base_url.startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="llm.base_url 须为 http(s) 地址")
-        # 回退链与保存/重跑端点一致：本次填写 → 任务 SecretStore（编辑态）→ 服务级。
+        # 回退链与保存/重跑端点一致：本次填写 → SecretStore → 当前进程配置 → 服务级。
         # 编辑已有任务时 key 不回显（安全红线），用户留空属正常操作，不该被迫重新粘贴。
         stored_key = ""
+        runtime_key = ""
         if supplied is not None and not supplied.api_key and request.job_id:
             try:
                 ensure_job_id(request.job_id)
@@ -919,9 +1039,17 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             _require_job_access(app, request.job_id, http_request)
             stored = _load_job_secrets(app, request.job_id).get("llm_api_key")
             stored_key = str(stored) if stored else ""
+            runtime_config = app.state.job_llm_configs.get(request.job_id)
+            runtime_value = (
+                runtime_config.get("api_key")
+                if isinstance(runtime_config, dict)
+                else None
+            )
+            runtime_key = str(runtime_value) if runtime_value else ""
         api_key = (
             (supplied.api_key if supplied is not None else "")
             or stored_key
+            or runtime_key
             or settings.llm_api_key
         )
         if not api_key:
@@ -1151,6 +1279,8 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "repos": [_repo_metadata(repo, settings.repositories_root) for repo in request.repos],
             "rest_url": request.rest_url,
             "rest_insecure_tls": request.rest_insecure_tls,
+            "auto_record_fixtures": request.auto_record_fixtures,
+            "observe_runtime_contracts": request.observe_runtime_contracts,
             "owner_id": owner_id,
             "project_id": project_id,
             "submitted_at": _now_iso(),
@@ -1185,9 +1315,9 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 "api_key_configured": bool(llm_payload["api_key"] or settings.llm_api_key),
             }
         if request.e2e is not None:
-            job_input["e2e"] = request.e2e.model_dump()
+            job_input["e2e"] = _store_e2e_configuration(app, job_id, request.e2e)
         if request.fixtures:
-            job_input["fixtures"] = [fixture.model_dump() for fixture in request.fixtures]
+            job_input["fixtures"] = [fixture.model_dump(exclude_none=True) for fixture in request.fixtures]
         _persist_job_secrets(
             app,
             job_id,
@@ -1382,6 +1512,10 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         secrets = _load_job_secrets(app, job_id)
         stored_auth = secrets.get("auth")
         stored_llm_key = secrets.get("llm_api_key")
+        runtime_llm = app.state.job_llm_configs.get(job_id)
+        runtime_llm_key = (
+            runtime_llm.get("api_key") if isinstance(runtime_llm, dict) else None
+        )
         stored_git_tokens = secrets.get("git_tokens")
         git_token_map = dict(stored_git_tokens) if isinstance(stored_git_tokens, dict) else {}
         git_token_map.update(app.state.job_repo_tokens.get(job_id, {}))
@@ -1406,6 +1540,8 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             ],
             "rest_url": job_input.get("rest_url", ""),
             "rest_insecure_tls": bool(job_input.get("rest_insecure_tls", True)),
+            "auto_record_fixtures": bool(job_input.get("auto_record_fixtures", False)),
+            "observe_runtime_contracts": bool(job_input.get("observe_runtime_contracts", False)),
             "resume": bool(job_input.get("resume", True)),
             "auth": (
                 {
@@ -1434,9 +1570,9 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     "protocol": llm.get("protocol", "openai-chat"),
                     "max_tokens": llm.get("max_tokens", 16384),
                     "api_key_configured": bool(
-                        job_id in app.state.job_llm_configs or stored_llm_key
-                        or llm.get("api_key_configured")
+                        stored_llm_key or runtime_llm_key or settings.llm_api_key
                     ),
+                    "api_key_encrypted": bool(stored_llm_key),
                 }
                 if isinstance(llm, dict)
                 else None
@@ -1539,6 +1675,14 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "repos": [_repo_metadata(repo, settings.repositories_root) for repo in request.repos],
             "rest_url": request.rest_url.rstrip("/"),
             "rest_insecure_tls": request.rest_insecure_tls,
+            "auto_record_fixtures": (
+                bool(previous.get("auto_record_fixtures", False))
+                if request.auto_record_fixtures is None else request.auto_record_fixtures
+            ),
+            "observe_runtime_contracts": (
+                bool(previous.get("observe_runtime_contracts", False))
+                if request.observe_runtime_contracts is None else request.observe_runtime_contracts
+            ),
             "owner_id": owner_id,
             "project_id": project_id,
             "resume": request.resume,
@@ -1578,11 +1722,11 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
         elif request.llm_enabled is not False and isinstance(previous.get("llm"), dict):
             job_input["llm"] = previous["llm"]
         if request.e2e is not None:
-            job_input["e2e"] = request.e2e.model_dump()
+            job_input["e2e"] = _store_e2e_configuration(app, job_id, request.e2e)
         if request.replace_fixtures:
-            job_input["fixtures"] = [fixture.model_dump() for fixture in request.fixtures]
+            job_input["fixtures"] = [fixture.model_dump(exclude_none=True) for fixture in request.fixtures]
         elif request.fixtures:
-            job_input["fixtures"] = [fixture.model_dump() for fixture in request.fixtures]
+            job_input["fixtures"] = [fixture.model_dump(exclude_none=True) for fixture in request.fixtures]
         elif isinstance(previous.get("fixtures"), list):
             job_input["fixtures"] = previous["fixtures"]
         preserved_llm_key = (
@@ -1727,13 +1871,13 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 archive.writestr(relative_name, local_path.read_bytes())
             evidence_dir = root / "evidence"
             evidence_paths = (
-                sorted(evidence_dir.glob("E2E-*.png"))
+                sorted(evidence_dir.rglob("*"))
                 if evidence_dir.is_dir()
                 else []
             )
             for path in evidence_paths:
                 relative_name = path.relative_to(root).as_posix()
-                if not re.fullmatch(r"evidence/E2E-\d{3}\.png", relative_name):
+                if not path.is_file() or not evidence_path(relative_name):
                     continue
                 try:
                     local_path = orch_store.ensure_local(job_id, relative_name)
@@ -1747,16 +1891,103 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             headers={"Content-Disposition": f'attachment; filename="{job_id}-results.zip"'},
         )
 
+    @app.put("/api/v1/jobs/{job_id}/e2e/configuration")
+    async def e2e_configuration(job_id: str, request: E2eConfig, http_request: Request) -> dict[str, Any]:
+        _require_job_access(app, job_id, http_request)
+        if await _task_alive_async(app, job_id):
+            raise HTTPException(status_code=409, detail="任务运行中，不能改变其执行配置")
+        if not request.base_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="前端地址须为 http(s)")
+        job_input = _load_job_input(orch_store, job_id)
+        job_input["e2e"] = _store_e2e_configuration(app, job_id, request)
+        write_private_json(orch_store.job_dir(job_id) / "job_input.json", job_input)
+        if app.state.database is not None:
+            await asyncio.to_thread(app.state.database.save_job_config, job_id, job_input)
+        return {"job_id": job_id, "configuration": job_input["e2e"]}
+
+    @app.get("/api/v1/jobs/{job_id}/e2e")
+    async def e2e_status(job_id: str, http_request: Request) -> dict[str, Any]:
+        _require_job_access(app, job_id, http_request)
+        return {"job_id": job_id, "running": await _task_alive_async(app, job_id),
+                "operation": app.state.e2e_operations.get(job_id), "configuration": _load_job_input(orch_store, job_id).get("e2e")}
+
+    @app.post("/api/v1/jobs/{job_id}/e2e/{operation}", status_code=202)
+    async def e2e_operation(job_id: str, operation: Literal["generate", "execute", "run", "retest", "regress"],
+                            http_request: Request, request: E2eOperationRequest) -> dict[str, Any]:
+        _require_job_access(app, job_id, http_request)
+        if await _task_alive_async(app, job_id):
+            raise HTTPException(status_code=409, detail="该任务正在运行，E2E 操作将使用同一任务锁")
+        if app.state.runtime_revision.restart_required:
+            raise HTTPException(status_code=409, detail="请先重启服务以加载最新代码与契约")
+        job_input = _load_job_input(orch_store, job_id)
+        cfg = job_input.get("e2e")
+        if not isinstance(cfg, dict) or not str(cfg.get("base_url", "")).startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="请先配置被测前端地址")
+        secrets = _load_job_secrets(app, job_id)
+        cfg = {**cfg, "roles": secrets.get("e2e_roles") or {}}
+        auth = _job_auth_config(app, job_id, job_input)
+        llm_config = dict(app.state.job_llm_configs.get(job_id) or job_input.get("llm") or {})
+        if secrets.get("llm_api_key"): llm_config["api_key"] = secrets["llm_api_key"]
+        app.state.e2e_operations[job_id] = {"operation": operation, "status": "queued", "timestamp": _now_iso()}
+        async def work() -> None:
+            from executor.e2e.service import generate_job, execute_job, retest_job, regress_job
+            try:
+                app.state.e2e_operations[job_id]["status"] = "running"
+                runtime_settings = app.state.runner._runtime_llm_settings(llm_config)
+                llm = LlmClient(runtime_settings, job_id, orch_store.job_dir(job_id) / "llm_calls.jsonl", run_id=uuid.uuid4().hex)
+                prompts = Path(__file__).resolve().parents[4] / "prompts"
+                headers = app.state.job_auth_headers.get(job_id)
+                if cfg.get("auth_mode") == "reuse" and auth and not headers:
+                    headers = await login_for_headers(auth)
+                if operation in {"generate", "run"}:
+                    design_result = await generate_job(te_store, job_id, llm, prompts, cfg, auth, headers, resume=request.resume)
+                def progress(value: dict[str, Any]) -> None:
+                    app.state.e2e_operations[job_id]["progress"] = value
+                if operation in {"execute", "run"}:
+                    await execute_job(te_store, job_id, llm, prompts, cfg, auth, headers,
+                                      set(request.case_ids) if request.case_ids else None, progress)
+                if operation == "retest":
+                    await retest_job(te_store, job_id, llm, prompts, cfg, auth, headers,
+                                     set(request.defect_ids) if request.defect_ids else None)
+                if operation == "regress":
+                    await regress_job(te_store, job_id, llm, prompts, cfg, auth, headers,
+                                      set(request.fingerprints) if request.fingerprints else None)
+                app.state.e2e_operations[job_id]["status"] = ("incomplete" if operation == "generate" and design_result.get("status") != "completed" else "completed")
+            except asyncio.CancelledError:
+                app.state.e2e_operations[job_id]["status"] = "cancelled"
+                raise
+            except Exception as exc:
+                app.state.e2e_operations[job_id].update({"status": "failed", "error": str(exc)})
+                logger.exception("E2E 子流程失败：%s", job_id)
+        try:
+            app.state.job_queue.submit(job_id, work)
+        except QueueConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"job_id": job_id, "operation": operation, "status": "queued"}
+
+    @app.get("/api/v1/jobs/{job_id}/review-diagnostics")
+    async def review_diagnostics(job_id: str, http_request: Request) -> dict[str, Any]:
+        """Reconcile historical warnings without rewriting the saved review."""
+        _require_job_access(app, job_id, http_request)
+        try:
+            path = orch_store.ensure_local(job_id, "review_mapping.json")
+            review = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ObjectStorageError, PipelineError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="Code Review 产物尚不可读") from exc
+        return {"job_id": job_id, "items": build_oracle_diagnostics(
+            review.get("test_oracle_warnings") or [], review.get("test_oracles") or [],
+        )}
+
     @app.get("/api/v1/jobs/{job_id}/artifacts/{name:path}")
     async def read_artifact(job_id: str, name: str, http_request: Request) -> Any:
         """读白名单产物与单条 E2E 截图证据。"""
         _require_job_access(app, job_id, http_request)
-        if re.fullmatch(r"evidence/E2E-\d{3}\.png", name):
+        if evidence_path(name):
             try:
                 path = orch_store.ensure_local(job_id, name)
             except (FileNotFoundError, OSError, ObjectStorageError, PipelineError) as exc:
                 raise HTTPException(status_code=404, detail=f"执行证据尚未生成：{name}") from exc
-            return FileResponse(path, media_type="image/png", filename=Path(name).name)
+            return FileResponse(path, filename=Path(name).name)
         if name not in _ARTIFACT_WHITELIST:
             raise HTTPException(status_code=404, detail=f"产物不在白名单：{name}")
         try:
@@ -1877,10 +2108,12 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             if not request.rest_url.startswith(("http://", "https://")):
                 raise HTTPException(status_code=400, detail="rest_url 须为 http(s) 地址")
             job_input["rest_url"] = request.rest_url.rstrip("/")
+        if request.observe_runtime_contracts is not None:
+            job_input["observe_runtime_contracts"] = request.observe_runtime_contracts
         if request.e2e is not None:
             if not request.e2e.base_url.startswith(("http://", "https://")):
                 raise HTTPException(status_code=400, detail="e2e.base_url 须为 http(s) 地址")
-            job_input["e2e"] = request.e2e.model_dump()
+            job_input["e2e"] = _store_e2e_configuration(app, job_id, request.e2e)
         if request.llm is not None:
             previous_runtime = app.state.job_llm_configs.get(job_id, {})
             previous_secrets = _load_job_secrets(app, job_id)
@@ -1914,7 +2147,10 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                     auth=_job_auth_config(app, job_id, job_input),
                     llm_api_key=str(task_api_key) if task_api_key else None,
                 )
-        if request.rest_url is not None or request.e2e is not None or request.llm is not None:
+        if (
+            request.rest_url is not None or request.e2e is not None
+            or request.llm is not None or request.observe_runtime_contracts is not None
+        ):
             # 仅更新执行目标和非敏感模型元数据，不读取/返回 API key。
             write_private_json(orch_store.job_dir(job_id) / "job_input.json", job_input)
             if app.state.database is not None:
@@ -2590,7 +2826,7 @@ def _persist_job_secrets(
     store: SecretStore = app.state.secret_store
     if not store.enabled:
         return
-    secrets: dict[str, Any] = {}
+    secrets: dict[str, Any] = {k: v for k, v in _load_job_secrets(app, job_id).items() if k == "e2e_roles"}
     if auth is not None:
         secrets["auth"] = auth
     if llm_api_key:
@@ -2604,6 +2840,26 @@ def _persist_job_secrets(
             store.clear(job_id)
     except SecretStoreError as exc:
         raise HTTPException(status_code=500, detail="任务密钥无法安全保存，请联系管理员") from exc
+
+
+def _store_e2e_configuration(app: FastAPI, job_id: str, config: E2eConfig) -> dict[str, Any]:
+    payload = config.model_dump()
+    roles = payload.get("roles") or {}
+    if roles:
+        if not app.state.secret_store.enabled:
+            raise HTTPException(status_code=400, detail="多角色凭据需要启用任务加密存储")
+        secrets = _load_job_secrets(app, job_id)
+        previous = secrets.get("e2e_roles") or {}
+        for name, profile in roles.items():
+            if not profile.get("password"):
+                profile["password"] = previous.get(name, {}).get("password", "")
+            if not profile.get("password"):
+                raise HTTPException(status_code=400, detail=f"角色 {name} 未配置密码")
+        secrets["e2e_roles"] = roles
+        app.state.secret_store.save(job_id, secrets)
+    payload["roles"] = {name: {k: v for k, v in profile.items() if k != "password"} | {"password_configured": True}
+                        for name, profile in roles.items()}
+    return payload
 
 
 def _job_e2e_config(orch_store: ArtifactStore, job_id: str) -> dict[str, Any] | None:
@@ -2635,6 +2891,12 @@ def _job_rest_url(orch_store: ArtifactStore, job_id: str) -> str | None:
 
 def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None:
     """后台驱动 PipelineRunner（同一入口 F-ORCH-01；force_node 归档留痕）。"""
+    revision = getattr(app.state, "runtime_revision", None)
+    if revision is not None and revision.restart_required:
+        raise HTTPException(
+            status_code=409,
+            detail="服务启动后代码、提示词或契约已变更；请先重启编排服务，避免旧代码混用新契约",
+        )
     # 本轮开始时清掉上一轮的终态错误：否则重跑后的整段运行期里，前端仍会展示
     # 「上一次」的失败原因，看起来像这次也在失败（本轮真出错时会被重新写入）。
     _remember_job_outcome(app, job_id, {"job_id": job_id})
@@ -2685,7 +2947,7 @@ def _spawn_run(app: FastAPI, job_id: str, force_node: str | None = None) -> None
             if auth_headers:
                 run_args["auth_headers"] = auth_headers
             if job_input.get("e2e") is not None:
-                run_args["e2e"] = job_input["e2e"]
+                run_args["e2e"] = {**job_input["e2e"], "roles": secrets.get("e2e_roles") or {}}
             if isinstance(job_input.get("fixtures"), list):
                 run_args["fixtures"] = job_input["fixtures"]
             if isinstance(job_input.get("document_pairs"), list):

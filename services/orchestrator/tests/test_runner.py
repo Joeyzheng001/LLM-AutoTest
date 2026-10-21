@@ -127,8 +127,46 @@ class StubLlm:
         _ = max_attempts
         self.calls.append(node)
         self.prompt_refs.append(prompt.ref)
+        if prompt.name == "code_review_test_oracles":
+            context = json.loads(user_content)
+            item = context["interfaces"][0]
+            evidence = next(e for e in item["evidence"] if e.get("role") == "controller")
+            ref = evidence["evidence_id"]
+            oracles = []
+            for category, value in (("normal", 1), ("boundary", 0), ("exception", -1)):
+                branch = next(b for b in item["branches"] if b["quote"] == f"if (id == {value})")
+                oracles.append({
+                    "interface_id": item["interface"]["id"], "branch_id": branch["branch_id"],
+                    "category": category, "scenario": f"id={value} 返回固定响应",
+                    "preconditions": [{"path": "id", "op": "equals", "value": value}],
+                    "expected_status": "status=200",
+                    "assertions": [{"path": "ok", "op": "equals", "value": True}],
+                    "evidence_refs": [ref],
+                    "evidence_quotes": [
+                        {"target": "preconditions[0]", "evidence_ref": ref, "quote": branch["quote"]},
+                        {"target": "expected_status", "evidence_ref": ref, "quote": 'return Map.of("ok", true);'},
+                        {"target": "assertions[0]", "evidence_ref": ref, "quote": 'return Map.of("ok", true);'},
+                    ],
+                })
+            return LlmResult(text=json.dumps({"oracles": oracles}), tokens=10, call_id="LLM-source-oracle")
+        if prompt.name == "testpoint_derive":
+            return LlmResult(text='{"hints": []}', tokens=10, call_id="LLM-hints")
         key = prompt.name if prompt.name == "requirement_review" else node
         text = (self.scripts or {}).get(key, "")
+        if node == "testcase_generate":
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict) and isinstance(payload.get("cases"), list):
+                context, _ = json.JSONDecoder().raw_decode(user_content)
+                for case in payload["cases"]:
+                    oracle = next(o for o in context["test_oracles"] if o["category"] == case["category"])
+                    case.update(oracle_id=oracle["oracle_id"], expected=oracle["expected_status"], assertions=oracle["assertions"])
+                    points = [p for p in context.get("testpoints", []) if p.get("interface_id") == case["interface_id"]]
+                    if points:
+                        case["testpoint_ids"] = [points[0]["id"]]
+                text = json.dumps(payload)
         text = "```json\n" + text + "\n```"
         return LlmResult(text=text, tokens=10, call_id=f"LLM-stub-{len(self.calls)}")
 
@@ -143,7 +181,7 @@ def _default_llm_scripts() -> dict[str, str]:
     }
 
 
-def _java_parser_transport() -> httpx.MockTransport:
+def _java_parser_transport(repo_root: Path) -> httpx.MockTransport:
     """模拟 java-parser：scan/extract 均同步完成（completed 带完整契约产物）。"""
 
     code_inventory = {
@@ -152,7 +190,7 @@ def _java_parser_transport() -> httpx.MockTransport:
         "repositories": [
             {
                 "name": "user-service",
-                "path": "/var/repos/user-service",
+                "path": str(repo_root),
                 "branch": "main",
                 "is_fallback": False,
                 "status": "ok",
@@ -263,12 +301,23 @@ class _ScriptedRunner(PipelineRunner):
     """注入 stub LLM 与 MockTransport 的 runner（测试构造便利）。"""
 
     def __init__(self, settings: Settings, tmp: Path, llm: StubLlm, rest_status: int = 200) -> None:
+        (tmp / "UserController.java").write_text(
+            "@RestController\npublic class UserController {\n" + "\n" * 27
+            + '@GetMapping("/api/v1/users")\npublic Object query(long id) {\n'
+            + 'if (id == 1) { return Map.of("ok", true); }\n'
+            + 'if (id == 0) { return Map.of("ok", true); }\n'
+            + 'if (id == -1) { return Map.of("ok", true); }\n'
+            + 'return Map.of("ok", false);\n}\n' + "\n" * 12 + "}\n",
+            encoding="utf-8",
+        )
+        (tmp / _JOB).mkdir(exist_ok=True)
+        (tmp / _JOB / "job_input.json").write_text("{}", encoding="utf-8")
         orch = ArtifactStore(tmp, _SCHEMAS, "orchestrator")
         te = ArtifactStore(tmp, _SCHEMAS, "test-executor")
         engine = Engine(orch)
         java = JavaParserClient(
             base_url="http://java-parser:8081",
-            transport=_java_parser_transport(),
+            transport=_java_parser_transport(tmp),
             poll_interval_s=0.0,
             max_wait_s=1.0,
         )
@@ -418,13 +467,17 @@ async def test_runner_full_pipeline_e2e(tmp_path: Path) -> None:
     assert any(path.endswith("/test_TC_001.py") for path in manifest_paths)
     assert ".job-credentials.enc" not in manifest_paths
     # 需求节点包含评审与条目提取两个子阶段；用例生成前另有一次测试点拆分维度补全。
-    # LLM 共调用 6 次。
+    # 包含证据选择、源码预期、影响分析与覆盖补全的独立调用。
     assert llm.calls == [
         "req_parse",
         "requirement_review",
         "interface_reconstruct",
+        "code_review_evidence_select",
         "code_review",
+        "code_review",
+        "code_review_change_impact",
         "testpoint_derive",
+        "testcase_generate",
         "testcase_generate",
     ]
     # 只断言前两个 Prompt 的节点口径，不锁版本号：Prompt 内容迭代不应误报此测试。
@@ -454,6 +507,16 @@ async def test_runner_metrics_snapshot_then_final(tmp_path: Path) -> None:
     metrics = json.loads((tmp_path / _JOB / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["automation_rate"]["numerator"] == 9
     assert metrics["automation_rate"]["data_complete"] is True
+
+
+async def test_runner_cli_without_api_job_input(tmp_path: Path) -> None:
+    """CLI 没有 API 的 job_input.json，仍可执行，主动探测与造数默认关闭。"""
+    llm = StubLlm(_default_llm_scripts())
+    runner = _ScriptedRunner(_settings(tmp_path), tmp_path, llm)
+    (tmp_path / _JOB / "job_input.json").unlink()
+    outcome = await runner.run(_JOB, [_doc(tmp_path)], _repos(), "http://rest:9000")
+    assert outcome.ok
+    assert len(outcome.completed) == 9
 
 
 async def test_runner_metrics_not_refreshed_when_interrupted(tmp_path: Path) -> None:
@@ -494,7 +557,7 @@ async def test_runner_resume_skips_completed(tmp_path: Path) -> None:
     outcome = await runner.run(_JOB, [_doc(tmp_path)], _repos(), "http://rest:9000")
 
     # 产物在的前 4 节点跳过（LLM 只被用例生成及其拆分维度补全子阶段调用）
-    assert llm2.calls == ["testpoint_derive", "testcase_generate"]
+    assert llm2.calls == ["testpoint_derive", "testcase_generate", "testcase_generate"]
     assert outcome.ok
     assert outcome.completed[:4] == [
         "req_parse", "code_scan", "interface_reconstruct", "code_review"
@@ -601,8 +664,9 @@ async def test_runner_force_node_archives_old_artifacts(tmp_path: Path) -> None:
     assert sorted((job_dir / "archive" / "test_report").glob("*_test_report.md"))
     assert sorted((job_dir / "archive" / "test_report").glob("*_metrics.json"))
     assert llm2.calls.count("interface_reconstruct") == 1
-    assert llm2.calls.count("code_review") == 1
-    assert llm2.calls.count("testcase_generate") == 1
+    # 两个需求各做一次映射，另一次从源码生成预期。
+    assert llm2.calls.count("code_review") == 3
+    assert llm2.calls.count("testcase_generate") == 2
 
 
 async def test_runner_force_node_rejects_unknown_node(tmp_path: Path) -> None:

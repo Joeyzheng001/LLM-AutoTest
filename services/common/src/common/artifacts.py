@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from common.e2e_contracts import evidence_path
+
 import hashlib
 import json
 import re
@@ -38,6 +40,11 @@ ARTIFACT_FILES: tuple[str, ...] = (
     "change_set.json",
     "review_mapping.json",
     "testcases.json",
+    "e2e_design.json",
+    "e2e_execution.json",
+    "e2e_defects.json",
+    "e2e_history.json",
+    "e2e_regression.json",
     "execution.json",
     "defects.json",
     "regression_index.json",
@@ -56,6 +63,11 @@ _WRITE_OWNERS: dict[str, str] = {
     "change_set.json": "orchestrator",
     "review_mapping.json": "orchestrator",
     "testcases.json": "test-executor",
+    "e2e_design.json": "test-executor",
+    "e2e_execution.json": "test-executor",
+    "e2e_defects.json": "test-executor",
+    "e2e_history.json": "test-executor",
+    "e2e_regression.json": "test-executor",
     "execution.json": "test-executor",
     "defects.json": "test-executor",
     "regression_index.json": "test-executor",
@@ -193,13 +205,11 @@ class ArtifactStore:
         if (
             self._service != "test-executor"
             or relative.is_absolute()
-            or len(relative.parts) != 2
-            or relative.parts[0] != "evidence"
-            or not re.fullmatch(r"E2E-\d{3}\.png", relative.name)
+            or not evidence_path(relative.as_posix())
         ):
             raise PipelineError(
                 code=X_ORCH_01,
-                message=f"write_bytes 仅允许 test-executor 写 evidence/E2E-###.png：{relative_path}",
+                message=f"write_bytes 仅允许 test-executor 写已登记的 E2E 执行证据：{relative_path}",
             )
         target = self.job_dir(job_id) / relative
         target.parent.mkdir(parents=True, exist_ok=True)
