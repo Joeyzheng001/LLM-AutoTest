@@ -631,5 +631,3 @@ def _derive_runtime_observed_exception_oracles(
             "evidence_quotes": evidence_quotes,
         })
     return oracles, warnings
-
-
