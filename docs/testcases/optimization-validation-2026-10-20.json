@@ -1,0 +1,712 @@
+{
+  "audited_at": "2026-10-19T23:34:20.066656+00:00",
+  "job_id": "job-precodetest",
+  "verification_status": "interrupted_company_network_unavailable",
+  "current_attempt": {
+    "run_id": "0f7db58fd8b4",
+    "calls": 96,
+    "models": {
+      "deepseek-chat": 96
+    },
+    "failed_calls": 8,
+    "finish_reasons": {
+      "stop": 88,
+      "null": 8
+    },
+    "recorded_payload_integrity_errors": [],
+    "integrity_scope": "完整记录长度与摘要一致；失败连接没有输出，不能据此宣称所有模型调用完成",
+    "nodes": {
+      "req_parse": "completed",
+      "code_scan": "completed",
+      "interface_reconstruct": "completed",
+      "code_review": "manual_intervention",
+      "testcase_generate": "pending",
+      "auto_execute": "pending",
+      "test_report": "pending",
+      "defect_list": "pending",
+      "retest_regression": "pending"
+    },
+    "error": {
+      "code": "X-LLM-01",
+      "message": "LLM 中转站连接失败（ConnectError）：请检查网关地址、DNS、证书链和防火墙策略"
+    }
+  },
+  "last_completed_run": {
+    "run_id": "622e74d6b03c",
+    "calls": 106,
+    "models": {
+      "deepseek-chat": 106
+    },
+    "failed_calls": 0,
+    "finish_reasons": {
+      "stop": 106
+    },
+    "recorded_payload_integrity_errors": [],
+    "integrity_scope": "完整记录长度与摘要一致；失败连接没有输出，不能据此宣称所有模型调用完成",
+    "archive_stamp": "20261019T142925639261Z",
+    "execution_summary": {
+      "total": 29,
+      "passed": 7,
+      "failed_assertion": 0,
+      "failed_environment": 0,
+      "skipped": 15,
+      "actual_requests": 14,
+      "observed_unjudged": 7,
+      "not_executed": 15,
+      "reused_response": 0
+    },
+    "normal_requests_by_interface": {
+      "IF-REST-001": 1,
+      "IF-REST-003": 6
+    },
+    "scope": "普通入口空分支编号最终修复前的历史运行，不能作为最新代码端到端结果"
+  },
+  "baseline_skip_totals": {
+    "cases": 42,
+    "actual_requests": 24,
+    "old_skipped": 22,
+    "already_requested_among_old_skipped": 4,
+    "genuinely_not_sent": 18
+  },
+  "baseline_branch_comparison": [
+    {
+      "baseline_case_id": "TC-001",
+      "baseline_scenario": "请求体为空或为 JSON null 时，框架拒绝必填请求体绑定",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-001",
+          "state": "observed_unjudged",
+          "reason": "框架默认响应与被测环境不同（HTTP 200）；需确认项目/网关异常包装，尚未判定业务缺陷"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-002",
+      "baseline_scenario": "请求参数accountNo为空字符串时，抛出业务异常",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-002",
+          "state": "observed_unjudged",
+          "reason": "请求已发送并保留实际响应；HTTP 映射缺少源码依据，仅作为观测，不反写预期或判定产品缺陷"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-003",
+      "baseline_scenario": "执行器类型为null或不在服务缓存中时，抛出运行时异常",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-004",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认；尚未准备 downstream_response 控制条件；尚未准备 service_registry 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-004",
+      "baseline_scenario": "O32风控试算返回null时，使用兜底错误对象并正常返回",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-003",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：尚未准备 downstream_response 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-005",
+      "baseline_scenario": "O32风控试算失败时，原样返回错误信息",
+      "same_source_branch_in_last_completed_run": [],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-006",
+      "baseline_scenario": "业务类型对应的明细处理器不存在时，原样返回O32结果",
+      "same_source_branch_in_last_completed_run": [],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-009",
+      "baseline_scenario": "请求体为空或为 JSON null 时，框架拒绝必填请求体绑定",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-006",
+          "state": "observed_unjudged",
+          "reason": "框架默认响应与被测环境不同（HTTP 200）；需确认项目/网关异常包装，尚未判定业务缺陷"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-010",
+      "baseline_scenario": "审批授权复合试算结果为空时抛出异常",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-009",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认；尚未准备 downstream_response 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-011",
+      "baseline_scenario": "审批授权试算未返回O32结果时直接返回响应",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-010",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：尚未准备 downstream_response 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-012",
+      "baseline_scenario": "O32试算失败时不查询审批信息直接返回响应",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-011",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：尚未准备 downstream_response 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-013",
+      "baseline_scenario": "O32结果无有效风控序号时不查询审批信息",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-012",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：目标源码分支的条件来源尚未能绑定到 HTTP 请求或控制夹具；需补齐调用链数据来源证据；尚未准备 downstream_response 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-016",
+      "baseline_scenario": "临时代码查询市场不支持时抛出异常",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-008",
+          "state": "observed_unjudged",
+          "reason": "请求已发送并保留实际响应；HTTP 映射缺少源码依据，仅作为观测，不反写预期或判定产品缺陷"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-022",
+      "baseline_scenario": "配置的复杂执行器列表为空时抛出异常",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-013",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认；尚未准备 application_config 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-024",
+      "baseline_scenario": "当执行STD风控通道且执行失败时，设置icmTrialObj为错误对象",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-019",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：目标源码分支的条件来源尚未能绑定到 HTTP 请求或控制夹具；需补齐调用链数据来源证据；尚未准备 downstream_response 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-026",
+      "baseline_scenario": "当执行O32风控通道且执行失败时，设置o32TrialObj为错误对象",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-021",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：目标源码分支的条件来源尚未能绑定到 HTTP 请求或控制夹具；需补齐调用链数据来源证据；尚未准备 downstream_response 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-027",
+      "baseline_scenario": "请求的风控通道在配置中不存在时抛出异常",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-022",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认；尚未准备 application_config 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-032",
+      "baseline_scenario": "STD 风控通道调用失败时，返回错误对象",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-019",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：目标源码分支的条件来源尚未能绑定到 HTTP 请求或控制夹具；需补齐调用链数据来源证据；尚未准备 downstream_response 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-034",
+      "baseline_scenario": "O32 风控通道调用失败时，返回错误对象",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-021",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：目标源码分支的条件来源尚未能绑定到 HTTP 请求或控制夹具；需补齐调用链数据来源证据；尚未准备 downstream_response 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-037",
+      "baseline_scenario": "请求体为空或为 JSON null 时，框架拒绝必填请求体绑定",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-027",
+          "state": "observed_unjudged",
+          "reason": "框架默认响应与被测环境不同（HTTP 200）；需确认项目/网关异常包装，尚未判定业务缺陷"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-038",
+      "baseline_scenario": "请求路径参数 code 的值不在 RequestTypeEnum 枚举定义中",
+      "same_source_branch_in_last_completed_run": [],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-039",
+      "baseline_scenario": "执行器类型 STD 对应的服务未在缓存中注册",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-028",
+          "state": "not_executed",
+          "reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认；尚未准备 service_registry 控制条件"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    },
+    {
+      "baseline_case_id": "TC-042",
+      "baseline_scenario": "请求体为空或为 JSON null 时，框架拒绝必填请求体绑定",
+      "same_source_branch_in_last_completed_run": [
+        {
+          "case_id": "TC-029",
+          "state": "observed_unjudged",
+          "reason": "框架默认响应与被测环境不同（HTTP 200）；需确认项目/网关异常包装，尚未判定业务缺陷"
+        }
+      ],
+      "scope": "仅比较源码分支，不能认定请求及断言相同"
+    }
+  ],
+  "old_skipped_branches_absent_from_last_completed_run": [
+    "TC-005",
+    "TC-006",
+    "TC-038"
+  ],
+  "ordinary_entry_company_output_replays": [
+    {
+      "call_id": "LLM-precodet-2167",
+      "company_model": "deepseek-chat",
+      "original_output_digest": "a671c97bf5ea026b",
+      "entries": [
+        {
+          "interface_id": "IF-REST-001",
+          "scenario": "常规有效请求入口检查",
+          "assertion_scope": "response_structure",
+          "execution_blockers": [],
+          "required_control_kinds": []
+        }
+      ],
+      "scope": "仅回放原始公司模型回答到现有解析器；没有发出新的模型调用或HTTP请求"
+    },
+    {
+      "call_id": "LLM-precodet-2174",
+      "company_model": "deepseek-chat",
+      "original_output_digest": "af74645a7ffeae7e",
+      "entries": [
+        {
+          "interface_id": "IF-REST-002",
+          "scenario": "常规有效请求入口检查",
+          "assertion_scope": "response_structure",
+          "execution_blockers": [],
+          "required_control_kinds": []
+        }
+      ],
+      "scope": "仅回放原始公司模型回答到现有解析器；没有发出新的模型调用或HTTP请求"
+    },
+    {
+      "call_id": "LLM-precodet-2179",
+      "company_model": "deepseek-chat",
+      "original_output_digest": "3e7969ed542e0c8f",
+      "entries": [
+        {
+          "interface_id": "IF-REST-003",
+          "scenario": "常规有效请求入口检查",
+          "assertion_scope": "response_structure",
+          "execution_blockers": [],
+          "required_control_kinds": []
+        }
+      ],
+      "scope": "仅回放原始公司模型回答到现有解析器；没有发出新的模型调用或HTTP请求"
+    },
+    {
+      "call_id": "LLM-precodet-2189",
+      "company_model": "deepseek-chat",
+      "original_output_digest": "d5bdbc8a7b73ebd1",
+      "entries": [
+        {
+          "interface_id": "IF-REST-004",
+          "scenario": "常规有效请求的正常返回",
+          "assertion_scope": "status_only",
+          "execution_blockers": [],
+          "required_control_kinds": []
+        }
+      ],
+      "scope": "仅回放原始公司模型回答到现有解析器；没有发出新的模型调用或HTTP请求"
+    }
+  ],
+  "historical_response_path_replays": [
+    {
+      "target_baseline_case": "TC-012",
+      "response_baseline_case": "TC-014",
+      "observation": {
+        "status": "matched_observable_path",
+        "conditions": [
+          {
+            "condition": {
+              "path": "o32TrialObj.ErrorCode",
+              "op": "not_equals",
+              "value": "0"
+            },
+            "passed": true,
+            "actual": "400",
+            "evidence_ref": "EVD-0062",
+            "quote": "if (!\"0\".equals(o32Result.getErrorCode()))",
+            "required_outcome": true
+          },
+          {
+            "condition": {
+              "path": "$",
+              "op": "not_equals",
+              "value": null
+            },
+            "passed": true,
+            "actual": {
+              "serialNo": "TEST005",
+              "icmTrialObj": {
+                "errCode": 9001,
+                "errMsg": "必输字段【数据来源类型】缺失，请检查"
+              },
+              "o32TrialObj": {
+                "riskOutList": null,
+                "ClOrdID": null,
+                "ProcessType": null,
+                "ErrorCode": "400",
+                "ErrorMsg": "指令下达人的操作员编号不能为空;业务类别不能为空;恒生系统组合编号不能为空;投资类型不能为空;",
+                "Group": 0
+              },
+              "hierarchicalOutList": [],
+              "autoApprovalOutList": []
+            },
+            "evidence_ref": "EVD-0062",
+            "quote": "if (standardResponse == null)",
+            "required_outcome": false
+          },
+          {
+            "condition": {
+              "path": "o32TrialObj",
+              "op": "not_equals",
+              "value": null
+            },
+            "passed": true,
+            "actual": {
+              "riskOutList": null,
+              "ClOrdID": null,
+              "ProcessType": null,
+              "ErrorCode": "400",
+              "ErrorMsg": "指令下达人的操作员编号不能为空;业务类别不能为空;恒生系统组合编号不能为空;投资类型不能为空;",
+              "Group": 0
+            },
+            "evidence_ref": "EVD-0062",
+            "quote": "if (o32Result == null)",
+            "required_outcome": false
+          }
+        ],
+        "unknown_conditions": []
+      },
+      "scope": "历史响应回放；没有新发请求，不是内部执行轨迹证明"
+    },
+    {
+      "target_baseline_case": "TC-014",
+      "response_baseline_case": "TC-014",
+      "observation": {
+        "status": "not_reached",
+        "conditions": [
+          {
+            "condition": {
+              "path": "$",
+              "op": "not_equals",
+              "value": null
+            },
+            "passed": true,
+            "actual": {
+              "serialNo": "TEST005",
+              "icmTrialObj": {
+                "errCode": 9001,
+                "errMsg": "必输字段【数据来源类型】缺失，请检查"
+              },
+              "o32TrialObj": {
+                "riskOutList": null,
+                "ClOrdID": null,
+                "ProcessType": null,
+                "ErrorCode": "400",
+                "ErrorMsg": "指令下达人的操作员编号不能为空;业务类别不能为空;恒生系统组合编号不能为空;投资类型不能为空;",
+                "Group": 0
+              },
+              "hierarchicalOutList": [],
+              "autoApprovalOutList": []
+            },
+            "evidence_ref": "EVD-0080",
+            "quote": "if (standardResponse == null)",
+            "required_outcome": false
+          },
+          {
+            "condition": {
+              "path": "o32TrialObj",
+              "op": "not_equals",
+              "value": null
+            },
+            "passed": true,
+            "actual": {
+              "riskOutList": null,
+              "ClOrdID": null,
+              "ProcessType": null,
+              "ErrorCode": "400",
+              "ErrorMsg": "指令下达人的操作员编号不能为空;业务类别不能为空;恒生系统组合编号不能为空;投资类型不能为空;",
+              "Group": 0
+            },
+            "evidence_ref": "EVD-0080",
+            "quote": "if (o32Result == null)",
+            "required_outcome": false
+          },
+          {
+            "condition": {
+              "path": "o32TrialObj.ErrorCode",
+              "op": "equals",
+              "value": "0"
+            },
+            "passed": false,
+            "actual": "400",
+            "evidence_ref": "EVD-0080",
+            "quote": "if (!\"0\".equals(o32Result.getErrorCode()))",
+            "required_outcome": false
+          }
+        ],
+        "unknown_conditions": [
+          "EVD-0083: if (hierarchicalEnabled)",
+          "EVD-0083: if (riskSerials.isEmpty())"
+        ]
+      },
+      "scope": "历史响应回放；没有新发请求，不是内部执行轨迹证明"
+    },
+    {
+      "target_baseline_case": "TC-015",
+      "response_baseline_case": "TC-015",
+      "observation": {
+        "status": "not_reached",
+        "conditions": [
+          {
+            "condition": {
+              "path": "$",
+              "op": "not_equals",
+              "value": null
+            },
+            "passed": true,
+            "actual": {
+              "serialNo": "TEST006",
+              "icmTrialObj": {
+                "errCode": 9001,
+                "errMsg": "必输字段【数据来源类型】缺失，请检查"
+              },
+              "o32TrialObj": {
+                "riskOutList": null,
+                "ClOrdID": null,
+                "ProcessType": null,
+                "ErrorCode": "400",
+                "ErrorMsg": "投资类型不能为空;业务类别不能为空;指令下达人的操作员编号不能为空;恒生系统组合编号不能为空;",
+                "Group": 0
+              },
+              "hierarchicalOutList": [],
+              "autoApprovalOutList": []
+            },
+            "evidence_ref": "EVD-0080",
+            "quote": "if (standardResponse == null)",
+            "required_outcome": false
+          },
+          {
+            "condition": {
+              "path": "o32TrialObj",
+              "op": "not_equals",
+              "value": null
+            },
+            "passed": true,
+            "actual": {
+              "riskOutList": null,
+              "ClOrdID": null,
+              "ProcessType": null,
+              "ErrorCode": "400",
+              "ErrorMsg": "投资类型不能为空;业务类别不能为空;指令下达人的操作员编号不能为空;恒生系统组合编号不能为空;",
+              "Group": 0
+            },
+            "evidence_ref": "EVD-0080",
+            "quote": "if (o32Result == null)",
+            "required_outcome": false
+          },
+          {
+            "condition": {
+              "path": "o32TrialObj.ErrorCode",
+              "op": "equals",
+              "value": "0"
+            },
+            "passed": false,
+            "actual": "400",
+            "evidence_ref": "EVD-0080",
+            "quote": "if (!\"0\".equals(o32Result.getErrorCode()))",
+            "required_outcome": false
+          }
+        ],
+        "unknown_conditions": [
+          "EVD-0083: if (autoApprovalQueryBusinessType != null)",
+          "EVD-0083: if (riskSerials.isEmpty())"
+        ]
+      },
+      "scope": "历史响应回放；没有新发请求，不是内部执行轨迹证明"
+    },
+    {
+      "target_baseline_case": "TC-005",
+      "response_baseline_case": "TC-007",
+      "observation": {
+        "status": "matched_observable_path",
+        "conditions": [
+          {
+            "condition": {
+              "path": "ErrorCode",
+              "op": "not_equals",
+              "value": "0"
+            },
+            "passed": true,
+            "actual": "400",
+            "evidence_ref": "EVD-0066",
+            "quote": "if (!SUCCESS_CODE.equals(source.getErrorCode()))",
+            "required_outcome": true
+          }
+        ],
+        "unknown_conditions": []
+      },
+      "scope": "历史响应回放；没有新发请求，不是内部执行轨迹证明"
+    }
+  ],
+  "pending_design_company_output_replays": [
+    {
+      "call_id": "LLM-precodet-2167",
+      "interface_id": "IF-REST-001",
+      "scenario": "O32风控试算失败时原样返回错误信息",
+      "branch_id": "EVD-0066:if:1",
+      "assertions": [],
+      "design_status": "pending_expectation",
+      "execution_blockers": [
+        "响应断言未通过源码校验；保留分支设计，暂不执行"
+      ],
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "scope": "仅验证公司原始回答可保留为待补设计，不编写业务预期，不发送请求或计业务覆盖"
+    },
+    {
+      "call_id": "LLM-precodet-2167",
+      "interface_id": "IF-REST-001",
+      "scenario": "业务类型无对应处理器时保留原始明细",
+      "branch_id": "EVD-0066:if:2",
+      "assertions": [],
+      "design_status": "pending_expectation",
+      "execution_blockers": [
+        "响应断言未通过源码校验；保留分支设计，暂不执行"
+      ],
+      "required_control_kinds": [
+        "service_registry"
+      ],
+      "scope": "仅验证公司原始回答可保留为待补设计，不编写业务预期，不发送请求或计业务覆盖"
+    }
+  ],
+  "enum_condition_company_output_replay": {
+    "call_id": "LLM-precodet-2189",
+    "interface_id": "IF-REST-004",
+    "scenario": "请求类型不支持时抛出异常",
+    "expected_status": "unresolved",
+    "execution_blockers": [
+      "本接口处理行为已有源码依据，HTTP 响应映射尚未确认"
+    ],
+    "condition_source_rejection": null,
+    "scope": "有限集合请求前提已恢复；HTTP 响应映射仍待实际观测，不能算断言通过"
+  },
+  "request_controlled_observation_candidates": [
+    {
+      "baseline_case_id": "TC-002",
+      "may_send_for_contract_observation": true
+    },
+    {
+      "baseline_case_id": "TC-016",
+      "may_send_for_contract_observation": true
+    },
+    {
+      "baseline_case_id": "TC-038",
+      "may_send_for_contract_observation": true
+    }
+  ],
+  "network_observation": {
+    "local_backend_frontend_parser_mock": "available",
+    "company_model_probe": "ConnectError; llm.htffund.com DNS resolution failed",
+    "target": "10.51.28.96:13001 timed out"
+  },
+  "remaining_acceptance": [
+    "公司网络恢复后，最新代码通过公司 deepseek-chat 完成九节点",
+    "四个接口均实际发送普通入口请求",
+    "确认业务通过、结构通过、已请求待判定与未执行分别统计",
+    "核对未保留的原始源码分支，不以用例减少宣称跳过问题已解决"
+  ],
+  "loaded_service": {
+    "code_revision": "06df6ea91e5f7cb6",
+    "loaded_at": "2026-10-19T23:35:11.415324+00:00",
+    "restart_required": false,
+    "backend_frontend_parser_mock_health": "all available"
+  },
+  "static_checks": {
+    "code_review_mypy": "passed",
+    "contract_schemas": [
+      "execution.json",
+      "test_oracles.json",
+      "review_mapping.json",
+      "testcases.json"
+    ],
+    "contract_schema_check": "passed",
+    "git_diff_check": "passed"
+  }
+}

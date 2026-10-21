@@ -13,8 +13,10 @@
 程序化校验：
 - R-GEN-02：params 参数名 ⊆ 接口定义参数集合——违规用例丢弃，带反馈重生成一次；
   二次仍违规 → 该接口用例放弃，记 X-GEN-02 告警；
+- R-GEN-05/06：expected/assertions 必须与 Code Review 的源码 oracle 完全一致，且请求满足 oracle 前置条件；
+  无 oracle 或不匹配的断言不会成为可执行预期；
 - R-GEN-03：脚本 py_compile，失败记 loadable=false；
-- X-GEN-01：接口/场景漏产先进入定向补产；补产仍失败则以 X-LLM-02 阻止残缺产物；
+- X-GEN-01：源码已证实的场景漏产时定向补产；其余场景留在评审缺口中；
 - X-GEN-03：接口含 unknown 参数 → 用例标 low_confidence。
 
 完成判据（docs/12 §1.3）：loadable 全真 → completed；存在不可加载脚本 →
@@ -29,27 +31,39 @@ import json
 import logging
 import math
 import re
+import shutil
+import subprocess
 from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, unquote, urljoin, urlparse
 
 from common.artifacts import ArtifactStore
+from common.design_coverage import oracle_request_bindings
 from common.case_validation import (
     expected_client_error,
     inspect_case_parameters,
+    is_runtime_injected_param,
     materialize_declared_defaults,
+)
+from common.dto_validation import (
+    dto_precondition_reachability_issue,
+    dto_validation_oracle_issue,
 )
 from common.engine import Engine, JobState
 from common.errors import X_LLM_02, X_ORCH_01, PipelineError
+from common.field_value_contracts import documented_codes
 from common.llm import LlmResult
 from common.llm_batch import chunk_json_items
 from common.llm_repair import complete_with_json_repair
 from common.llm_text import strip_code_fence
+from common.oracle_conditions import execution_blockers, normalize_expected_behavior, normalize_state_conditions, required_control_kinds
 from common.prompts_loader import PromptSpec, load_prompt
 from common.response_assertions import (
+    evaluate_response_assertions,
     legacy_response_assertions,
     normalize_response_assertions,
+    response_assertion_scope,
 )
 from executor.nodes.e2e_surface import ProbeOptions
 from executor.nodes.e2e_surface import inspect_e2e_surface as probe_surface
@@ -97,11 +111,7 @@ _LONG_MARKER_RE = re.compile(r"^__LONG_(\d{1,7})__$")
 # 展开上限：防模型写错位数（如 __LONG_9999999__）把产物撑爆
 _LONG_MARKER_MAX = 65_536
 
-# 实现片段注入：按 code_location 读接口方法体交给模型，让 normal 用例的 expected
-# 落在真实分支/字段/返回值上，而不是只凭 signature + params 编。上限既保上下文预算，
-# 也避免把整个类塞进请求（单批 3 个接口 × 60 行 ≈ 可控）。
-_MAX_IMPLEMENTATION_LINES = 60
-_MAX_IMPLEMENTATION_CHARS = 4_000
+# 实现片段按完整源码范围注入；不得按行数或字符数裁掉方法尾部。
 # 源码里可能带示例口令；与 code_review 的证据采集同一口径先脱敏再给模型。
 _SECRET_VALUE_RE = re.compile(
     r"(?i)\b(password|passwd|secret|token|api[_-]?key)\b(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;)]+)"
@@ -181,53 +191,85 @@ async def run_testcase_generate(
     try:
         requirements = _load_json_array(store, state.job_id, "requirement_items.json", "items")
         interfaces = _load_json_array(store, state.job_id, "interfaces.json", "interfaces")
+        repo_roots = _load_repo_roots(store, state.job_id)
+        try:
+            job_input = store.read_json(state.job_id, "job_input.json")
+        except FileNotFoundError:
+            job_input = {}
+        auto_record_fixtures = bool(job_input.get("auto_record_fixtures", False))
+        review = store.read_json(state.job_id, "review_mapping.json")
+        contracts = review.get("field_value_contracts")
+        test_oracles, oracle_input_warnings = _validated_review_test_oracles(
+            review, interfaces
+        )
+        # 让模型仍按源码 oracle 展开用例维度，但不把执行器专用造数计划交给模型改写。
+        model_oracles = [
+            {key: value for key, value in oracle.items() if key != "fixture_plan"}
+            for oracle in test_oracles
+            if "observed_params" not in oracle
+        ]
+        if isinstance(contracts, list):
+            interfaces = _apply_field_value_contracts(interfaces, contracts)
+        else:
+            # 旧任务没有评审阶段的字段契约，兼容读取目标提交注解以供本地预览。
+            interfaces = _enrich_field_descriptions(
+                interfaces, repo_roots, _load_repo_target_shas(store, state.job_id)
+            )
         mappings = _load_json_array(store, state.job_id, "review_mapping.json", "mappings")
         # 测试点是用例设计的中间证据，而不是另一次不稳定的长 JSON 模型输出。
         # 结构（编号/溯源/场景）由程序按需求、接口映射及评审风险确定性派生，
-        # 拆分维度（case_split_hints）再由一次轻量模型调用按需求原文与接口字段补全：
-        # 通用模板 hints 会让用例退化成「每接口三类」的门禁下限，模型只凑数不展开。
+        # 测试点仅作可追溯的需求清单，不再按提示维度条数补产用例。
         testpoints = _derive_testpoints(requirements, interfaces, mappings)
 
         prompt = load_prompt(prompts_dir, NODE_NAME)
         # 以接口为分批边界：每批只携带相关需求与映射，避免用例 JSON 随接口数线性膨胀。
         valid: list[dict[str, Any]] = []
         retry_feedback: list[dict[str, Any]] = []
-        # 违规明细按「批次 × 轮次」留痕：两轮都收，既能看出模型第二轮改没改好，
-        # 也能在告警复现不出来时区分「模型输出漂移」与「代码路径不同」。
+        # 参数与 oracle 违规按「批次 × 轮次」留痕：两轮都收，便于区分
+        # 参数结构问题、源码预期不匹配及模型重试是否修复。
         param_violation_rounds: list[dict[str, Any]] = []
-        # Claim 测试点溯源缺口（接口, 未覆盖测试点数）：无论模型是否首轮输出
-        # testpoint_id，都尝试一次定向补产；仍缺则告警，不把模型漏溯源伪装成完整覆盖。
+        oracle_repair_count = 0
+        # 需求覆盖缺口仅统计，不用重复请求填补。
         coverage_gaps: list[tuple[str, int]] = []
-        # F-GEN-05 展开不足残余（testpoint_id, hints 数, 期望, 实际）：批内补产一次
-        # 后仍不足的测试点，节点末尾统一告警。
+        # 兼容检查点字段；不再计算维度条数配额。
         expansion_gaps: list[tuple[str, int, int, int]] = []
-        # 用例输出随接口数 × 三类场景增长。最多三个接口一批，避免模型只回答
-        # 批次首项而把其余接口静默漏掉。
-        interface_batches = _chunk_case_interfaces(interfaces)
+        # 只要求预期有证据；执行准备不限制设计。所有条件化 oracle 均交给模型，
+        # 缺少夹具的条目也必须生成，并由执行阶段重新检查环境条件。
+        executable_interface_ids = {
+            str(oracle.get("interface_id", "")) for oracle in model_oracles
+        }
+        executable_interfaces = [
+            interface for interface in interfaces
+            if str(interface.get("id", "")) in executable_interface_ids
+        ]
+        if not executable_interfaces and not test_oracles:
+            source_gap = next((
+                str(warning) for warning in review.get("test_oracle_warnings") or []
+                if isinstance(warning, str) and "异常响应映射缺口" in warning
+            ), "")
+            detail = f"；{source_gap}" if source_gap else "；请检查 review_mapping.json 的 test_oracle_warnings"
+            raise PipelineError(
+                code=X_ORCH_01,
+                message="Code Review 未形成任何源码可证的执行预期" + detail,
+                node_id=NODE_NAME,
+            )
+        interface_batches = _chunk_case_interfaces(executable_interfaces)
         # 实现片段（按 code_location 读源码）在构造批上下文时按需注入，不进指纹：
         # 它由仓库文件派生且只读本批接口，纳入指纹需要全量预读，收益不足。
-        repo_roots = _load_repo_roots(store, state.job_id)
         # 指纹只覆盖程序确定性的输入（不含模型补全的 hints）：拆分维度每次调用本就
         # 不同，纳入指纹会让任何续跑都判定「输入已变更」而重头生成。
         checkpoint_fingerprint = _generation_fingerprint(
-            requirements, interfaces, mappings, testpoints
+            requirements, interfaces, mappings, testpoints, test_oracles
         )
         checkpoint = _load_generation_checkpoint(store, state.job_id, checkpoint_fingerprint)
-        # 续跑复用检查点中的 hints：拆分维度由模型生成、每次调用结果不同，重算会让
-        # 已生成批次与新批次基于不同依据，也多付一轮调用成本。
-        checkpoint_points = checkpoint.get("testpoints")
-        if isinstance(checkpoint_points, list) and checkpoint_points:
-            testpoints = [dict(item) for item in checkpoint_points if isinstance(item, dict)]
-        else:
-            testpoints = await _enrich_testpoint_hints(
-                llm, prompts_dir, testpoints, requirements, interfaces
-            )
+        # Model suggestions are advisory. Do not turn their count into mandatory
+        # requests or expand generic oracles to cover unrelated requirements.
         completed_batches = {
             int(str(item.get("index")))
             for item in checkpoint.get("batches", [])
             if isinstance(item, dict) and str(item.get("index", "")).isdigit()
         }
-        if checkpoint:
+        if checkpoint and interface_batches:
             for item in checkpoint.get("batches", []):
                 if not isinstance(item, dict) or not str(item.get("index", "")).isdigit():
                     continue
@@ -253,11 +295,28 @@ async def run_testcase_generate(
                 index,
                 len(interface_batches),
                 repo_roots,
+                model_oracles,
+                _load_repo_target_shas(store, state.job_id),
             )
+            batch_oracles = [
+                oracle for oracle in model_oracles
+                if str(oracle.get("interface_id", ""))
+                in {str(item.get("id", "")) for item in batch}
+            ]
             raw_cases = await _complete_cases_with_coverage_recovery(
-                llm, prompt, user_content, batch
+                llm, prompt, user_content, batch, batch_oracles
             )
-            batch_valid, violations = _filter_param_violations(raw_cases, batch)
+            batch_valid, violations = _filter_param_violations(raw_cases, batch, batch_oracles)
+            batch_valid, oracle_violations = _filter_oracle_violations(
+                batch_valid, batch, batch_oracles
+            )
+            oracle_repair_count += sum(
+                item.get("kind") == "oracle_repaired" for item in oracle_violations
+            )
+            oracle_violations = [
+                item for item in oracle_violations if item.get("kind") != "oracle_repaired"
+            ]
+            violations.extend(oracle_violations)
             if violations:
                 param_violation_rounds.append(
                     {"batch": index, "round": 1, "violations": violations}
@@ -270,7 +329,9 @@ async def run_testcase_generate(
                         "note": (
                             "以下用例的参数名或参数结构不符合接口定义。请仅使用接口定义的参数名；"
                             "unknown 的 body/query 容器必须填写具体 JSON 对象，"
-                            "不能使用语义标签或字符串占位符。"
+                            "不能使用语义标签或字符串占位符；源码注明枚举编码的字段"
+                            "必须使用列出的编码。所有 expected/assertions 还必须和 test_oracles"
+                            "中的 oracle_id、expected_status、assertions 及 preconditions 完全一致。"
                         ),
                     },
                     ensure_ascii=False,
@@ -284,62 +345,24 @@ async def run_testcase_generate(
                     # 不做覆盖硬门禁：覆盖缺口由下方 _synthesize_fallback_cases 确定性补齐，
                     # 不因重生成漏产而中断整批流程。
                 )
-                valid2, violations2 = _filter_param_violations(raw_cases2, batch)
+                valid2, violations2 = _filter_param_violations(raw_cases2, batch, batch_oracles)
+                valid2, oracle_violations2 = _filter_oracle_violations(
+                    valid2, batch, batch_oracles
+                )
+                oracle_repair_count += sum(
+                    item.get("kind") == "oracle_repaired" for item in oracle_violations2
+                )
+                oracle_violations2 = [
+                    item for item in oracle_violations2
+                    if item.get("kind") != "oracle_repaired"
+                ]
+                violations2.extend(oracle_violations2)
                 batch_valid = _merge_rounds(batch_valid, valid2)
                 # 空 violations2 也记：表示该批第二轮已修好（与被放弃的接口区分开）。
                 param_violation_rounds.append(
                     {"batch": index, "round": 2, "violations": violations2}
                 )
                 retry_feedback.extend(violations2)
-            # 参数校验可能过滤掉 LLM 生成但参数违规的用例，导致覆盖再次缺失。
-            # 这里用程序确定性兜底补齐，不再把覆盖缺口交回给不稳定的 LLM 重生成。
-            missing = _missing_categories(batch_valid, batch)
-            if missing:
-                batch_valid = _merge_case_entries(
-                    batch_valid, _synthesize_fallback_cases(missing)
-                )
-            # F-GEN-04/P0 溯源覆盖：即便模型首轮完全漏掉 testpoint_id，也定向补产一次；
-            # 兜底用例无法伪造 Claim 归属，仍有缺口时明确告警，不宣称完整覆盖。
-            uncovered = _uncovered_req_testpoints(batch_valid, testpoints, batch)
-            if uncovered:
-                batch_valid = await _recover_uncovered_testpoints(
-                    llm, prompt, user_content, batch, batch_valid, uncovered
-                )
-                uncovered = _uncovered_req_testpoints(batch_valid, testpoints, batch)
-            if uncovered:
-                coverage_gaps.append(
-                    (
-                        ", ".join(sorted({str(b.get("id", "")) for b in batch})),
-                        len(uncovered),
-                    )
-                )
-            # F-GEN-05 展开充分性：与 F-GEN-04 同层做「先修再报」。检测必须在批内
-            # （补产机制按批携带 user_content），只对本批接口归属的测试点计量；
-            # 补产一次后仍不足的残余进 expansion_gaps，由节点末尾统一告警。
-            batch_point_ids = {
-                str(point.get("id", ""))
-                for point in testpoints
-                if str(point.get("interface_id", ""))
-                in {str(b.get("id", "")) for b in batch}
-            }
-            batch_points = [
-                point
-                for point in testpoints
-                if str(point.get("id", "")) in batch_point_ids
-            ]
-            underexpanded = _underexpanded_testpoints(batch_valid, batch_points)
-            if underexpanded:
-                batch_valid = await _recover_underexpanded_testpoints(
-                    llm,
-                    prompt,
-                    user_content,
-                    batch,
-                    batch_valid,
-                    underexpanded,
-                    {str(p.get("id", "")): p for p in batch_points},
-                )
-                underexpanded = _underexpanded_testpoints(batch_valid, batch_points)
-            expansion_gaps.extend(underexpanded)
             valid.extend(batch_valid)
             checkpoint_batches = [
                 item for item in checkpoint_batches if int(item.get("index", 0)) != index
@@ -361,6 +384,10 @@ async def run_testcase_generate(
             )
 
         warnings: list[str] = []
+        warnings.extend(
+            str(item) for item in review.get("test_oracle_warnings", []) if isinstance(item, str)
+        )
+        warnings.extend(oracle_input_warnings)
         unlinked_risk_points = [
             point
             for point in testpoints
@@ -384,15 +411,184 @@ async def run_testcase_generate(
         # X-GEN-02：二次仍违规的接口——整接口用例放弃（非部分保留）。
         # 告警必须带具体原因：只有接口号时，排查者无法区分是「清单外参数」「缺必填」
         # 还是「body 不是具体 JSON 对象」，只能写探针重新调模型反推。
-        abandoned = sorted({v["interface_id"] for v in retry_feedback})
+        abandoned = sorted({
+            v["interface_id"] for v in retry_feedback
+            if v.get("kind", "parameter") == "parameter"
+        })
+        oracle_retry_issues = [v for v in retry_feedback if v.get("kind") == "oracle"]
+        if oracle_retry_issues:
+            warnings.append(
+                f"P0-oracle: {len(oracle_retry_issues)} 条模型断言未通过源码契约校验；"
+                "不合规断言已移除，缺少可验证预期的场景不会进入执行清单。"
+            )
         for interface_id in abandoned:
-            detail = _summarize_violations(retry_feedback, interface_id)
+            detail = _summarize_violations(
+                [item for item in retry_feedback if item.get("kind", "parameter") == "parameter"],
+                interface_id,
+            )
             warnings.append(
                 f"X-GEN-02: 接口 {interface_id} 参数一致性连续 2 次不通过，"
-                f"该接口用例放弃（生成质量告警）：{detail}"
+                f"该接口本轮模型生成用例已隔离（生成质量告警）：{detail}"
             )
         if abandoned:
             valid = [c for c in valid if c["interface_id"] not in set(abandoned)]
+        # 覆盖检查点续跑/定向补产等旁路结果：最终落盘前再次绑定 oracle。
+        # 有 oracle 时以源码契约替换模型预期；无 oracle 的场景随后退出执行清单。
+        valid, final_oracle_results = _filter_oracle_violations(
+            valid, interfaces, test_oracles
+        )
+        oracle_repair_count += sum(
+            item.get("kind") == "oracle_repaired" for item in final_oracle_results
+        )
+        final_oracle_violations = [
+            item for item in final_oracle_results if item.get("kind") != "oracle_repaired"
+        ]
+        if oracle_repair_count:
+            warnings.append(
+                f"P0-oracle: {oracle_repair_count} 条模型断言或状态码与源码契约不一致；"
+                "已直接替换为 Code Review 验证过的预期。"
+            )
+        unverified_cases = [case for case in valid if case.get("oracle_status") != "verified"]
+        if unverified_cases:
+            by_interface: dict[str, int] = {}
+            for case in unverified_cases:
+                key = str(case.get("interface_id", ""))
+                by_interface[key] = by_interface.get(key, 0) + 1
+            valid = [case for case in valid if case.get("oracle_status") == "verified"]
+        # 数据库依赖的成功分支必须使用 Code Review 认可的记录计划。
+        # 保留模型拆分出的有效测试维度，但每条用例运行时单独造数并绑定真实 ID。
+        fixture_plans = {
+            str(oracle.get("oracle_id", "")): oracle["fixture_plan"]
+            for oracle in test_oracles
+            if isinstance(oracle.get("fixture_plan"), dict)
+        }
+        for case in valid:
+            plan = fixture_plans.get(str(case.get("oracle_id", "")))
+            if plan is not None:
+                case["fixture_plan"] = plan
+
+        if auto_record_fixtures:
+            interface_by_id = {str(item.get("id", "")): item for item in interfaces}
+            success_oracle_ids = {
+                str(oracle.get("oracle_id", ""))
+                for oracle in test_oracles
+                if oracle.get("category") == "normal"
+                and any(
+                    assertion.get("path") == "returnMsg"
+                    and assertion.get("op") == "equals"
+                    and assertion.get("value") in {"新增成功", "更新成功", "删除成功"}
+                    for assertion in oracle.get("assertions", [])
+                )
+            }
+            unisolated = [
+                case for case in valid
+                if str(case.get("oracle_id", "")) in success_oracle_ids
+                and str((interface_by_id.get(str(case.get("interface_id", "")), {}).get("signature") or {}).get("path", ""))
+                .rsplit("/", 1)[-1] in {"add", "update", "delete"}
+                and not isinstance(case.get("fixture_plan"), dict)
+            ]
+            if unisolated:
+                warnings.append(
+                    "P0-fixture: 自动造数已启用，但 Code Review 未提供可核验的造数/清理计划；"
+                    "相关新增、更新或删除成功用例已保留设计，待准备测试记录后执行："
+                    + ", ".join(sorted({str(case.get("interface_id", "")) for case in unisolated}))
+                )
+                for case in unisolated:
+                    case["execution_blockers"] = list(case.get("execution_blockers") or []) + [
+                        "待准备源码认可的测试记录与清理计划"
+                    ]
+                    case["execution_readiness"] = "blocked"
+
+        fixture_oracles = [oracle for oracle in test_oracles if oracle.get("fixture_plan")]
+        for oracle in fixture_oracles:
+            oracle_id = str(oracle.get("oracle_id", ""))
+            if any(str(case.get("oracle_id", "")) == oracle_id for case in valid):
+                continue
+            plan = oracle["fixture_plan"]
+            valid.append({
+                "interface_id": oracle["interface_id"],
+                "category": oracle["category"],
+                "title": oracle["scenario"],
+                "params": {"request": dict(plan["target_body"])},
+                "expected": oracle["expected_status"],
+                "assertions": oracle["assertions"],
+                "oracle_id": oracle_id,
+                "oracle_status": "verified",
+                "oracle_evidence_refs": oracle["evidence_refs"],
+                "fixture_plan": plan,
+            })
+        # Runtime observations are already tied to source-validated inputs and stable
+        # responses. Recreate those exact requests deterministically so a malformed or
+        # omitted LLM case cannot discard a verified executable contract.
+        runtime_cases, runtime_case_warnings = _synthesize_runtime_observation_cases(
+            test_oracles,
+            interfaces,
+            review.get("evidence_catalog") or [],
+        )
+        runtime_cases, runtime_param_violations = _filter_param_violations(
+            runtime_cases, interfaces, test_oracles
+        )
+        runtime_cases, runtime_oracle_results = _filter_oracle_violations(
+            runtime_cases, interfaces, test_oracles
+        )
+        runtime_rejected = runtime_param_violations + [
+            item for item in runtime_oracle_results
+            if item.get("kind") != "oracle_repaired"
+        ]
+        if runtime_rejected:
+            warnings.append(
+                "P0-oracle: 运行实测请求未能转换为可执行用例："
+                + "; ".join(
+                    f"{item.get('interface_id', '')} {item.get('message', '')}"
+                    for item in runtime_rejected
+                )
+            )
+        warnings.extend(runtime_case_warnings)
+        valid = _merge_rounds(valid, runtime_cases)
+        covered_oracle_ids = {str(case.get("oracle_id", "")) for case in valid}
+        missing_oracles = [oracle for oracle in test_oracles
+                           if str(oracle.get("oracle_id", "")) not in covered_oracle_ids]
+        for oracle in missing_oracles:
+            interface = next(item for item in interfaces if item["id"] == oracle["interface_id"])
+            content = _build_batch_context(
+                [interface], requirements, mappings, testpoints, auth, 1, 1,
+                repo_roots, [oracle], _load_repo_target_shas(store, state.job_id),
+            ) + "\n仅补齐这一个 oracle 的测试设计。执行环境尚未准备不能成为省略用例的理由。"
+
+            def parse_missing(response: str) -> list[dict[str, Any]]:
+                additions = _parse_llm_cases(response, [interface])
+                additions, parameter_issues = _filter_param_violations(additions, [interface], [oracle])
+                additions, oracle_issues = _filter_oracle_violations(additions, [interface], [oracle])
+                additions = [case for case in additions if case.get("oracle_status") == "verified"]
+                if not additions:
+                    raise PipelineError(code=X_LLM_02, node_id=NODE_NAME,
+                                        message="漏产场景未补齐有效请求：" + str(parameter_issues + oracle_issues))
+                return additions
+
+            try:
+                recovered = await complete_with_json_repair(llm, NODE_NAME, prompt, content, parse_missing)
+                valid = _merge_rounds(valid, recovered)
+            except PipelineError as exc:
+                # Do not convert a transport outage into a successful partial design.
+                if exc.code != X_LLM_02:
+                    raise
+                warnings.append(f"P0-oracle: {oracle['interface_id']} {oracle['scenario']} 待补齐有效请求；已保留条件及预期：{exc.message}")
+                valid.append({
+                    "interface_id": oracle["interface_id"], "category": oracle["category"],
+                    "title": oracle["scenario"], "params": {},
+                    "expected": oracle["expected_status"], "assertions": oracle["assertions"],
+                    "oracle_id": oracle["oracle_id"], "oracle_status": "verified",
+                    "oracle_evidence_refs": oracle["evidence_refs"],
+                    "oracle_scenario": oracle["scenario"],
+                    "oracle_control_kinds": list(oracle.get("control_kinds") or []),
+                    "request_conditions": oracle.get("preconditions") or [],
+                    "state_conditions": oracle.get("state_conditions") or [],
+                    **({"expected_behavior": oracle["expected_behavior"]} if oracle.get("expected_behavior") else {}),
+                    "execution_readiness": "blocked",
+                    "execution_blockers": execution_blockers(oracle) + ["有效 HTTP 请求尚未补齐，禁止发送占位请求"],
+                })
+        valid = _merge_rounds([], valid)
+        expansion_gaps = []
         # 明细落盘放在 raise 之前：失败路径反而最需要它，而检查点会被成功路径清除，
         # 只在检查点里留明细等于「成功时被删、失败时才可能看到」。
         _save_param_violations(store, state.job_id, param_violation_rounds, abandoned)
@@ -408,11 +604,37 @@ async def run_testcase_generate(
         cases, any_unloadable = _finalize_cases(
             valid, state.job_id, store, interfaces, testpoints
         )
+        bound_oracle_ids, missing_request_ids = oracle_request_bindings(test_oracles, cases)
+        if unverified_cases:
+            discarded_note = (
+                f"{len(unverified_cases)} 条候选未绑定适用预期，已剔除（"
+                + ", ".join(f"{key} {count} 条" for key, count in sorted(by_interface.items()))
+                + "）"
+            )
+            if missing_request_ids:
+                warnings.append(
+                    f"P0-oracle: {discarded_note}；定向补产后仍有 {len(missing_request_ids)} 个源码场景"
+                    "待补有效请求：" + ", ".join(sorted(missing_request_ids))
+                )
+            else:
+                warnings.append(
+                    f"生成修复：{discarded_note}；最终 {len(bound_oracle_ids)}/{len(test_oracles)} 个源码场景"
+                    "均已绑定有效请求设计。执行条件另行统计。"
+                )
+        remaining_uncovered = _uncovered_req_testpoints(cases, testpoints, interfaces)
+        if remaining_uncovered:
+            claim_count = len({str(point["claim_id"]) for point in remaining_uncovered if point.get("claim_id")})
+            warnings.append(
+                f"P0-oracle/F-GEN-04: {len(remaining_uncovered)} 个接口维度的需求测试点"
+                f"（涉及 {claim_count} 条需求声明）尚未绑定可核验的业务断言及用例关联；"
+                "需按 Claim 补查源码行为、业务预期和关联，不按测试点数量凑请求。设计覆盖与实际执行覆盖分别统计。"
+            )
         points_by_id = {str(point.get("id", "")): point for point in testpoints}
         status_only_claim_cases = [
             case
             for case in cases
             if case.get("category") == "normal"
+            and case.get("oracle_status") != "unverified"
             and points_by_id.get(str(case.get("testpoint_id", "")), {}).get("source") == "REQ"
             and not case.get("assertions")
             and not legacy_response_assertions(str(case.get("expected", "")))
@@ -422,47 +644,22 @@ async def run_testcase_generate(
                 f"P0-assertion: {len(status_only_claim_cases)} 条需求主流程接口用例没有可执行的响应字段断言，"
                 "当前只能判定 HTTP 状态；需补充字段级 assertions 后才能作为业务结果通过。"
             )
-        # F-GEN-05 展开不足：批内已做过一次定向补产（与 F-GEN-04 对称），这里只
-        # 告警补产后仍不足的残余。不在合并结果上重新检测——跨批接口归属不同，
-        # 重测会把批内已补齐的点按全局口径重复计量。
-        if expansion_gaps:
-            detail = "; ".join(
-                f"{tid}（{hint_count}维度→期望≥{expected}，实际{actual}）"
-                for tid, hint_count, expected, actual in expansion_gaps
-            )
-            warnings.append(
-                f"F-GEN-05: {len(expansion_gaps)} 个需求测试点挂了多条拆分维度却展开不足"
-                f"（已按维度清单定向补产一次仍未达标）："
-                f"{detail}。请人工确认是维度冗余还是漏展开。"
-            )
         e2e_cases: list[dict[str, Any]] = []
         if e2e and bool(e2e.get("generate_cases")):
             # E2E 是可选产物：接口用例已在上方定型，探测或生成失败一律降级为告警，
             # 不让它把本节点打成失败并连带打断下游（曾因一条坏用例导致 4 节点降级）。
             try:
-                surface = await _inspect_e2e_surface(
-                    str(e2e.get("base_url", "")),
-                    bool(e2e.get("insecure_tls", True)),
-                    auth,
-                    ProbeOptions.from_config(e2e),
-                )
-                # 深层探测的降级原因（登录失败/未发现新路由）如实上报，便于定位 E2E 覆盖不足
-                warnings.extend(surface.get("warnings", []))
-                if surface["routes"]:
-                    e2e_cases, e2e_warnings = await _generate_e2e_cases(
-                        llm,
-                        prompts_dir,
-                        requirements,
-                        testpoints,
-                        surface,
-                        auth_mode=str(e2e.get("auth_mode", "browser")),
-                    )
-                    warnings.extend(e2e_warnings)
-                else:
-                    warnings.append("X-E2E-01: 未探测到可操作的前端页面，跳过 E2E 用例生成")
-            except PipelineError as exc:
-                logger.warning("E2E 用例生成失败，跳过（不影响接口用例）：%s", exc.message)
-                warnings.append(f"X-E2E-02: E2E 用例生成失败已跳过（{exc.code}）：{exc.message}")
+                from executor.e2e.service import generate_job
+                from executor.nodes.auto_execute import login_for_headers
+                e2e_headers = await login_for_headers(auth) if auth and e2e.get("auth_mode") == "reuse" else None
+                design = await generate_job(store, state.job_id, llm, prompts_dir, e2e, auth, e2e_headers)
+                e2e_cases = design.get("cases", [])
+                if design.get("status") != "completed":
+                    warnings.append(f"E2E 设计尚有缺口：{len(design.get('gaps', []))} 项，详见独立设计清单；已保留有效业务用例")
+            except Exception as exc:
+                message = exc.message if isinstance(exc, PipelineError) else str(exc)
+                logger.warning("E2E 用例生成失败，跳过（不影响接口用例）：%s", message)
+                warnings.append(f"X-E2E-02: E2E 用例生成未完成：{message}；独立工作台保留设计进度")
         if any_unloadable:
             warnings.append("R-GEN-03: 存在不可加载脚本（loadable=false），详见用例清单")
 
@@ -506,18 +703,449 @@ def _generation_fingerprint(
     interfaces: list[dict[str, Any]],
     mappings: list[dict[str, Any]],
     testpoints: list[dict[str, Any]],
+    test_oracles: list[dict[str, Any]] | None = None,
 ) -> str:
     """为批次检查点生成输入指纹，防止需求或接口变更时复用旧用例。"""
     payload = {
         # 变更测试点溯源契约时使旧未完成检查点失效，避免续跑复用无 Claim 关联的用例。
-        "contract_version": "claim-trace-v2",
+        "contract_version": "source-oracle-v6-source-bound-boundary",
         "requirements": requirements,
         "interfaces": interfaces,
         "mappings": mappings,
         "testpoints": testpoints,
+        "test_oracles": test_oracles or [],
     }
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _validated_review_test_oracles(
+    review: dict[str, Any], interfaces: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """二次核对 Review 契约的证据、接口归属和输入路径后再交给生成模型。"""
+    raw_oracles = review.get("test_oracles")
+    if raw_oracles is None:
+        return [], [
+            "review_mapping 缺少 test_oracles；请从 Code Review 重跑以取得源码预期"
+        ]
+    if not isinstance(raw_oracles, list):
+        return [], ["review_mapping.test_oracles 结构不合法，请在 Code Review 修复"]
+    interface_by_id = {
+        str(item.get("id", "")): item for item in interfaces if item.get("id")
+    }
+    evidence_by_id = {
+        str(item.get("evidence_id", "")): item
+        for item in (review.get("evidence_catalog") or [])
+        if isinstance(item, dict) and item.get("evidence_id")
+    }
+    valid: list[dict[str, Any]] = []
+    rejected = 0
+    rejected_dto_binding = 0
+    rejected_unreachable = 0
+    for raw in raw_oracles:
+        if not isinstance(raw, dict):
+            rejected += 1
+            continue
+        oracle = dict(raw)
+        interface_id = str(oracle.get("interface_id", ""))
+        interface = interface_by_id.get(interface_id)
+        refs = oracle.get("evidence_refs")
+        if (
+            not interface
+            or not re.fullmatch(r"ORC-IF-[A-Z]+-\d{3}-\d{3}", str(oracle.get("oracle_id", "")))
+            or oracle.get("category") not in _VALID_CATEGORIES
+            or not re.fullmatch(r"(?:status=[1-5]\d{2}|status_class=[1-5]xx|unresolved)", str(oracle.get("expected_status", "")))
+            or not isinstance(refs, list)
+            or not refs
+            or any(
+                not isinstance(ref, str)
+                or ref not in evidence_by_id
+                or interface_id not in (evidence_by_id[ref].get("interface_ids") or [])
+                for ref in refs
+            )
+        ):
+            rejected += 1
+            continue
+        try:
+            oracle["preconditions"] = normalize_response_assertions(oracle.get("preconditions"), label="preconditions")
+            oracle["assertions"] = normalize_response_assertions(oracle.get("assertions"))
+        except ValueError:
+            rejected += 1
+            continue
+        raw_quotes = oracle.get("evidence_quotes")
+        if not isinstance(raw_quotes, list):
+            rejected += 1
+            continue
+        required_targets = {"expected_status"}
+        if oracle.get("expected_behavior"):
+            required_targets.add("expected_behavior")
+        if isinstance(oracle.get("state_conditions"), list):
+            required_targets.update(f"state_conditions[{index}]" for index in range(len(oracle["state_conditions"])))
+        if oracle.get("branch_id"):
+            required_targets.add("branch")
+        required_targets.update(
+            f"preconditions[{index}]" for index in range(len(oracle["preconditions"]))
+        )
+        required_targets.update(
+            f"assertions[{index}]" for index in range(len(oracle["assertions"]))
+        )
+        quoted_targets: set[str] = set()
+        quotes_valid = True
+        for quote in raw_quotes:
+            if not isinstance(quote, dict):
+                quotes_valid = False
+                break
+            target = str(quote.get("target", ""))
+            ref = str(quote.get("evidence_ref", ""))
+            source = evidence_by_id.get(ref)
+            quoted_text = str(quote.get("quote", ""))
+            if (
+                target not in required_targets
+                or ref not in refs
+                or not source
+                or interface_id not in (source.get("interface_ids") or [])
+                or not quoted_text
+                or quoted_text not in str(source.get("excerpt", ""))
+            ):
+                quotes_valid = False
+                break
+            quoted_targets.add(target)
+        if not quotes_valid or not required_targets.issubset(quoted_targets):
+            rejected += 1
+            continue
+        parameter_names = {
+            str(param.get("name", ""))
+            for param in interface.get("params", [])
+            if isinstance(param, dict) and param.get("name")
+        }
+        if any(
+            str(condition.get("path", "")).split(".", 1)[0].split("[", 1)[0]
+            not in parameter_names
+            for condition in oracle["preconditions"]
+        ):
+            rejected += 1
+            continue
+        if dto_validation_oracle_issue(oracle, interface, evidence_by_id):
+            rejected += 1
+            rejected_dto_binding += 1
+            continue
+        if dto_precondition_reachability_issue(
+            oracle, interface, list(evidence_by_id.values())
+        ):
+            rejected += 1
+            rejected_unreachable += 1
+            continue
+        try:
+            behavior = normalize_expected_behavior(oracle.get("expected_behavior"), evidence_by_id, interface_id, refs)
+            if oracle.get("expected_status") == "unresolved" and behavior is None:
+                raise ValueError("缺少本接口处理行为证据")
+            if behavior:
+                oracle["expected_behavior"] = behavior
+            oracle["state_conditions"] = normalize_state_conditions(
+                oracle.get("state_conditions"), evidence_by_id, interface_id, refs,
+            )
+        except ValueError:
+            rejected += 1
+            continue
+        oracle["control_kinds"] = sorted(
+            set(oracle.get("control_kinds") or []) | required_control_kinds(oracle)
+        )
+        plan = oracle.get("fixture_plan")
+        if plan is not None and not _valid_record_fixture_plan(
+            plan, interface_id, interface_by_id, evidence_by_id
+        ):
+            rejected += 1
+            continue
+        if any(evidence_by_id[ref].get("category") == "runtime_observation" for ref in refs):
+            observed_cases, _ = _synthesize_runtime_observation_cases(
+                [oracle], interfaces, list(evidence_by_id.values())
+            )
+            if len(observed_cases) != 1:
+                rejected += 1
+                continue
+            # 运行观测只证明这一份精确输入，不授权模型扩展其它参数，
+            # 也不自动证明它覆盖了某个需求/Claim。
+            oracle["observed_params"] = observed_cases[0]["params"]
+        oracle["assertion_scope"] = "framework_boundary" if oracle.get("oracle_basis") == "spring_required_body" else response_assertion_scope(oracle["assertions"])
+        oracle["execution_blockers"] = execution_blockers(oracle)
+        if oracle["execution_blockers"]:
+            oracle["execution_readiness"] = "blocked"
+        valid.append(oracle)
+    warnings = []
+    if rejected:
+        warnings.append(
+            f"{rejected} 条 Code Review oracle 未通过接口/证据/路径复核，已丢弃；相关场景不进入执行清单"
+        )
+    if rejected_dto_binding:
+        warnings.append(
+            f"其中 {rejected_dto_binding} 条 DTO 校验预期的字段与源码注解不匹配，已丢弃；请从 Code Review 重跑"
+        )
+    if rejected_unreachable:
+        warnings.append(
+            f"其中 {rejected_unreachable} 条场景违反请求 DTO 源码校验约束，目标 Controller/Service 分支不可达，已丢弃"
+        )
+    return valid, warnings
+
+
+def _synthesize_runtime_observation_cases(
+    test_oracles: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+    evidence_catalog: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Restore executable cases from source-validated, repeatable HTTP observations."""
+    interface_by_id = {
+        str(item.get("id", "")): item for item in interfaces if item.get("id")
+    }
+    evidence_by_id = {
+        str(item.get("evidence_id", "")): item
+        for item in evidence_catalog
+        if isinstance(item, dict) and item.get("evidence_id")
+    }
+    cases: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for oracle in test_oracles:
+        runtime_evidence = [
+            evidence_by_id.get(str(ref))
+            for ref in oracle.get("evidence_refs", [])
+            if isinstance(ref, str)
+        ]
+        runtime_evidence = [
+            item for item in runtime_evidence
+            if isinstance(item, dict)
+            and item.get("category") == "runtime_observation"
+            and item.get("role") == "runtime_contract"
+        ]
+        if not runtime_evidence:
+            continue
+        interface_id = str(oracle.get("interface_id", ""))
+        interface = interface_by_id.get(interface_id)
+        if not interface:
+            continue
+        restored = False
+        for evidence in runtime_evidence:
+            if not isinstance(evidence, dict):
+                continue
+            observation = _parse_runtime_observation(str(evidence.get("excerpt", "")))
+            if observation is None:
+                continue
+            if not _runtime_status_matches(
+                int(observation["status"]), str(oracle.get("expected_status", ""))
+            ):
+                continue
+            response_outcomes = evaluate_response_assertions(
+                observation["response"], oracle.get("assertions", []), _runtime_observation_params(interface, observation)
+            )
+            if not response_outcomes or any(
+                outcome.get("passed") is not True for outcome in response_outcomes
+            ):
+                continue
+            params = _runtime_observation_params(interface, observation)
+            if params is None:
+                continue
+            precondition_outcomes = evaluate_response_assertions(
+                params, oracle.get("preconditions", [])
+            )
+            if any(outcome.get("passed") is not True for outcome in precondition_outcomes):
+                continue
+            cases.append({
+                "interface_id": interface_id,
+                "category": str(oracle["category"]),
+                "title": str(oracle.get("scenario", "运行实测场景")),
+                "params": params,
+                "expected": str(oracle["expected_status"]),
+                "assertions": list(oracle.get("assertions") or []),
+                "oracle_id": str(oracle["oracle_id"]),
+                "oracle_status": "verified",
+                "oracle_evidence_refs": list(oracle.get("evidence_refs") or []),
+            })
+            restored = True
+            break
+        if not restored:
+            warnings.append(
+                f"运行实测 oracle {interface_id} {oracle.get('scenario', '')} "
+                "未能从证据还原为符合接口定义且满足前置条件的 HTTP 请求"
+            )
+    return cases, warnings
+
+
+def _parse_runtime_observation(excerpt: str) -> dict[str, Any] | None:
+    """Parse only the bounded evidence format written by the runtime probe."""
+    request_line = next(
+        (line for line in excerpt.splitlines() if line.startswith("请求：")), None
+    )
+    request_json_line = next(
+        (line for line in excerpt.splitlines() if line.startswith("请求 JSON：")), None
+    )
+    response_json_line = next(
+        (line for line in excerpt.splitlines() if line.startswith("响应 JSON：")), None
+    )
+    status_line = next(
+        (line for line in excerpt.splitlines() if line.startswith("HTTP status=")), None
+    )
+    content_type_line = next(
+        (line for line in excerpt.splitlines() if line.lower().startswith("content-type:")), None
+    )
+    repeat_line = next(
+        (line for line in excerpt.splitlines() if line.startswith("重复观测次数：")), None
+    )
+    if (request_line is None or request_json_line is None or response_json_line is None
+            or status_line is None or content_type_line is None or repeat_line is None):
+        return None
+    request_match = re.fullmatch(r"请求：([A-Z]+)\s+(\S+)", request_line)
+    status_match = re.fullmatch(r"HTTP status=(\d{3})", status_line)
+    repeat_match = re.fullmatch(r"重复观测次数：(\d+)", repeat_line)
+    content_type = content_type_line.partition(":")[2].strip()
+    if (
+        not request_match
+        or not status_match
+        or not repeat_match
+        or int(repeat_match.group(1)) < 2
+        or not content_type.lower().startswith("application/json")
+    ):
+        return None
+    try:
+        request_body = json.loads(request_json_line.partition("：")[2])
+        response_body = json.loads(response_json_line.partition("：")[2])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(request_body, dict) or not isinstance(response_body, dict):
+        return None
+    return {
+        "method": request_match.group(1),
+        "target": request_match.group(2),
+        "request": request_body,
+        "status": int(status_match.group(1)),
+        "response": response_body,
+    }
+
+
+def _runtime_status_matches(status: int, expected: str) -> bool:
+    if expected.startswith("status="):
+        return expected.removeprefix("status=") == str(status)
+    if expected.startswith("status_class=") and expected.endswith("xx"):
+        return expected.removeprefix("status_class=")[0] == str(status)[0]
+    return False
+
+
+def _runtime_observation_params(
+    interface: dict[str, Any], observation: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Map an observed route/query/body to the interface's declared parameter names."""
+    signature = interface.get("signature")
+    if not isinstance(signature, dict):
+        return None
+    if str(signature.get("method", "")).upper() != str(observation.get("method", "")).upper():
+        return None
+    template = urlparse(str(signature.get("path", "")))
+    observed = urlparse(str(observation.get("target", "")))
+    route_parts = re.split(r"(\{[^{}]+\})", template.path)
+    group_names: dict[str, str] = {}
+    pattern_parts: list[str] = []
+    for part in route_parts:
+        placeholder = re.fullmatch(r"\{([^{}]+)\}", part)
+        if placeholder:
+            group = f"path_{len(group_names)}"
+            group_names[placeholder.group(1)] = group
+            pattern_parts.append(f"(?P<{group}>[^/]+)")
+        else:
+            pattern_parts.append(re.escape(part))
+    path_match = re.fullmatch("".join(pattern_parts), observed.path)
+    if not path_match:
+        return None
+    observed_path_values = {
+        name: unquote(path_match.group(group)) for name, group in group_names.items()
+    }
+    query_pairs = parse_qsl(observed.query, keep_blank_values=True)
+    query_values: dict[str, str] = {}
+    for name, value in query_pairs:
+        if name in query_values:
+            return None
+        query_values[name] = value
+    definitions = [
+        item for item in interface.get("params", []) if isinstance(item, dict)
+    ]
+    body_definitions = [item for item in definitions if item.get("in") == "body"]
+    query_names = {
+        str(item.get("name", "")) for item in definitions if item.get("in") == "query"
+    }
+    if not set(query_values).issubset(query_names):
+        return None
+    if observation.get("request") is not None and len(body_definitions) != 1:
+        return None
+    params: dict[str, Any] = {}
+    for definition in definitions:
+        name = str(definition.get("name", ""))
+        if not name:
+            continue
+        location = str(definition.get("in", ""))
+        if location == "body":
+            params[name] = observation["request"]
+        elif location == "query" and name in query_values:
+            params[name] = query_values[name]
+        elif location == "path" and name in observed_path_values:
+            params[name] = observed_path_values[name]
+        elif definition.get("required") is True and not is_runtime_injected_param(definition):
+            return None
+    return params
+
+
+def _valid_record_fixture_plan(
+    plan: Any, target_id: str, interfaces: dict[str, dict[str, Any]],
+    evidence: dict[str, dict[str, Any]],
+) -> bool:
+    if not isinstance(plan, dict) or plan.get("kind") != "create_query_soft_delete":
+        return False
+    if plan.get("cleanup_mode") != "soft_delete" or plan.get("id_field") not in {"id", "ids"}:
+        return False
+    target = interfaces.get(target_id, {})
+    target_path = str((target.get("signature") or {}).get("path", ""))
+    if not re.fullmatch(r"/[^/]+/(?:add|update|delete)", target_path):
+        return False
+    target_action = target_path.rsplit("/", 1)[-1]
+    if target_action == "update" and plan["id_field"] != "id":
+        return False
+    if target_action == "delete" and plan["id_field"] != "ids":
+        return False
+    if target_action == "add" and (
+        plan["id_field"] != "id"
+        or str(plan.get("add_interface_id")) != target_id
+    ):
+        return False
+    prefix = target_path.rsplit("/", 1)[0]
+    target_repo = str((target.get("code_location") or {}).get("repo", ""))
+    for action in ("add", "query", "delete"):
+        item = interfaces.get(str(plan.get(f"{action}_interface_id", "")))
+        if not item or (item.get("signature") or {}).get("path") != f"{prefix}/{action}":
+            return False
+        if not target_repo or str((item.get("code_location") or {}).get("repo", "")) != target_repo:
+            return False
+        if str((item.get("signature") or {}).get("method", "")).upper() != "POST":
+            return False
+    refs = plan.get("source_refs")
+    relevant_ids = {target_id} | {
+        str(plan[f"{action}_interface_id"]) for action in ("add", "query", "delete")
+    }
+    if (not isinstance(refs, list) or len(refs) < 6
+            or any(ref not in evidence or not relevant_ids.intersection(
+                evidence[ref].get("interface_ids") or []) for ref in refs)):
+        return False
+    add_body, query_body, target_body = (plan.get(key) for key in
+                                         ("add_body", "query_body", "target_body"))
+    if (not isinstance(add_body, dict) or not isinstance(query_body, dict)
+            or not isinstance(target_body, dict)):
+        return False
+    marker_field = plan.get("marker_field")
+    if marker_field not in add_body or add_body[marker_field] != "__AUTOTEST_MARKER__":
+        return False
+    placeholder = "__AUTOTEST_RECORD_ID__"
+    if target_action == "add":
+        if target_body.get(marker_field) != "__AUTOTEST_MARKER__":
+            return False
+    elif target_body.get(plan["id_field"]) != (
+        placeholder if plan["id_field"] == "id" else [placeholder]
+    ):
+        return False
+    return True
 
 
 def _load_generation_checkpoint(
@@ -587,18 +1215,19 @@ def _save_param_violations(
     rounds: list[dict[str, Any]],
     abandoned: list[str],
 ) -> None:
-    """原子写参数一致性违规明细（内部排查文件，不进产物契约与节点完成判据）。
+    """原子写参数与 oracle 一致性违规明细（内部排查文件，不进产物契约与节点完成判据）。
 
     无任何违规时不留文件——「文件不存在」本身就是「本节点无参数违规」的明确信号，
     不给每个 job 增加一个空文件。写入失败只告警：告警文本里已带原因，此处是补充。
     """
     if not rounds:
+        (store.job_dir(job_id) / _VIOLATIONS_FILENAME).unlink(missing_ok=True)
         return
     payload = {
         "schema_version": "1.0",
         "job_id": job_id,
         "note": (
-            "内部排查文件（非产物契约）：参数一致性校验（R-GEN-02）的违规明细。"
+            "内部排查文件（非产物契约）：参数结构（R-GEN-02）和源码 oracle（R-GEN-05）校验违规明细。"
             "testcases.json 的 X-GEN-02 告警只给接口号，具体原因看这里的 message；"
             "params 是归一化后（含程序补的默认值）的实际入参快照。"
         ),
@@ -651,18 +1280,299 @@ def _load_repo_roots(store: ArtifactStore, job_id: str) -> dict[str, Path]:
         logger.warning("读取 code_inventory.json 失败，本批不注入实现片段：%s", exc)
         return {}
     roots: dict[str, Path] = {}
+    try:
+        change_set = store.read_json(job_id, "change_set.json")
+    except (FileNotFoundError, PipelineError):
+        change_set = {}
+    snapshot_roots = {
+        str(repo.get("name", "")): str(repo.get("source_path", ""))
+        for repo in change_set.get("repositories", [])
+        if isinstance(repo, dict) and repo.get("name") and repo.get("source_path")
+    }
     for repo in inventory.get("repositories") or []:
         if not isinstance(repo, dict):
             continue
         name = str(repo.get("name", ""))
-        raw_path = str(repo.get("path", ""))
+        # 接口行号来自 target 快照。优先读接口还原阶段实际解析的同一份快照，
+        # 避免工作区已切分支/有未提交改动时按旧行号取到另一段实现。
+        raw_path = snapshot_roots.get(name) or str(repo.get("path", ""))
         if name and raw_path:
             roots[name] = Path(raw_path)
     return roots
 
 
+def _load_repo_target_shas(store: ArtifactStore, job_id: str) -> dict[str, str]:
+    try:
+        inventory = store.read_json(job_id, "code_inventory.json")
+    except (FileNotFoundError, PipelineError):
+        return {}
+    return {
+        str(repo["name"]): str(repo["target_sha"])
+        for repo in inventory.get("repositories") or []
+        if isinstance(repo, dict)
+        and repo.get("name")
+        and re.fullmatch(r"[0-9a-fA-F]{40}", str(repo.get("target_sha", "")))
+    }
+
+
+_FIELD_ANNOTATION_RE = re.compile(
+    r'@(?:ApiModelProperty|Schema)\s*\(\s*(?:(?:value|description)\s*=\s*)?("(?:\\.|[^"\\])*")'
+)
+
+
+def _enrich_field_descriptions(
+    interfaces: list[dict[str, Any]], repo_roots: dict[str, Path],
+    target_shas: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """从字段来源行读取注解值域，补回旧扫描产物丢失的编码说明。"""
+    enriched: list[dict[str, Any]] = []
+    source_cache: dict[tuple[Path, str, str], list[str] | None] = {}
+    for interface in interfaces:
+        entry = dict(interface)
+        repo = str((entry.get("code_location") or {}).get("repo", ""))
+        root = repo_roots.get(repo)
+        params: list[dict[str, Any]] = []
+        for raw_param in entry.get("params") or []:
+            if not isinstance(raw_param, dict):
+                continue
+            param = dict(raw_param)
+            fields: list[dict[str, Any]] = []
+            for raw_field in param.get("fields") or []:
+                if not isinstance(raw_field, dict):
+                    continue
+                field = dict(raw_field)
+                description = _field_annotation_description(
+                    field, root, (target_shas or {}).get(repo), source_cache
+                )
+                if description:
+                    field["description"] = description
+                    field["description_origin"] = "source"
+                fields.append(field)
+            if fields:
+                param["fields"] = fields
+            params.append(param)
+        if params:
+            entry["params"] = params
+        enriched.append(entry)
+    return enriched
+
+
+def _field_annotation_description(
+    field: dict[str, Any], root: Path | None, target_sha: str | None,
+    source_cache: dict[tuple[Path, str, str], list[str] | None],
+) -> str | None:
+    if root is None:
+        return None
+    name = str(field.get("name", ""))
+    for ref in field.get("source_refs") or []:
+        if not isinstance(ref, dict):
+            continue
+        relative = str(ref.get("file", ""))
+        try:
+            start_line = int(ref.get("line", 0))
+            end_line = int(ref.get("end_line", 0))
+            resolved_root = root.resolve()
+            path = (resolved_root / relative).resolve()
+        except (OSError, TypeError, ValueError):
+            continue
+        # 旧产物只有起始行，无法证明注解属于该字段；宁可保留原 DTO 描述，
+        # 也不再向后猜测固定行数并误取相邻字段。
+        if resolved_root not in path.parents or start_line < 1 or end_line < start_line:
+            continue
+        cache_key = (resolved_root, relative, target_sha or "")
+        if cache_key not in source_cache:
+            source_cache[cache_key] = _read_field_source(resolved_root, path, relative, target_sha)
+        lines = source_cache[cache_key]
+        if lines is None:
+            continue
+        if end_line > len(lines):
+            continue
+        declaration = lines[start_line - 1 : end_line]
+        if not re.search(rf"\b{re.escape(name)}\s*(?:=|;)", "\n".join(declaration)):
+            continue
+        for line in declaration:
+            match = _FIELD_ANNOTATION_RE.search(line)
+            if match:
+                try:
+                    return str(json.loads(match.group(1))).strip() or None
+                except json.JSONDecodeError:
+                    continue
+    return None
+
+
+def _read_field_source(
+    root: Path, path: Path, relative: str, target_sha: str | None
+) -> list[str] | None:
+    """优先读目标提交；已物化的无 .git 快照则直接读快照文件。"""
+    if target_sha and (root / ".git").exists():
+        git_path = shutil.which("git")
+        if git_path is None:
+            return None
+        try:
+            # 参数列表调用；SHA 已校验为 40 位十六进制，路径已限制在仓库根内。
+            result = subprocess.run(  # noqa: S603
+                [git_path, "-C", str(root), "show", f"{target_sha}:{relative}"],
+                capture_output=True, text=True, encoding="utf-8", timeout=5, check=False,
+            )
+        except (OSError, UnicodeDecodeError, subprocess.TimeoutExpired):
+            return None
+        return result.stdout.splitlines() if result.returncode == 0 else None
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _coded_choices(description: str) -> dict[str, str]:
+    """只识别注解中明确的两位编码及其展示名，不猜业务映射。"""
+    return documented_codes(description)[0]
+
+
+def _allowed_codes(description: str) -> set[str]:
+    return set(documented_codes(description)[1])
+
+
+def _apply_field_value_contracts(
+    interfaces: list[dict[str, Any]], contracts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """用 Code Review 已定稿的字段说明；生成阶段不再重新猜取值规则。"""
+    by_field = {
+        (str(item.get("interface_id")), str(item.get("parameter")), str(item.get("field"))): item
+        for item in contracts if isinstance(item, dict)
+    }
+    result: list[dict[str, Any]] = []
+    for interface in interfaces:
+        entry = dict(interface)
+        params: list[dict[str, Any]] = []
+        for raw_param in entry.get("params") or []:
+            if not isinstance(raw_param, dict):
+                continue
+            param = dict(raw_param)
+            fields: list[dict[str, Any]] = []
+            for raw_field in param.get("fields") or []:
+                if not isinstance(raw_field, dict):
+                    continue
+                field = dict(raw_field)
+                contract = by_field.get((
+                    str(entry.get("id")), str(param.get("name")), str(field.get("name"))
+                ))
+                if contract is not None:
+                    field["description"] = str(contract.get("description") or "")
+                    field["documented_values"] = contract.get("documented_values") or []
+                    field["example_codes"] = contract.get("example_codes") or []
+                    field["value_rule_status"] = contract.get("value_rule_status")
+                fields.append(field)
+            if fields:
+                param["fields"] = fields
+            params.append(param)
+        if params:
+            entry["params"] = params
+        result.append(entry)
+    return result
+
+
+def _field_choices(field: dict[str, Any]) -> dict[str, str]:
+    if "documented_values" in field:
+        return {
+            str(item["label"]): str(item["code"])
+            for item in field["documented_values"]
+            if isinstance(item, dict) and item.get("label") and item.get("code")
+        }
+    return _coded_choices(str(field.get("description", "")))
+
+
+def _field_allowed_codes(field: dict[str, Any]) -> set[str]:
+    if "documented_values" in field:
+        return {
+            str(item["code"])
+            for item in field["documented_values"]
+            if isinstance(item, dict) and item.get("code")
+        } | {str(code) for code in field.get("example_codes") or []}
+    return _allowed_codes(str(field.get("description", "")))
+
+
+def _normalize_coded_case_values(
+    case: dict[str, Any], interface: dict[str, Any]
+) -> dict[str, Any]:
+    """成功场景使用源码编码，避免把“一级投标”写入 VARCHAR2(2) 列。"""
+    if case.get("category") not in {"normal", "boundary"} or expected_client_error(
+        str(case.get("expected", ""))
+    ):
+        return case
+    params = case.get("params")
+    if not isinstance(params, dict):
+        return case
+    updated = dict(params)
+    changed = False
+    for param in interface.get("params") or []:
+        if not isinstance(param, dict) or param.get("in") != "body":
+            continue
+        name = str(param.get("name", ""))
+        payload = updated.get(name)
+        if not isinstance(payload, dict):
+            continue
+        body = dict(payload)
+        for field in param.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
+            field_name = str(field.get("name", ""))
+            value = body.get(field_name)
+            choices = _field_choices(field)
+            if isinstance(value, str):
+                code = choices.get(value.strip())
+                if code is not None:
+                    body[field_name] = code
+                    changed = True
+            elif isinstance(value, list):
+                coded = [
+                    choices.get(item.strip(), item) if isinstance(item, str) else item
+                    for item in value
+                ]
+                if coded != value:
+                    body[field_name] = coded
+                    changed = True
+        updated[name] = body
+    return {**case, "params": updated} if changed else case
+
+
+def _coded_value_issues(case: dict[str, Any], interface: dict[str, Any]) -> list[str]:
+    """正常/边界用例不能把源码枚举外的展示值当作合法输入。"""
+    if case.get("category") not in {"normal", "boundary"}:
+        return []
+    params = case.get("params")
+    if not isinstance(params, dict):
+        return []
+    issues: list[str] = []
+    for param in interface.get("params") or []:
+        if not isinstance(param, dict) or param.get("in") != "body":
+            continue
+        payload = params.get(str(param.get("name", "")))
+        if not isinstance(payload, dict):
+            continue
+        for field in param.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
+            allowed = _field_allowed_codes(field)
+            if not allowed:
+                continue
+            name = str(field.get("name", ""))
+            value = payload.get(name)
+            values = value if isinstance(value, list) else [value]
+            invalid = [
+                item for item in values
+                if isinstance(item, str) and item.strip() and item not in allowed
+            ]
+            if invalid:
+                codes = ", ".join(sorted(allowed))
+                issues.append(f"body.{name} 的正常用例须使用源码枚举编码（可用：{codes}）")
+    return issues
+
+
 def _implementation_excerpt(
-    interface: dict[str, Any], repo_roots: dict[str, Path]
+    interface: dict[str, Any], repo_roots: dict[str, Path],
+    target_shas: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """接口的「代码依据」：优先**本次实际改动的代码**，退化到整个方法体（#52）。
 
@@ -685,9 +1595,8 @@ def _implementation_excerpt(
     # 与 code_review 的证据采集同一防线：只读仓库根之内的文件
     if root not in path.parents or not path.is_file():
         return None
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError):
+    lines = _read_field_source(root, path, relative, (target_shas or {}).get(repo))
+    if lines is None:
         return None
     try:
         start = int(location.get("start_line", 0))
@@ -696,15 +1605,10 @@ def _implementation_excerpt(
         return None
     if start < 1 or start > len(lines):
         return None
-    end = min(max(raw_end, start), len(lines))
-    truncated = False
-    if end - start + 1 > _MAX_IMPLEMENTATION_LINES:
-        end = start + _MAX_IMPLEMENTATION_LINES - 1
-        truncated = True
+    if raw_end < start or raw_end > len(lines):
+        return None
+    end = raw_end
     excerpt = _SECRET_VALUE_RE.sub(r"\1\2<redacted>", "\n".join(lines[start - 1 : end]))
-    if len(excerpt) > _MAX_IMPLEMENTATION_CHARS:
-        excerpt = excerpt[:_MAX_IMPLEMENTATION_CHARS]
-        truncated = True
     if not excerpt.strip():
         return None
     return {
@@ -713,7 +1617,7 @@ def _implementation_excerpt(
         "start_line": start,
         "end_line": end,
         "excerpt": excerpt,
-        "truncated": truncated,
+        "truncated": False,
     }
 
 
@@ -721,11 +1625,13 @@ def _changed_excerpt(interface: dict[str, Any]) -> dict[str, Any] | None:
     """本次**实际改动**的代码片段（#52）：来自接口还原阶段的 target 版本只读快照。
 
     为什么不改写工作区文件取窗口：工作区与 target 提交可能不是同一版本，按行号取窗口会
-    取错行；片段本身已经是权威内容（行号与候选同版本），且已在 java-parser 侧做过
-    行数/字符上限。信息密度也更高——直接说明"这次改了哪几行语义"。
+    取错行；片段本身已经是权威内容（行号与候选同版本）。旧产物若已经截断，
+    回退读取目标版本完整方法，不把残缺变更片段传给模型。
     """
     evidence = interface.get("change_evidence")
     if not isinstance(evidence, dict):
+        return None
+    if evidence.get("truncated"):
         return None
     snippets = evidence.get("changed_snippets")
     if not isinstance(snippets, list):
@@ -734,7 +1640,6 @@ def _changed_excerpt(interface: dict[str, Any]) -> dict[str, Any] | None:
     files: list[str] = []
     first_line = 0
     last_line = 0
-    total = 0
     for item in snippets:
         if not isinstance(item, dict):
             continue
@@ -743,10 +1648,7 @@ def _changed_excerpt(interface: dict[str, Any]) -> dict[str, Any] | None:
             continue
         header = f"// {item.get('file')}:{item.get('start_line')}-{item.get('end_line')}"
         block = f"{header}\n{text.rstrip()}"
-        if total + len(block) > _MAX_IMPLEMENTATION_CHARS:
-            break
         parts.append(block)
-        total += len(block)
         files.append(str(item.get("file", "")))
         if not first_line:
             first_line = int(item.get("start_line") or 0)
@@ -762,7 +1664,7 @@ def _changed_excerpt(interface: dict[str, Any]) -> dict[str, Any] | None:
         "start_line": first_line,
         "end_line": last_line,
         "excerpt": excerpt,
-        "truncated": bool(evidence.get("truncated")),
+        "truncated": False,
     }
 
 
@@ -775,6 +1677,8 @@ def _build_batch_context(
     index: int,
     total: int,
     repo_roots: dict[str, Path] | None = None,
+    test_oracles: list[dict[str, Any]] | None = None,
+    target_shas: dict[str, str] | None = None,
 ) -> str:
     """构造一批用例生成上下文，只携带本批接口相关的需求。
 
@@ -825,7 +1729,7 @@ def _build_batch_context(
     interfaces_payload: list[dict[str, Any]] = []
     for interface in interfaces:
         entry = dict(interface)
-        excerpt = _implementation_excerpt(interface, repo_roots or {})
+        excerpt = _implementation_excerpt(interface, repo_roots or {}, target_shas)
         if excerpt is not None:
             entry["implementation"] = excerpt
         interfaces_payload.append(entry)
@@ -838,6 +1742,10 @@ def _build_batch_context(
         "mappings": batch_mappings,
         "testpoints": [
             point for point in testpoints if str(point.get("interface_id", "")) in interface_ids
+        ],
+        "test_oracles": [
+            oracle for oracle in (test_oracles or [])
+            if str(oracle.get("interface_id", "")) in interface_ids
         ],
     }
     if auth:
@@ -859,25 +1767,19 @@ def _chunk_case_interfaces(interfaces: list[dict[str, Any]]) -> list[list[dict[s
     return batches
 
 
-def _validate_batch_coverage(cases: list[dict[str, Any]], interfaces: list[dict[str, Any]]) -> None:
-    """F-GEN-01：每个当前批接口必须有 normal/boundary/exception 三类用例。
+def _validate_batch_coverage(
+    cases: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+    test_oracles: list[dict[str, Any]] | None = None,
+) -> None:
+    """只要求 Code Review 已证明的场景；旧调用沿用三类门禁。
 
     覆盖缺失进入 JSON 修复轮，而不是让节点带着“跳过并记录”的残缺产物完成。
     """
-    categories_by_interface: dict[str, set[str]] = {}
-    for case in cases:
-        interface_id = str(case.get("interface_id", ""))
-        categories_by_interface.setdefault(interface_id, set()).add(str(case.get("category", "")))
-    missing: list[str] = []
-    for interface in interfaces:
-        interface_id = str(interface.get("id", ""))
-        absent = [
-            category
-            for category in _VALID_CATEGORIES
-            if category not in categories_by_interface.get(interface_id, set())
-        ]
-        if absent:
-            missing.append(f"{interface_id}: {', '.join(absent)}")
+    missing = [
+        f"{interface.get('id', '')}: {', '.join(categories)}"
+        for interface, categories in _missing_categories(cases, interfaces, test_oracles)
+    ]
     if missing:
         raise PipelineError(
             code=X_LLM_02,
@@ -891,161 +1793,59 @@ async def _complete_cases_with_coverage_recovery(
     prompt: PromptSpec,
     user_content: str,
     interfaces: list[dict[str, Any]],
+    test_oracles: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """生成一批用例，并对漏产场景做定向补产。
-
-    模型经常先返回批次中第一个接口，通用 JSON 修复轮只能重复提醒，仍可能
-    静默漏掉后续接口。这里保留两轮通用修复；若输出本身可解析但覆盖不全，
-    再按接口/场景逐项补产，最后才允许批次通过。补产失败仍抛出原始校验错误，
-    不生成残缺 testcases.json。
-    """
-    first = await llm.complete(NODE_NAME, prompt, user_content)
-    first_cases: list[dict[str, Any]] | None = None
-    try:
-        cases = _parse_llm_cases(first.text, interfaces)
-        first_cases = cases
-        _validate_batch_coverage(cases, interfaces)
-        return cases
-    except PipelineError as first_error:
-        if first_error.code != X_LLM_02:
-            raise
-        repair_content = (
-            f"{user_content}\n\n"
-            "上一轮输出未通过机器校验。请仅输出 JSON，必须覆盖本批每一个接口，"
-            "且每个接口恰好包含 normal、boundary、exception 三类用例；"
-            "不得遗漏任何接口，不要解释或输出 Markdown。\n"
-            f"校验错误：{first_error.message}"
-        )
-        second = await llm.complete(NODE_NAME, prompt, repair_content)
-        try:
-            repaired = _parse_llm_cases(second.text, interfaces)
-            _validate_batch_coverage(repaired, interfaces)
-            return repaired
-        except PipelineError as second_error:
-            # 只有结构可解析时才进入按缺失项补产；若结构本身损坏，继续沿用
-            # 原有 X-LLM-02 口径，避免把不相关的模型输出拼进用例清单。
-            try:
-                second_cases = _parse_llm_cases(second.text, interfaces)
-            except PipelineError:
-                if _looks_like_cross_node_payload(second.text, interfaces):
-                    # MiniMax 偶尔把接口还原对象（常见特征是 recon_date）原样回显。
-                    # 这是节点串产物，不是普通 JSON 容器漂移；追加一次明确的节点隔离
-                    # 修复，避免把同一错误在通用修复轮里重复两次。
-                    shape_repair = (
-                        f"{user_content}\n\n"
-                        "上一次输出为空对象或错误地返回了其它节点产物，不是测试用例。"
-                        "当前节点只能输出测试用例 JSON：顶层必须只有 cases 数组；"
-                        "禁止输出 recon_date、interfaces、candidate_id、signature、code_location，"
-                        "也禁止把 pk、close_type 等请求参数提升到根对象；"
-                        "也不要解释或输出 Markdown。"
-                        "每个输入接口必须包含 normal、boundary、exception。"
-                    )
-                    third = await llm.complete(NODE_NAME, prompt, shape_repair)
-                    try:
-                        third_cases = _parse_llm_cases(third.text, interfaces)
-                        _validate_batch_coverage(third_cases, interfaces)
-                        return third_cases
-                    except PipelineError:
-                        pass
-                # 修复轮输出结构损坏：退回首轮用例 + 程序确定性兜底补齐覆盖，
-                # 不因模型输出漂移直接降级。
-                # 判据必须是 `is not None` 而非真值：首轮「能解析但零用例」时
-                # first_cases == []，用真值判定会把它当成「首轮结构损坏」而跳过兜底，
-                # 随后 raise second_error 让整个节点失败（线上实测 IF-REST-003 独占一批）。
-                if first_cases is not None:
-                    missing = _missing_categories(first_cases, interfaces)
-                    if missing:
-                        recovered = _merge_case_entries(
-                            first_cases, _synthesize_fallback_cases(missing)
-                        )
-                        try:
-                            _validate_batch_coverage(recovered, interfaces)
-                            return recovered
-                        except PipelineError:
-                            pass
-                raise second_error from first_error
-            merged = _merge_case_entries(first_cases or [], second_cases)
-            fallback_missing: list[tuple[dict[str, Any], list[str]]] = []
-            for interface, categories in _missing_categories(merged, interfaces):
-                targeted_content = (
-                    f"{user_content}\n\n"
-                    "这是漏产补充请求。只为下面指定的接口和场景输出 JSON，"
-                    "禁止输出其它接口、禁止输出其它类别：\n"
-                    f"接口：{json.dumps(interface, ensure_ascii=False)}\n"
-                    f"必须补齐场景：{', '.join(categories)}\n"
-                    '输出格式：{"cases":[{"interface_id":"...","category":"normal|boundary|exception",'
-                    '"title":"...","params":{},"expected":"status=..."}]}。'
-                )
-                targeted = await llm.complete(NODE_NAME, prompt, targeted_content)
-                try:
-                    additions = _parse_llm_cases(targeted.text, [interface])
-                    wanted = [
-                        case
-                        for case in additions
-                        if str(case.get("category", "")) in categories
-                    ]
-                    covered = {
-                        str(case.get("category", "")) for case in wanted
-                    } == set(categories)
-                except PipelineError:
-                    # 定向补产输出损坏/非法类别：同样交由程序确定性兜底，不因模型输出漂移降级
-                    wanted = []
-                    covered = False
-                if covered:
-                    merged = _merge_case_entries(merged, wanted)
-                else:
-                    # 定向补产仍缺：交由程序确定性兜底，不让模型不稳定性导致漏产降级
-                    fallback_missing.append((interface, categories))
-            if fallback_missing:
-                logger.info(
-                    "覆盖兜底：%d 个接口缺场景 %s",
-                    len(fallback_missing),
-                    [(str(i.get("id", "")), c) for i, c in fallback_missing],
-                )
-                merged = _merge_case_entries(
-                    merged, _synthesize_fallback_cases(fallback_missing)
-                )
-            try:
-                _validate_batch_coverage(merged, interfaces)
-            except PipelineError as exc:
-                logger.warning("兜底后仍漏产：%s", exc.message)
-                raise
-            return merged
+    """Generate source-backed designs; missing oracle requests recover individually."""
+    return await complete_with_json_repair(
+        llm, NODE_NAME, prompt, user_content,
+        partial(_parse_llm_cases, interfaces=interfaces),
+    )
 
 
 def _missing_categories(
-    cases: list[dict[str, Any]], interfaces: list[dict[str, Any]]
+    cases: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+    test_oracles: list[dict[str, Any]] | None = None,
 ) -> list[tuple[dict[str, Any], list[str]]]:
-    """返回每个接口仍缺少的场景，保持接口输入顺序。"""
+    """返回缺少的源码可证场景；历史调用保留三类覆盖口径。"""
     categories_by_interface: dict[str, set[str]] = {}
     for case in cases:
+        if test_oracles is not None and case.get("oracle_status") == "unverified":
+            continue
         categories_by_interface.setdefault(str(case.get("interface_id", "")), set()).add(
             str(case.get("category", ""))
         )
     result: list[tuple[dict[str, Any], list[str]]] = []
     for interface in interfaces:
         interface_id = str(interface.get("id", ""))
+        required_categories = (
+            {
+                str(oracle.get("category", ""))
+                for oracle in test_oracles
+                if str(oracle.get("interface_id", "")) == interface_id
+            }
+            if test_oracles is not None else set(_VALID_CATEGORIES)
+        )
         missing = [
             category
             for category in _VALID_CATEGORIES
-            if category not in categories_by_interface.get(interface_id, set())
+            if category in required_categories
+            and category not in categories_by_interface.get(interface_id, set())
         ]
         if missing:
             result.append((interface, missing))
     return result
 
 
-def _case_dedup_key(case: dict[str, Any]) -> tuple[str, str, str]:
-    """去重键：接口 + 类别 + 测试点。
-
-    逐点展开后同一接口同一类别可以合法地有多条用例（不同测试点验证不同业务规则），
-    故必须把 testpoint_id 并入键，否则修复轮合并会把展开结果塌缩回每接口三类。
-    无 testpoint_id 的条目（程序兜底）退化为「接口 + 类别」，保持原有去重语义。
-    """
+def _case_dedup_key(case: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    """同一测试点的不同输入维度必须保留；相同请求和 oracle 才视为重复。"""
+    params = case.get("params") if isinstance(case.get("params"), dict) else {}
     return (
         str(case.get("interface_id", "")),
         str(case.get("category", "")),
-        str(case.get("testpoint_id", "")),
+        "",
+        str(case.get("oracle_id", "")),
+        json.dumps(params, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str),
     )
 
 
@@ -1061,17 +1861,20 @@ def _uncovered_req_testpoints(
     E2E/人工范畴，不在本节点覆盖面内。
     """
     interface_ids = {str(item.get("id", "")) for item in interfaces}
-    referenced = {
-        str(case.get("testpoint_id", ""))
-        for case in cases
-        if str(case.get("testpoint_id", ""))
-    }
+    referenced: set[tuple[str, str]] = set()
+    for case in cases:
+        point_ids = case.get("testpoint_ids")
+        if not isinstance(point_ids, list):
+            point_ids = []
+        for point_id in [case.get("testpoint_id"), *point_ids]:
+            if point_id:
+                referenced.add((str(case.get("interface_id", "")), str(point_id)))
     return [
         point
         for point in testpoints
         if str(point.get("source", "")) == "REQ"
         and str(point.get("interface_id", "")) in interface_ids
-        and str(point.get("id", "")) not in referenced
+        and (str(point.get("interface_id", "")), str(point.get("id", ""))) not in referenced
     ]
 
 
@@ -1090,41 +1893,8 @@ def _underexpanded_testpoints(
     cases: list[dict[str, Any]],
     testpoints: list[dict[str, Any]],
 ) -> list[tuple[str, int, int, int]]:
-    """F-GEN-05：返回 case_split_hints 维度多、但实际用例数显著偏低的 REQ 测试点。
-
-    解除「每点 1 条、整批 40 条」软封顶后，展开的充分性只写在 prompt 里、无任何
-    机器校验——模型若对一个挂了 5 条拆分维度的测试点只产 1 条用例，F-GEN-04 的
-    「≥1 条即覆盖」照样放行。本函数按 `case_split_hints` 条数估算期望展开量，
-    实际显著偏低时如实告警（不强制补产，交人工确认是维度冗余还是模型偷懒）。
-
-    只统计 `source=REQ` 且挂了 ≥``_EXPANSION_MIN_HINTS`` 条维度的测试点，与
-    `_uncovered_req_testpoints` 保持同一覆盖面口径（RISK 点同构、无接口归属属
-    E2E/人工范畴，均不在本节点展开校验内）。
-
-    返回 ``[(testpoint_id, hint_count, expected, actual), ...]``。
-    """
-    counts: dict[str, int] = {}
-    for case in cases:
-        testpoint_id = str(case.get("testpoint_id", ""))
-        if testpoint_id:
-            counts[testpoint_id] = counts.get(testpoint_id, 0) + 1
-    underexpanded: list[tuple[str, int, int, int]] = []
-    for point in testpoints:
-        if str(point.get("source", "")) != "REQ":
-            continue
-        hints = point.get("case_split_hints") or []
-        hint_count = len(hints) if isinstance(hints, list) else 0
-        if hint_count < _EXPANSION_MIN_HINTS:
-            continue
-        testpoint_id = str(point.get("id", ""))
-        actual = counts.get(testpoint_id, 0)
-        # 未被任何用例引用的点归 F-GEN-04 处理，这里不重复告警。
-        if actual == 0:
-            continue
-        expected = math.ceil(hint_count * _EXPANSION_RATIO)
-        if actual < expected:
-            underexpanded.append((testpoint_id, hint_count, expected, actual))
-    return underexpanded
+    """兼容旧调用；拆分维度条数不再构成用例数量要求。"""
+    return []
 
 
 async def _recover_cases_with_targeted_prompt(
@@ -1174,16 +1944,16 @@ async def _recover_uncovered_testpoints(
     """F-GEN-04：为未被任何用例引用的 REQ 测试点做一次定向补产。"""
     instruction = (
         "这是测试点覆盖补充请求。下列 REQ 测试点尚无对应用例，请每个测试点各产出"
-        "至少一条用例，并在用例中回填其 testpoint_id；同时仍需满足每个接口"
-        "normal/boundary/exception 三类各 ≥1。若源码证据支持，请给 normal 用例提供"
-        "机器可执行的响应字段断言 assertions；不要根据接口名臆造返回字段或固定值。"
+        "至少一条有适用 test_oracles 的用例，并在用例中回填其 testpoint_id；"
+        "若没有适用 oracle，该测试点保持覆盖缺口，不要编造场景。"
+        "所有 expected/assertions 必须逐字复制 oracle；不要根据接口名臆造返回字段或固定值。"
         "只为下面列出的测试点与接口输出，"
         "禁止输出其它接口：\n"
         f"未覆盖测试点：{json.dumps(uncovered, ensure_ascii=False)}\n"
         '输出格式：{"cases":[{"interface_id":"...","requirement_id":"...",'
         '"testpoint_id":"...","category":"normal|boundary|exception","title":"...",'
-        '"params":{},"expected":"status=...","assertions":[{"path":"data.id",'
-        '"op":"exists"}]}]}。'
+        '"oracle_id":"输入中的编号","params":{},"expected":"取自 oracle",'
+        '"assertions":[]}]}。'
     )
     return await _recover_cases_with_targeted_prompt(
         llm,
@@ -1206,56 +1976,14 @@ async def _recover_underexpanded_testpoints(
     underexpanded: list[tuple[str, int, int, int]],
     points_by_id: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """F-GEN-05：为展开不足的 REQ 测试点按拆分维度做一次定向补产。
-
-    与 F-GEN-04 的差异：缺的不是「有没有用例」而是「维度覆盖够不够」，
-    因此补产清单携带每个点的 case_split_hints 原文与已有用例标题——
-    要求模型只补**尚未覆盖的维度**，不重复已有场景。
-    """
-    gaps: list[dict[str, Any]] = []
-    for testpoint_id, hint_count, expected, actual in underexpanded:
-        point = points_by_id.get(testpoint_id, {})
-        existing_titles = [
-            str(case.get("title", ""))
-            for case in cases
-            if str(case.get("testpoint_id", "")) == testpoint_id
-        ]
-        gaps.append(
-            {
-                "testpoint_id": testpoint_id,
-                "case_split_hints": point.get("case_split_hints") or [],
-                "期望用例数": expected,
-                "实际用例数": actual,
-                "已有用例标题": existing_titles,
-            }
-        )
-    instruction = (
-        "这是展开充分性补充请求（F-GEN-05）。下列 REQ 测试点挂了多条拆分维度，"
-        "但已产出的用例数显著低于维度数——请对照每个点的 case_split_hints 与"
-        "已有用例标题，只为**尚未覆盖的维度**补产用例（每个缺失维度一条），"
-        "回填 testpoint_id；禁止重复已有场景、禁止输出清单之外的测试点或接口：\n"
-        f"展开不足清单：{json.dumps(gaps, ensure_ascii=False)}\n"
-        '输出格式：{"cases":[{"interface_id":"...","requirement_id":"...",'
-        '"testpoint_id":"...","category":"normal|boundary|exception","title":"...",'
-        '"params":{},"expected":"status=...","assertions":[{"path":"data.id",'
-        '"op":"exists"}]}]}。'
-    )
-    return await _recover_cases_with_targeted_prompt(
-        llm,
-        prompt,
-        user_content,
-        interfaces,
-        cases,
-        instruction,
-        wanted_testpoints={row[0] for row in underexpanded},
-        log_label="展开充分性",
-    )
+    """兼容旧调用；不再按维度条数补产。"""
+    return cases
 
 
 def _merge_case_entries(
     existing: list[dict[str, Any]], additions: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """按接口+类别+测试点去重合并，补产结果不覆盖已有完整场景。"""
+    """只合并请求与 oracle 相同的条目，保留同一测试点的不同输入维度。"""
     seen = {_case_dedup_key(item) for item in existing}
     merged = list(existing)
     for item in additions:
@@ -1573,7 +2301,7 @@ def _derive_testpoints(
                         interface_id,
                         "REQ",
                         f"验证需求声明“{statement}”{criteria_note}",
-                        ["按声明验证正常结果", *criteria[:3], "验证该接口对声明结果的响应"],
+                        ["按声明验证正常结果", *criteria, "验证该接口对声明结果的响应"],
                         f"声明 {claim_id or requirement_id} ↔ 接口 {interface_id}",
                         claim,
                     )
@@ -1818,62 +2546,13 @@ async def _generate_e2e_cases(
     surface: dict[str, Any],
     auth_mode: str = "browser",
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """基于真实页面探测结果生成，禁止模型杜撰路由或 selector。
+    """Compatibility entry point delegates to the requirement-based v2 planner."""
+    from executor.e2e.planner import generate_cases
 
-    未通过白名单校验的单条用例会被丢弃并汇总为告警，不影响其余用例与本节点成败：
-    E2E 是可选产物，接口用例已在调用前定型。
-    """
-    prompt = load_prompt(prompts_dir, "e2e_testcase_generate")
-    allowed_selectors = {selector for route in surface["routes"] for selector in route["selectors"]}
-    allowed_paths = {route["path"] for route in surface["routes"]}
-    point_by_id = {
-        str(point.get("id", "")): point for point in testpoints if point.get("id")
-    }
-    content = json.dumps(
-        {
-            "surface": surface,
-            "requirements": requirements,
-            "testpoints": testpoints,
-            "max_cases": 12,
-            "auth_mode": auth_mode if auth_mode in {"reuse", "browser"} else "browser",
-        },
-        ensure_ascii=False,
+    cases, design = await generate_cases(
+        llm, prompts_dir, requirements, surface, {"auth_mode": auth_mode}
     )
-    raw_cases, dropped = await complete_with_json_repair(
-        llm,
-        "testcase_generate",
-        prompt,
-        content,
-        partial(
-            _parse_e2e_cases,
-            allowed_selectors=allowed_selectors,
-            allowed_paths=allowed_paths,
-            allowed_testpoints=point_by_id,
-        ),
-    )
-    result: list[dict[str, Any]] = []
-    for sequence, case in enumerate(raw_cases[:12], start=1):
-        point = point_by_id.get(str(case.get("testpoint_id", "")), {})
-        entry = {
-            "id": f"E2E-{sequence:03d}",
-            "case_type": "e2e",
-            "requirement_id": str(point.get("requirement_id", case["requirement_id"])),
-            "testpoint_id": str(case.get("testpoint_id", "")),
-            "title": str(case["title"]),
-            "preconditions": [str(x) for x in case.get("preconditions", [])],
-            "steps": case["steps"],
-            "expected": str(case["expected"]),
-        }
-        if point.get("claim_id"):
-            entry["claim_id"] = str(point["claim_id"])
-        result.append(entry)
-    warnings: list[str] = []
-    if dropped:
-        preview = "；".join(dropped[:5]) + ("…" if len(dropped) > 5 else "")
-        warnings.append(
-            f"X-E2E-02: {len(dropped)} 条 E2E 用例未通过白名单校验已丢弃：{preview}"
-        )
-    return result, warnings
+    return cases, [str(gap) for gap in design.get("gaps", [])]
 
 
 async def _inspect_e2e_surface(
@@ -2110,15 +2789,11 @@ def _parse_llm_cases(text: str, interfaces: list[dict[str, Any]]) -> list[dict[s
             entry["testpoint_id"] = testpoint_id
         else:
             entry.pop("testpoint_id", None)
+        # 断言不能在这里硬失败：后续有源码 oracle 时，以 oracle 的已验证断言
+        # 替换模型输出；没有 oracle 时则移除断言并将用例标为 unverified。
+        # 否则一个模型误写的 op（例如不支持的 `empty`）会阻断整批及检查点续跑。
         if "assertions" in raw:
-            try:
-                entry["assertions"] = normalize_response_assertions(raw["assertions"])
-            except ValueError as exc:
-                raise PipelineError(
-                    code=X_LLM_02,
-                    message=f"LLM 用例响应断言格式不合法：{exc}",
-                    node_id=NODE_NAME,
-                ) from exc
+            entry["assertions"] = raw["assertions"]
         # 超长字符串记号展开：把「数 1025 个字符」从模型侧移回程序侧（见 _LONG_MARKER_RE 注释）。
         # 放在参数一致性校验之前，确保后续校验/渲染/执行拿到的是真实字面量而非记号。
         if "params" in entry:
@@ -2202,7 +2877,8 @@ def _safe_json_shape(data: Any) -> str:
 
 
 def _filter_param_violations(
-    cases: list[dict[str, Any]], interfaces: list[dict[str, Any]]
+    cases: list[dict[str, Any]], interfaces: list[dict[str, Any]],
+    test_oracles: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """R-GEN-02：参数名、必填项和 unknown 容器均与接口定义一致。
 
@@ -2215,11 +2891,27 @@ def _filter_param_violations(
     for case in cases:
         if_id = str(case.get("interface_id", ""))
         interface = interface_by_id.get(if_id, {})
-        normalized = materialize_declared_defaults(case, interface)
+        params = case.get("params")
+        boundaries = [oracle for oracle in test_oracles or []
+                      if oracle.get("interface_id") == if_id and oracle.get("oracle_basis") == "spring_required_body"
+                      and (not case.get("oracle_id") or case.get("oracle_id") == oracle.get("oracle_id"))]
+        if (case.get("category") == "boundary" and isinstance(params, dict) and len(boundaries) == 1
+                and all(params.get(str(condition["path"])) is None
+                        for condition in boundaries[0].get("preconditions") or [])):
+            boundary = boundaries[0]
+            case = {**case, "oracle_id": boundary["oracle_id"], "oracle_status": "verified",
+                    "oracle_basis": "spring_required_body", "request_conditions": boundary["preconditions"]}
+        normalized = materialize_declared_defaults(
+            _normalize_coded_case_values(
+                _normalize_single_body_alias(case, interface), interface
+            ),
+            interface,
+        )
         issues = inspect_case_parameters(normalized, interface)
         messages = issues.messages(
             allow_missing_for_error=expected_client_error(str(normalized.get("expected", "")))
         )
+        messages.extend(_coded_value_issues(normalized, interface))
         if messages:
             if issues.invalid_structured:
                 messages = [
@@ -2230,6 +2922,7 @@ def _filter_param_violations(
                 ]
             violations.append(
                 {
+                    "kind": "parameter",
                     "interface_id": if_id,
                     "params": normalized.get("params"),
                     "message": "；".join(messages),
@@ -2240,15 +2933,182 @@ def _filter_param_violations(
     return valid, violations
 
 
+def _normalize_single_body_alias(
+    case: dict[str, Any], interface: dict[str, Any]
+) -> dict[str, Any]:
+    """Map a generic LLM `body` key to the sole declared body parameter when unambiguous."""
+    raw_params = case.get("params")
+    if not isinstance(raw_params, dict) or "body" not in raw_params:
+        return case
+    definitions = [
+        item for item in interface.get("params", [])
+        if isinstance(item, dict) and item.get("in") == "body" and item.get("name")
+    ]
+    if len(definitions) != 1:
+        return case
+    declared_name = str(definitions[0]["name"])
+    declared_names = {
+        str(item.get("name", ""))
+        for item in interface.get("params", []) if isinstance(item, dict)
+    }
+    if declared_name == "body" or "body" in declared_names or declared_name in raw_params:
+        return case
+    normalized = dict(case)
+    params = dict(raw_params)
+    params[declared_name] = params.pop("body")
+    normalized["params"] = params
+    return normalized
+
+
+def _filter_oracle_violations(
+    cases: list[dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+    test_oracles: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """用源码 oracle 定稿预期；无 oracle 时保留用例但移除不可执行断言。"""
+    interface_ids = {str(item.get("id", "")) for item in interfaces}
+    oracle_by_id = {
+        str(item.get("oracle_id", "")): item
+        for item in test_oracles if item.get("oracle_id")
+    }
+    valid: list[dict[str, Any]] = []
+    violations: list[dict[str, Any]] = []
+    for raw_case in cases:
+        case = dict(raw_case)
+        interface_id = str(case.get("interface_id", ""))
+        if interface_id not in interface_ids:
+            continue
+        oracle_id = str(case.get("oracle_id", "") or "")
+        assertion_error: str | None = None
+        try:
+            assertions = normalize_response_assertions(case.get("assertions"))
+        except ValueError as exc:
+            # LLM assertions are untrusted. A bad op must not abort the whole batch
+            # before we can replace it with a verified oracle or mark it unverified.
+            assertions = []
+            assertion_error = str(exc)
+        legacy_assertions = legacy_response_assertions(str(case.get("expected", "")))
+
+        def mark_unverified(message: str | None = None) -> None:
+            case["expected"] = "待源码预期确认"
+            case.pop("assertions", None)
+            case.pop("oracle_id", None)
+            case.pop("oracle_evidence_refs", None)
+            case.pop("oracle_scenario", None)
+            case.pop("oracle_control_kinds", None)
+            for metadata_key in ("state_conditions", "execution_blockers", "execution_readiness", "request_conditions", "expected_behavior", "oracle_basis", "assertion_scope", "design_status"):
+                case.pop(metadata_key, None)
+            case["oracle_status"] = "unverified"
+            valid.append(case)
+            if message:
+                violations.append({
+                    "kind": "oracle",
+                    "interface_id": interface_id,
+                    "params": case.get("params"),
+                    "message": message,
+                })
+
+        if not oracle_id:
+            message = None
+            if assertion_error:
+                message = (
+                    f"响应断言格式不合法（{assertion_error}）；没有源码 oracle，"
+                    "已移除断言并标记待确认"
+                )
+            elif assertions or legacy_assertions:
+                message = (
+                    "含响应断言但未引用 Code Review 的 oracle_id；"
+                    "已移除断言并标记待确认"
+                )
+            mark_unverified(message)
+            continue
+
+        oracle = oracle_by_id.get(oracle_id)
+        if oracle is None:
+            mark_unverified("oracle_id 不存在于本次 Code Review 预期契约；已移除预期并标记待确认")
+            continue
+        elif str(oracle.get("interface_id", "")) != interface_id:
+            mark_unverified("oracle_id 属于其它接口；已移除预期并标记待确认")
+            continue
+        elif str(oracle.get("category", "")) != str(case.get("category", "")):
+            mark_unverified("oracle 场景类别与用例类别不一致；已移除预期并标记待确认")
+            continue
+
+        try:
+            expected_assertions = normalize_response_assertions(oracle.get("assertions"))
+            preconditions = normalize_response_assertions(oracle.get("preconditions"), label="preconditions")
+        except ValueError as exc:
+            mark_unverified(f"Code Review oracle 格式不合法：{exc}；已移除预期并标记待确认")
+            continue
+
+        params = case.get("params") if isinstance(case.get("params"), dict) else {}
+        if "observed_params" in oracle:
+            if params != oracle["observed_params"]:
+                mark_unverified("运行观测契约仅支持已观测的精确请求；参数变体需另行证明")
+                continue
+            case["title"] = str(oracle.get("scenario", "运行实测场景"))
+            for trace_key in ("requirement_id", "claim_id", "testpoint_id", "testpoint_ids"):
+                case.pop(trace_key, None)
+        outcomes = evaluate_response_assertions(params, preconditions)
+        if any(item.get("passed") is not True for item in outcomes):
+            mark_unverified("用例 params 不满足源码 oracle 的前置条件；已移除预期并标记待确认")
+            continue
+
+        repair_reasons: list[str] = []
+        if assertion_error:
+            repair_reasons.append(f"模型断言格式不合法：{assertion_error}")
+        elif _canonical_assertions(assertions) != _canonical_assertions(expected_assertions):
+            repair_reasons.append("模型断言与源码 oracle 不一致")
+        if str(case.get("expected", "")).strip() != str(oracle.get("expected_status", "")):
+            repair_reasons.append("模型状态码与源码 oracle 不一致")
+
+        # The verified Code Review oracle is authoritative. Copying it here is
+        # deterministic and cannot invent behavior; it also prevents malformed
+        # model operators such as `empty` from discarding an otherwise valid case.
+        case["expected"] = str(oracle["expected_status"])
+        case["title"] = str(oracle.get("scenario", case.get("title", "")))
+        covered_claims = set(oracle.get("covered_claim_ids") or [])
+        if str(case.get("claim_id", "")) not in covered_claims or response_assertion_scope(expected_assertions) != "business":
+            for trace_key in ("requirement_id", "claim_id", "testpoint_id", "testpoint_ids"):
+                case.pop(trace_key, None)
+        case["assertions"] = expected_assertions
+        case["oracle_status"] = "verified"
+        case["oracle_evidence_refs"] = list(oracle.get("evidence_refs") or [])
+        case["oracle_scenario"] = str(oracle.get("scenario", ""))
+        case["oracle_control_kinds"] = sorted(
+            set(oracle.get("control_kinds") or []) | required_control_kinds(oracle)
+        )
+        if oracle.get("expected_behavior"):
+            case["expected_behavior"] = oracle["expected_behavior"]
+        case["state_conditions"] = list(oracle.get("state_conditions") or [])
+        case["request_conditions"] = preconditions
+        if isinstance(oracle.get("fixture_plan"), dict):
+            case["fixture_plan"] = oracle["fixture_plan"]
+        case["execution_blockers"] = execution_blockers(oracle)
+        case["execution_readiness"] = str(oracle.get("execution_readiness", "ready"))
+        for key in ("oracle_basis", "assertion_scope", "design_status"):
+            if key in oracle:
+                case[key] = oracle[key]
+        valid.append(case)
+        if repair_reasons:
+            violations.append({
+                "kind": "oracle_repaired",
+                "interface_id": interface_id,
+                "params": case.get("params"),
+                "message": "；".join(repair_reasons),
+            })
+    return valid, violations
+
+
+def _canonical_assertions(value: list[dict[str, Any]]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _merge_rounds(
     first: list[dict[str, Any]], second: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """合并两轮通过校验的用例（同接口+类别+测试点去重，第一轮优先）。
-
-    去重键含 testpoint_id：两轮可能各覆盖同一接口同一类别下的不同测试点，
-    若只按接口+类别去重会把第二轮展开出的用例整体丢弃。
-    """
-    seen: set[tuple[str, str, str]] = set()
+    """合并两轮用例；同测试点的不同请求参数保留。"""
+    seen: set[tuple[str, str, str, str, str]] = set()
     merged: list[dict[str, Any]] = []
     for case in first + second:
         key = _case_dedup_key(case)
@@ -2286,6 +3146,7 @@ def _finalize_cases(
         for interface in interfaces
         if any(str(p.get("type")) == "unknown" for p in interface.get("params") or [])
     }
+    interface_by_id = {str(item.get("id", "")): item for item in interfaces}
     testpoint_by_id = {
         str(item.get("id", "")): item
         for item in (testpoints or [])
@@ -2320,8 +3181,32 @@ def _finalize_cases(
             response_assertions = legacy_response_assertions(entry["expected"])
         if response_assertions:
             entry["assertions"] = response_assertions
+        oracle_status = str(case.get("oracle_status", "unverified"))
+        entry["oracle_status"] = oracle_status if oracle_status in {"verified", "unverified"} else "unverified"
+        if case.get("oracle_id") and oracle_status == "verified":
+            entry["oracle_id"] = str(case["oracle_id"])
+        if case.get("oracle_evidence_refs") and oracle_status == "verified":
+            entry["oracle_evidence_refs"] = [str(value) for value in case["oracle_evidence_refs"]]
+        if case.get("oracle_scenario") and oracle_status == "verified":
+            entry["oracle_scenario"] = str(case["oracle_scenario"])
+        if case.get("oracle_control_kinds") and oracle_status == "verified":
+            entry["oracle_control_kinds"] = [str(value) for value in case["oracle_control_kinds"]]
+        if oracle_status == "verified":
+            for metadata_key in ("state_conditions", "execution_blockers", "execution_readiness", "request_conditions", "expected_behavior", "oracle_basis", "assertion_scope", "design_status"):
+                if metadata_key in case:
+                    entry[metadata_key] = case[metadata_key]
+        if isinstance(case.get("fixture_plan"), dict) and oracle_status == "verified":
+            entry["fixture_plan"] = case["fixture_plan"]
         if isinstance(case.get("params"), dict):
-            entry["params"] = case["params"]
+            params = json.loads(json.dumps(case["params"], ensure_ascii=False))
+            if isinstance(case.get("fixture_plan"), dict):
+                path = str((interface_by_id.get(str(case.get("interface_id", "")), {}).get("signature") or {}).get("path", ""))
+                request = params.get("request")
+                if isinstance(request, dict) and path.endswith("/update"):
+                    request["id"] = "__AUTOTEST_RECORD_ID__"
+                elif isinstance(request, dict) and path.endswith("/delete"):
+                    request["ids"] = ["__AUTOTEST_RECORD_ID__"]
+            entry["params"] = params
         if str(case.get("auth_mode", "")) in {"inherit", "missing", "invalid"}:
             entry["auth_mode"] = str(case["auth_mode"])
 

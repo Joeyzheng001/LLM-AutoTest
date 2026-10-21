@@ -106,13 +106,33 @@ def _check_repo_errors(inventory: dict[str, Any]) -> None:
     empty / truncated 为正常态（如实落盘，流程继续）。
     """
     failed_repos = [
-        repo.get("name", "<未命名>")
+        repo
         for repo in inventory.get("repositories", [])
         if repo.get("status") == "error"
     ]
     if failed_repos:
+        error_details: list[dict[str, Any]] = []
+        summaries: list[str] = []
+        for repo in failed_repos:
+            name = str(repo.get("name", "<未命名>"))
+            error = repo.get("error") if isinstance(repo.get("error"), dict) else {}
+            code = str(error.get("code", ""))
+            message = " ".join(str(error.get("message", "")).split())
+            entry: dict[str, Any] = {"name": name}
+            if code:
+                entry["code"] = code
+            if message:
+                entry["message"] = message
+            error_details.append(entry)
+            summary = name
+            if code:
+                summary += f" [{code}]"
+            if message:
+                summary += f"：{message[:600]}"
+            summaries.append(summary)
         raise PipelineError(
             code="X-CODE-01",
-            message=f"仓库扫描硬错误（X-CODE-01）：{failed_repos}",
+            message=f"仓库扫描硬错误（X-CODE-01）：{'; '.join(summaries)}",
             node_id=NODE_NAME,
+            details={"failed_repositories": error_details},
         )

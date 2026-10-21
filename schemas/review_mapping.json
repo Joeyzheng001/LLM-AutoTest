@@ -4,56 +4,586 @@
   "title": "Code Review 双视图（映射表 + 变更范围，模块 4 REVIEW，主笔：甲；C-108 起 risks/missing_features/incremental_findings 停产）",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "job_id", "mappings"],
+  "required": [
+    "schema_version",
+    "job_id",
+    "mappings"
+  ],
   "properties": {
-    "schema_version": { "type": "string", "enum": ["1.0", "2.0", "2.1"] },
-    "job_id": { "type": "string", "pattern": "^job-" },
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0",
+        "2.0",
+        "2.1",
+        "2.2"
+      ]
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^job-"
+    },
+    "field_value_contracts": {
+      "type": "array",
+      "description": "源码字段取值证据；examples_only 仅是示例，unspecified 表示未取得取值规则，不能据此猜测合法值",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "interface_id",
+          "parameter",
+          "field",
+          "type",
+          "value_rule_status",
+          "description",
+          "description_origin",
+          "documented_values",
+          "example_codes",
+          "source_refs"
+        ],
+        "properties": {
+          "interface_id": {
+            "type": "string",
+            "pattern": "^IF-[A-Z]+-\\d{3}$"
+          },
+          "parameter": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "required_evidence": {
+            "type": "string"
+          },
+          "value_rule_status": {
+            "type": "string",
+            "enum": [
+              "coded_values",
+              "examples_only",
+              "unspecified"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "description_origin": {
+            "type": "string",
+            "enum": [
+              "source",
+              "inferred",
+              "unknown"
+            ]
+          },
+          "documented_values": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "label"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "example_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "constraints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source_refs": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "test_oracles": {
+      "type": "array",
+      "description": "源码证据绑定的完整条件化测试设计；执行准备不作为设计准入条件",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "oracle_id",
+          "interface_id",
+          "category",
+          "scenario",
+          "preconditions",
+          "expected_status",
+          "assertions",
+          "evidence_refs",
+          "evidence_quotes"
+        ],
+        "properties": {
+          "oracle_id": {
+            "type": "string",
+            "pattern": "^ORC-IF-[A-Z]+-\\d{3}-\\d{3}$"
+          },
+          "interface_id": {
+            "type": "string",
+            "pattern": "^IF-[A-Z]+-\\d{3}$"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "boundary",
+              "exception"
+            ]
+          },
+          "scenario": {
+            "type": "string",
+            "minLength": 1
+          },
+          "branch_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "control_kinds": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "downstream_response",
+                "application_config",
+                "service_registry"
+              ]
+            }
+          },
+          "preconditions": {
+            "$ref": "#/definitions/response_assertions"
+          },
+          "expected_status": {
+            "type": "string",
+            "pattern": "^(status=[1-5][0-9]{2}|status_class=[1-5]xx|unresolved)$"
+          },
+          "assertions": {
+            "$ref": "#/definitions/response_assertions"
+          },
+          "fixture_plan": {
+            "$ref": "#/definitions/record_fixture_plan"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^EVD-\\d{4,}$"
+            }
+          },
+          "evidence_quotes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "evidence_ref",
+                "quote"
+              ],
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "evidence_ref": {
+                  "type": "string",
+                  "pattern": "^EVD-\\d{4,}$"
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "branch_outcome": {
+            "type": "boolean",
+            "description": "目标 if 条件成立或不成立；兼容旧产物时默认为 true"
+          },
+          "state_conditions": {
+            "type": "array",
+            "description": "本接口处理逻辑所需的下游/环境状态；独立于请求参数，不代表已准备",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "description",
+                "mode",
+                "evidence_ref",
+                "quote"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "downstream_response",
+                    "application_config",
+                    "service_registry",
+                    "test_data"
+                  ]
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mode": {
+                  "enum": [
+                    "integration",
+                    "controlled"
+                  ]
+                },
+                "evidence_ref": {
+                  "type": "string",
+                  "pattern": "^EVD-\\d{4,}$"
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "execution_readiness": {
+            "enum": [
+              "ready",
+              "conditional",
+              "blocked"
+            ],
+            "description": "设计时的执行准备状态；执行阶段重新检查"
+          },
+          "execution_blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected_behavior": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "description",
+              "evidence_ref",
+              "quote"
+            ],
+            "properties": {
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence_ref": {
+                "type": "string",
+                "pattern": "^EVD-\\d{4,}$"
+              },
+              "quote": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "oracle_basis": {
+            "enum": [
+              "spring_required_body",
+              "integration_entry"
+            ]
+          },
+          "covered_claim_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^CLM-\\d{3,}$"
+            }
+          },
+          "assertion_scope": {
+            "type": "string",
+            "enum": [
+              "business",
+              "response_structure",
+              "framework_boundary",
+              "status_only",
+              "ui_steps",
+              "unverified"
+            ]
+          },
+          "design_status": {
+            "enum": [
+              "pending_expectation"
+            ]
+          }
+        }
+      }
+    },
+    "test_oracle_warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "test_oracle_diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "interface_id",
+          "scenario",
+          "message",
+          "action",
+          "control_kinds"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "framework_boundary",
+              "control_required",
+              "response_evidence_missing",
+              "candidate_invalid",
+              "resolved",
+              "replaced",
+              "execution_pending"
+            ]
+          },
+          "interface_id": {
+            "type": "string"
+          },
+          "scenario": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "oracle_ids": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "action": {
+            "type": "string"
+          },
+          "control_kinds": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "downstream_response",
+                "application_config",
+                "service_registry"
+              ]
+            }
+          }
+        }
+      }
+    },
     "mappings": {
       "type": "array",
       "description": "视图一：需求-代码映射表（requirements × interfaces，F-REVW-01/02）",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["requirement_id", "status", "confidence"],
+        "required": [
+          "requirement_id",
+          "status",
+          "confidence"
+        ],
         "properties": {
-          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
-          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
-          "interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } },
-          "claim_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^CLM-\\d{3,}$" } },
+          "requirement_id": {
+            "type": "string",
+            "pattern": "^REQ-\\d{3}$"
+          },
+          "interface_id": {
+            "type": "string",
+            "pattern": "^IF-[A-Z]+-\\d{3}$"
+          },
+          "interface_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^IF-[A-Z]+-\\d{3}$"
+            }
+          },
+          "claim_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^CLM-\\d{3,}$"
+            }
+          },
           "claim_counts": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["total", "implemented", "partial", "missing", "undetermined"],
+            "required": [
+              "total",
+              "implemented",
+              "partial",
+              "missing",
+              "undetermined"
+            ],
             "properties": {
-              "total": { "type": "integer", "minimum": 0 },
-              "implemented": { "type": "integer", "minimum": 0 },
-              "partial": { "type": "integer", "minimum": 0 },
-              "missing": { "type": "integer", "minimum": 0 },
-              "undetermined": { "type": "integer", "minimum": 0 }
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "implemented": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "partial": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "missing": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "undetermined": {
+                "type": "integer",
+                "minimum": 0
+              }
             }
           },
-          "status": { "type": "string", "enum": ["implemented", "partial", "missing", "undetermined"] },
-          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-          "raw_confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "确定性门槛封顶前的原始置信度；仅当封顶实际压低数值时存在" },
-          "confidence_capped": { "type": "boolean", "description": "true = confidence 被确定性证据门槛（min(x, 0.45)）压低过" },
-          "evidence_quality": { "type": "string", "enum": ["behavior_path", "interface_only", "insufficient", "none"] },
+          "status": {
+            "type": "string",
+            "enum": [
+              "implemented",
+              "partial",
+              "missing",
+              "undetermined"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "raw_confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "确定性门槛封顶前的原始置信度；仅当封顶实际压低数值时存在"
+          },
+          "confidence_capped": {
+            "type": "boolean",
+            "description": "true = confidence 被确定性证据门槛（min(x, 0.45)）压低过"
+          },
+          "evidence_quality": {
+            "type": "string",
+            "enum": [
+              "behavior_path",
+              "interface_only",
+              "insufficient",
+              "none"
+            ]
+          },
           "claim_assessments": {
             "type": "array",
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["claim_id", "status", "confidence", "interface_ids", "evidence_refs", "met_conditions", "unmet_conditions", "verification_needed"],
+              "required": [
+                "claim_id",
+                "status",
+                "confidence",
+                "interface_ids",
+                "evidence_refs",
+                "met_conditions",
+                "unmet_conditions",
+                "verification_needed"
+              ],
               "properties": {
-                "claim_id": { "type": "string", "pattern": "^CLM-\\d{3,}$" },
-                "status": { "type": "string", "enum": ["implemented", "partial", "missing", "undetermined"] },
-                "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-                "raw_confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "确定性门槛封顶前的原始置信度；仅当封顶实际压低数值时存在" },
-                "confidence_capped": { "type": "boolean", "description": "true = confidence 被确定性证据门槛（min(x, 0.45)）压低过" },
-                "interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } },
-                "evidence_refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^EVD-\\d{4,}$" } },
-                "met_conditions": { "type": "array", "items": { "type": "string" } },
-                "unmet_conditions": { "type": "array", "items": { "type": "string" } },
-                "verification_needed": { "type": "array", "items": { "type": "string" } }
+                "claim_id": {
+                  "type": "string",
+                  "pattern": "^CLM-\\d{3,}$"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "implemented",
+                    "partial",
+                    "missing",
+                    "undetermined"
+                  ]
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "raw_confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "确定性门槛封顶前的原始置信度；仅当封顶实际压低数值时存在"
+                },
+                "confidence_capped": {
+                  "type": "boolean",
+                  "description": "true = confidence 被确定性证据门槛（min(x, 0.45)）压低过"
+                },
+                "interface_ids": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^IF-[A-Z]+-\\d{3}$"
+                  }
+                },
+                "evidence_refs": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^EVD-\\d{4,}$"
+                  }
+                },
+                "met_conditions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "unmet_conditions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "verification_needed": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
               }
             }
           },
@@ -61,18 +591,36 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^EVD-\\d{4,}$" } },
+              "refs": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^EVD-\\d{4,}$"
+                }
+              },
               "code_location": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "repo": { "type": "string" },
-                  "file": { "type": "string" },
-                  "start_line": { "type": "integer", "minimum": 1 },
-                  "end_line": { "type": "integer" }
+                  "repo": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "start_line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "end_line": {
+                    "type": "integer"
+                  }
                 }
               },
-              "note": { "type": "string" }
+              "note": {
+                "type": "string"
+              }
             }
           }
         }
@@ -84,24 +632,63 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["evidence_id", "category", "repo", "file", "start_line", "end_line", "excerpt"],
+        "required": [
+          "evidence_id",
+          "category",
+          "repo",
+          "file",
+          "start_line",
+          "end_line",
+          "excerpt"
+        ],
         "properties": {
-          "evidence_id": { "type": "string", "pattern": "^EVD-\\d{4,}$" },
-          "category": { "type": "string", "minLength": 1 },
-          "repo": { "type": "string" },
-          "file": { "type": "string" },
-          "start_line": { "type": "integer", "minimum": 1 },
-          "end_line": { "type": "integer", "minimum": 1 },
-          "excerpt": { "type": "string", "maxLength": 520 },
-          "interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } },
-          "role": { "type": "string" }
+          "evidence_id": {
+            "type": "string",
+            "pattern": "^EVD-\\d{4,}$"
+          },
+          "category": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repo": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "start_line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "excerpt": {
+            "type": "string",
+            "description": "完整源码范围的脱敏文本；仅证据不完整时以 excerpt_truncated=true 标记"
+          },
+          "excerpt_truncated": {
+            "type": "boolean"
+          },
+          "interface_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^IF-[A-Z]+-\\d{3}$"
+            }
+          },
+          "role": {
+            "type": "string"
+          }
         }
       }
     },
     "scan_coverage": {
       "type": "object",
       "additionalProperties": false,
-      "description": "扫描覆盖率：complete=true 表示「仓库扫描完整、你已看到全部接口」。任何截断（证据池/接口证据/调用链）或完整性校验缺失都必须让它是 false，不能只报碰巧检测到的那一项",
+      "description": "扫描覆盖率：complete=true 表示仓库扫描和完整性校验均通过；LLM 分页传输不裁掉内容，源码读取缺口仍须如实标记",
       "required": [
         "complete",
         "repositories",
@@ -111,13 +698,21 @@
         "scan_integrity_complete"
       ],
       "properties": {
-        "complete": { "type": "boolean" },
-        "review_evidence_limited": { "type": "boolean", "description": "证据池触顶（文件数或条目数）" },
+        "complete": {
+          "type": "boolean"
+        },
+        "review_evidence_limited": {
+          "type": "boolean",
+          "description": "需求评审证据是否因本地上限被裁掉；完整分页时为 false"
+        },
         "interface_evidence_truncated": {
           "type": "boolean",
-          "description": "接口证据按上限截断（接口数超过 interface_evidence_limit）"
+          "description": "接口实现源码缺失或不完整；完整读取时为 false"
         },
-        "interface_evidence_limit": { "type": "integer" },
+        "interface_evidence_limit": {
+          "type": "integer",
+          "description": "接口证据数量上限；0 表示不设上限"
+        },
         "interface_evidence_count": {
           "type": "integer",
           "description": "实际拥有接口实现源码证据的接口数"
@@ -125,14 +720,22 @@
         "interface_evidence_missing": {
           "type": "array",
           "description": "没有对应接口实现源码证据的接口 ID；非空时 complete 必须为 false",
-          "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" }
+          "items": {
+            "type": "string",
+            "pattern": "^IF-[A-Z]+-\\d{3}$"
+          }
         },
         "call_chain_truncated": {
           "type": "boolean",
-          "description": "调用链分析按上限截断（接口数超过 call_chain_limit）"
+          "description": "调用链因扫描缺口而不完整；完整读取时为 false"
         },
-        "call_chain_limit": { "type": "integer" },
-        "interfaces_total": { "type": "integer" },
+        "call_chain_limit": {
+          "type": "integer",
+          "description": "调用链条目上限；0 表示不设上限"
+        },
+        "interfaces_total": {
+          "type": "integer"
+        },
         "scan_integrity_complete": {
           "type": "boolean",
           "description": "接口还原阶段的完整性闭环门禁是否通过（发现文件数 == 解析成功数 + 失败数，且与 code_inventory 一致）"
@@ -140,19 +743,40 @@
         "scan_integrity_reasons": {
           "type": "array",
           "description": "未通过的具体原因（照抄接口还原阶段的结论，不改写）",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "repositories": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["repo", "status", "truncated_scope", "encoding_skipped"],
+            "required": [
+              "repo",
+              "status",
+              "truncated_scope",
+              "encoding_skipped"
+            ],
             "properties": {
-              "repo": { "type": "string" },
-              "status": { "type": "string" },
-              "truncated_scope": { "type": "array", "items": { "type": "string" } },
-              "encoding_skipped": { "type": "array", "items": { "type": "string" } }
+              "repo": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "truncated_scope": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "encoding_skipped": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             }
           }
         }
@@ -167,16 +791,57 @@
       "description": "已停产（C-108）：仅为历史产物回读兼容保留，新产物不再写入；由视图一 claim 级状态与视图二 risk_level 取代",
       "items": {
         "type": "object",
-        "required": ["requirement_id", "description"],
+        "required": [
+          "requirement_id",
+          "description"
+        ],
         "properties": {
-          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
-          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
-          "interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } },
-          "claim_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^CLM-\\d{3,}$" } },
-          "kind": { "type": "string", "enum": ["partial_implementation", "evidence_gap"] },
-          "severity": { "type": "string", "enum": ["P0", "P1", "P2"] },
-          "action": { "type": "string" },
-          "description": { "type": "string", "minLength": 1 }
+          "requirement_id": {
+            "type": "string",
+            "pattern": "^REQ-\\d{3}$"
+          },
+          "interface_id": {
+            "type": "string",
+            "pattern": "^IF-[A-Z]+-\\d{3}$"
+          },
+          "interface_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^IF-[A-Z]+-\\d{3}$"
+            }
+          },
+          "claim_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^CLM-\\d{3,}$"
+            }
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "partial_implementation",
+              "evidence_gap"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "action": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
@@ -185,15 +850,48 @@
       "description": "已停产（C-108）：仅为历史产物回读兼容保留，新产物不再写入；由视图一 claim 级 missing 状态取代",
       "items": {
         "type": "object",
-        "required": ["requirement_id", "title"],
+        "required": [
+          "requirement_id",
+          "title"
+        ],
         "properties": {
-          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
-          "title": { "type": "string", "minLength": 1 }
-          ,"claim_id": { "type": "string", "pattern": "^CLM-\\d{3,}$" }
-          ,"claim_statement": { "type": "string" }
-          ,"interface_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } }
-          ,"evidence_refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^EVD-\\d{4,}$" } }
-          ,"unmet_conditions": { "type": "array", "items": { "type": "string" } }
+          "requirement_id": {
+            "type": "string",
+            "pattern": "^REQ-\\d{3}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "claim_id": {
+            "type": "string",
+            "pattern": "^CLM-\\d{3,}$"
+          },
+          "claim_statement": {
+            "type": "string"
+          },
+          "interface_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^IF-[A-Z]+-\\d{3}$"
+            }
+          },
+          "evidence_refs": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^EVD-\\d{4,}$"
+            }
+          },
+          "unmet_conditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -202,15 +900,48 @@
       "description": "第一批：高风险服务端行为的确定性证据门槛检查（无直接证据时不得判已实现）",
       "items": {
         "type": "object",
-        "required": ["requirement_id", "rule_id", "category", "status", "description"],
+        "required": [
+          "requirement_id",
+          "rule_id",
+          "category",
+          "status",
+          "description"
+        ],
         "properties": {
-          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
-          "claim_id": { "type": "string", "pattern": "^CLM-\\d{3,}$" },
-          "rule_id": { "type": "string", "pattern": "^EVID-" },
-          "category": { "type": "string" },
-          "status": { "type": "string", "enum": ["evidence_found", "needs_verification"] },
-          "description": { "type": "string", "minLength": 1 },
-          "evidence_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^EVD-\\d{4,}$" } }
+          "requirement_id": {
+            "type": "string",
+            "pattern": "^REQ-\\d{3}$"
+          },
+          "claim_id": {
+            "type": "string",
+            "pattern": "^CLM-\\d{3,}$"
+          },
+          "rule_id": {
+            "type": "string",
+            "pattern": "^EVID-"
+          },
+          "category": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "evidence_found",
+              "needs_verification"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^EVD-\\d{4,}$"
+            }
+          }
         }
       }
     },
@@ -219,19 +950,39 @@
       "description": "视图二：变更范围（C-09 双分支 diff）。接口命中口径=定义文件被改 **或** 任一 related_files 被改（行为级）；事实字段程序化派生，impact_analysis 由 LLM 生成（C-108，编号经程序校验）；无基线分支时为空数组",
       "items": {
         "type": "object",
-        "required": ["interface_id", "repo", "file", "change", "covered_by"],
+        "required": [
+          "interface_id",
+          "repo",
+          "file",
+          "change",
+          "covered_by"
+        ],
         "properties": {
-          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
-          "repo": { "type": "string" },
-          "file": { "type": "string", "description": "接口定义文件（仓内相对路径）" },
+          "interface_id": {
+            "type": "string",
+            "pattern": "^IF-[A-Z]+-\\d{3}$"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string",
+            "description": "接口定义文件（仓内相对路径）"
+          },
           "change": {
             "type": "string",
-            "enum": ["added", "modified"],
+            "enum": [
+              "added",
+              "modified"
+            ],
             "description": "接口定义文件的变更类型；定义文件未变（仅关联文件变）时取关联文件的变更类型，来源见 matched_via"
           },
           "matched_via": {
             "type": "string",
-            "enum": ["definition", "related_file"],
+            "enum": [
+              "definition",
+              "related_file"
+            ],
             "description": "definition=接口定义文件本身被改；related_file=定义文件没改，但依赖（Service/DTO/Entity/Enum）被改"
           },
           "related_changed_files": {
@@ -240,9 +991,19 @@
             "items": {
               "type": "object",
               "properties": {
-                "file": { "type": "string" },
-                "role": { "type": "string" },
-                "change": { "type": "string", "enum": ["added", "modified"] }
+                "file": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "change": {
+                  "type": "string",
+                  "enum": [
+                    "added",
+                    "modified"
+                  ]
+                }
               }
             }
           },
@@ -250,39 +1011,94 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["requirement_id", "claim_ids", "status"],
+              "required": [
+                "requirement_id",
+                "claim_ids",
+                "status"
+              ],
               "properties": {
-                "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
-                "claim_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^CLM-\\d{3,}$" } },
-                "status": { "type": "string", "enum": ["implemented", "partial", "missing", "undetermined"] }
+                "requirement_id": {
+                  "type": "string",
+                  "pattern": "^REQ-\\d{3}$"
+                },
+                "claim_ids": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^CLM-\\d{3,}$"
+                  }
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "implemented",
+                    "partial",
+                    "missing",
+                    "undetermined"
+                  ]
+                }
               }
             }
           },
           "evidence_level": {
             "type": "string",
-            "enum": ["body", "callee", "file", "related_file", "none"],
+            "enum": [
+              "body",
+              "callee",
+              "file",
+              "related_file",
+              "none"
+            ],
             "description": "行级变更判定等级（来自接口还原的 change_evidence）：body=本体方法被改；callee=调用链上的代码被改；file=本体文件被改但改动行不在跨度内；related_file=仅关联文件被改"
           },
           "covered_by": {
             "type": "array",
             "description": "映射到该接口的需求条目（空 = 变更接口未被需求覆盖）",
-            "items": { "type": "string", "pattern": "^REQ-\\d{3}$" }
+            "items": {
+              "type": "string",
+              "pattern": "^REQ-\\d{3}$"
+            }
           },
           "risk_level": {
             "type": "string",
-            "enum": ["P0", "P1", "P2"],
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ],
             "description": "程序派生的回归优先级下限（原 incremental_findings 口径：未被需求覆盖/评审状态异常=P1，待核查=P2）；LLM 影响分析失败时的兜底展示"
           },
           "impact_analysis": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["summary", "risk_level"],
+            "required": [
+              "summary",
+              "risk_level"
+            ],
             "description": "LLM 影响分析（C-108）：接口编号经程序校验，分析文本为模型生成，需人工复核",
             "properties": {
-              "summary": { "type": "string", "minLength": 1 },
-              "impact_surface": { "type": "array", "items": { "type": "string" } },
-              "test_suggestion": { "type": "string" },
-              "risk_level": { "type": "string", "enum": ["P0", "P1", "P2"] }
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "impact_surface": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "test_suggestion": {
+                "type": "string"
+              },
+              "risk_level": {
+                "type": "string",
+                "enum": [
+                  "P0",
+                  "P1",
+                  "P2"
+                ]
+              }
             }
           }
         }
@@ -293,45 +1109,190 @@
       "description": "接口实现的静态递归调用链；新产物使用结构化 callee 节点，旧产物可保留一跳字符串",
       "items": {
         "type": "object",
-        "required": ["interface_id", "entry", "callees", "analysis_method"],
+        "required": [
+          "interface_id",
+          "entry",
+          "callees",
+          "analysis_method"
+        ],
         "properties": {
-          "interface_id": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" },
+          "interface_id": {
+            "type": "string",
+            "pattern": "^IF-[A-Z]+-\\d{3}$"
+          },
           "entry": {
             "type": "object",
             "properties": {
-              "repo": { "type": "string" },
-              "file": { "type": "string" }
+              "repo": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "method_name": {
+                "type": "string"
+              },
+              "start_line": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              },
+              "end_line": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              }
             }
           },
           "callees": {
             "type": "array",
             "items": {
               "anyOf": [
-                { "type": "string" },
+                {
+                  "type": "string"
+                },
                 {
                   "type": "object",
                   "properties": {
-                    "file": { "type": "string" },
-                    "role": { "type": "string" },
-                    "start_line": { "type": ["integer", "null"], "minimum": 1 },
-                    "end_line": { "type": ["integer", "null"], "minimum": 1 },
-                    "depth": { "type": ["integer", "null"], "minimum": 1 },
-                    "call_line": { "type": ["integer", "null"], "minimum": 1 }
+                    "file": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string"
+                    },
+                    "method_name": {
+                      "type": "string"
+                    },
+                    "start_line": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1
+                    },
+                    "end_line": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1
+                    },
+                    "depth": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1
+                    },
+                    "call_line": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1
+                    }
                   }
                 }
               ]
             }
           },
-          "status": { "type": "string", "enum": ["complete", "partial"] },
-          "resolved_calls": { "type": "integer", "minimum": 0 },
-          "resolved_nodes": { "type": "integer", "minimum": 0 },
-          "unresolved_calls": { "type": "integer", "minimum": 0 },
-          "unresolved": { "type": "array" },
-          "max_depth": { "type": "integer", "minimum": 0 },
+          "status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial"
+            ]
+          },
+          "resolved_calls": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resolved_nodes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unresolved_calls": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unresolved": {
+            "type": "array"
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "caller_file",
+                "caller_start_line",
+                "callee_file",
+                "callee_start_line",
+                "depth"
+              ],
+              "properties": {
+                "caller_file": {
+                  "type": "string"
+                },
+                "caller_role": {
+                  "type": "string"
+                },
+                "caller_method": {
+                  "type": "string"
+                },
+                "caller_start_line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "caller_end_line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "callee_file": {
+                  "type": "string"
+                },
+                "callee_role": {
+                  "type": "string"
+                },
+                "callee_method": {
+                  "type": "string"
+                },
+                "callee_start_line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "callee_end_line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "depth": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "call_line": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
           "analysis_method": {
             "type": "string",
             "description": "调用链分析方法标注（非置信度）：static_recursive=静态递归解析，legacy_static_one_hop=旧版一跳正则",
-            "enum": ["static_recursive", "legacy_static_one_hop"]
+            "enum": [
+              "static_recursive",
+              "legacy_static_one_hop"
+            ]
           }
         }
       }
@@ -341,13 +1302,34 @@
       "description": "已停产（C-108）：仅为历史产物回读兼容保留，新产物不再写入；其判定已映射为 change_scope[].risk_level",
       "items": {
         "type": "object",
-        "required": ["severity", "kind", "description", "repo", "file"],
+        "required": [
+          "severity",
+          "kind",
+          "description",
+          "repo",
+          "file"
+        ],
         "properties": {
-          "severity": { "type": "string", "enum": ["P0", "P1", "P2"] },
-          "kind": { "type": "string" },
-          "description": { "type": "string" },
-          "repo": { "type": "string" },
-          "file": { "type": "string" }
+          "severity": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          }
         }
       }
     },
@@ -356,10 +1338,17 @@
       "description": "基线→被测分支删除的文件（C-09；被测侧无源码可关联接口，单列）",
       "items": {
         "type": "object",
-        "required": ["repo", "file"],
+        "required": [
+          "repo",
+          "file"
+        ],
         "properties": {
-          "repo": { "type": "string" },
-          "file": { "type": "string" }
+          "repo": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          }
         }
       }
     },
@@ -368,19 +1357,49 @@
       "description": "变更但未关联任何接口定义文件的文件（C-09；业务逻辑层变更等——接口签名未变但行为可能变更，需人工复核）",
       "items": {
         "type": "object",
-        "required": ["repo", "file", "change"],
+        "required": [
+          "repo",
+          "file",
+          "change"
+        ],
         "properties": {
-          "repo": { "type": "string" },
-          "file": { "type": "string" },
-          "change": { "type": "string", "enum": ["added", "modified"] },
+          "repo": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "change": {
+            "type": "string",
+            "enum": [
+              "added",
+              "modified"
+            ]
+          },
           "attribution": {
             "type": "object",
             "additionalProperties": false,
             "description": "LLM 盲区归因（C-108）：引用编号经程序校验（仅保留真实存在的接口/需求），归因理由为模型生成",
             "properties": {
-              "likely_interfaces": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^IF-[A-Z]+-\\d{3}$" } },
-              "likely_requirements": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^REQ-\\d{3}$" } },
-              "rationale": { "type": "string" }
+              "likely_interfaces": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^IF-[A-Z]+-\\d{3}$"
+                }
+              },
+              "likely_requirements": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^REQ-\\d{3}$"
+                }
+              },
+              "rationale": {
+                "type": "string"
+              }
             }
           }
         }
@@ -389,12 +1408,27 @@
     "change_summary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["nature", "overall_risk", "regression_advice"],
+      "required": [
+        "nature",
+        "overall_risk",
+        "regression_advice"
+      ],
       "description": "LLM 变更总评（C-108）：变更性质/整体风险/回归建议；LLM 失败时整键缺省",
       "properties": {
-        "nature": { "type": "string" },
-        "overall_risk": { "type": "string", "enum": ["P0", "P1", "P2"] },
-        "regression_advice": { "type": "string" }
+        "nature": {
+          "type": "string"
+        },
+        "overall_risk": {
+          "type": "string",
+          "enum": [
+            "P0",
+            "P1",
+            "P2"
+          ]
+        },
+        "regression_advice": {
+          "type": "string"
+        }
       }
     },
     "review_log": {
@@ -402,13 +1436,143 @@
       "description": "人工审核记录（F-REVW-06：通过/驳回 + 回流；E-REVIEW-03 闭环）",
       "items": {
         "type": "object",
-        "required": ["requirement_id", "decision", "timestamp"],
+        "required": [
+          "requirement_id",
+          "decision",
+          "timestamp"
+        ],
         "properties": {
-          "requirement_id": { "type": "string", "pattern": "^REQ-\\d{3}$" },
-          "decision": { "type": "string", "enum": ["approved", "rejected"] },
-          "reason": { "type": "string" },
-          "resubmitted": { "type": "boolean", "description": "驳回后是否已回流重新生成" },
-          "timestamp": { "type": "string", "format": "date-time", "description": "UTC ISO-8601" }
+          "requirement_id": {
+            "type": "string",
+            "pattern": "^REQ-\\d{3}$"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "resubmitted": {
+            "type": "boolean",
+            "description": "驳回后是否已回流重新生成"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC ISO-8601"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "record_fixture_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "add_interface_id",
+        "query_interface_id",
+        "delete_interface_id",
+        "marker_field",
+        "add_body",
+        "query_body",
+        "target_body",
+        "id_field",
+        "add_success_message",
+        "query_success_message",
+        "delete_success_message",
+        "cleanup_mode",
+        "source_refs"
+      ],
+      "properties": {
+        "kind": {
+          "const": "create_query_soft_delete"
+        },
+        "add_interface_id": {
+          "type": "string"
+        },
+        "query_interface_id": {
+          "type": "string"
+        },
+        "delete_interface_id": {
+          "type": "string"
+        },
+        "marker_field": {
+          "type": "string"
+        },
+        "add_body": {
+          "type": "object"
+        },
+        "query_body": {
+          "type": "object"
+        },
+        "target_body": {
+          "type": "object"
+        },
+        "id_field": {
+          "enum": [
+            "id",
+            "ids"
+          ]
+        },
+        "add_success_message": {
+          "type": "string"
+        },
+        "query_success_message": {
+          "type": "string"
+        },
+        "delete_success_message": {
+          "type": "string"
+        },
+        "cleanup_mode": {
+          "const": "soft_delete"
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "response_assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "op"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "equals",
+              "not_equals",
+              "exists",
+              "not_exists",
+              "null_or_missing",
+              "non_empty",
+              "contains",
+              "greater_than",
+              "less_than",
+              "not_blank",
+              "equals_request",
+              "in",
+              "not_in"
+            ]
+          },
+          "value": {}
         }
       }
     }
@@ -416,31 +1580,70 @@
   "allOf": [
     {
       "if": {
-        "properties": { "schema_version": { "const": "2.0" } },
-        "required": ["schema_version"]
+        "properties": {
+          "schema_version": {
+            "const": "2.0"
+          }
+        },
+        "required": [
+          "schema_version"
+        ]
       },
       "then": {
         "required": [
-          "evidence_catalog", "scan_coverage", "deterministic_checks", "change_scope", "removed_files",
-          "unmatched_changed_files", "call_chains", "incremental_findings"
+          "evidence_catalog",
+          "scan_coverage",
+          "deterministic_checks",
+          "change_scope",
+          "removed_files",
+          "unmatched_changed_files",
+          "call_chains",
+          "incremental_findings"
         ],
         "properties": {
-          "mappings": { "items": { "required": ["interface_ids", "claim_assessments", "evidence"] } }
+          "mappings": {
+            "items": {
+              "required": [
+                "interface_ids",
+                "claim_assessments",
+                "evidence"
+              ]
+            }
+          }
         }
       }
     },
     {
       "if": {
-        "properties": { "schema_version": { "const": "2.1" } },
-        "required": ["schema_version"]
+        "properties": {
+          "schema_version": {
+            "const": "2.1"
+          }
+        },
+        "required": [
+          "schema_version"
+        ]
       },
       "then": {
         "required": [
-          "evidence_catalog", "scan_coverage", "deterministic_checks", "change_scope", "removed_files",
-          "unmatched_changed_files", "call_chains"
+          "evidence_catalog",
+          "scan_coverage",
+          "deterministic_checks",
+          "change_scope",
+          "removed_files",
+          "unmatched_changed_files",
+          "call_chains"
         ],
         "properties": {
-          "mappings": { "items": { "required": ["interface_ids", "claim_assessments", "evidence"] } }
+          "mappings": {
+            "items": {
+              "required": [
+                "interface_ids",
+                "claim_assessments",
+                "evidence"
+              ]
+            }
+          }
         }
       }
     }

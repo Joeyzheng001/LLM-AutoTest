@@ -4,8 +4,8 @@
 // 红线：low_confidence（unknown 参数，X-GEN-03）与 warnings 如实标注，前端不计算。
 import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
-import { getTestcases } from '../api/client'
-import type { E2eTestCaseEntry, TestCaseEntry } from '../api/types'
+import { getTestcases, getReviewDiagnostics } from '../api/client'
+import type { E2eTestCaseEntry, TestCaseEntry, OracleDiagnostic } from '../api/types'
 import { CASE_CATEGORY_LABELS } from '../api/labels'
 
 const _jobId = ref('')
@@ -16,6 +16,7 @@ const props = defineProps<{ initialJobId?: string; viewKey?: string }>()
 const cases = ref<TestCaseEntry[]>([])
 const e2eCases = ref<E2eTestCaseEntry[]>([])
 const warnings = ref<string[]>([])
+const processedWarnings = ref<OracleDiagnostic[]>([])
 const loading = ref(false)
 const error = ref('')
 
@@ -38,15 +39,29 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const payload = await getTestcases(_jobId.value)
+    const [payload, diagnostics] = await Promise.all([
+      getTestcases(_jobId.value),
+      getReviewDiagnostics(_jobId.value).catch(() => null),
+    ])
     cases.value = payload.cases
     e2eCases.value = payload.e2e_cases ?? []
-    warnings.value = payload.warnings ?? []
+    const byMessage = new Map((diagnostics?.items ?? []).map((item) => [item.message, item]))
+    processedWarnings.value = (diagnostics?.items ?? []).filter((item) =>
+      ['resolved', 'replaced'].includes(item.status),
+    )
+    warnings.value = (payload.warnings ?? []).flatMap((message) => {
+      const item = byMessage.get(message)
+      if (!item) return [message]
+      return ['resolved', 'replaced'].includes(item.status)
+        ? []
+        : [`${item.summary || item.message}；系统处理结果：${item.action}`]
+    })
   } catch (err) {
     error.value = err instanceof Error ? err.message : '用例产物加载失败'
     cases.value = []
     e2eCases.value = []
     warnings.value = []
+    processedWarnings.value = []
   } finally {
     loading.value = false
   }
@@ -101,6 +116,14 @@ function paramsText(params: Record<string, unknown> | undefined): string {
       </div>
 
       <!-- 生成质量告警（X-GEN-01/02 如实标注） -->
+      <details v-if="processedWarnings.length" class="hint">
+        <summary>系统已处理 {{ processedWarnings.length }} 条历史候选记录</summary>
+        <ul>
+          <li v-for="item in processedWarnings" :key="item.message">
+            {{ item.summary }}：{{ item.action }}
+          </li>
+        </ul>
+      </details>
       <div v-for="(warning, index) in warnings" :key="index" class="hint hint-warning">
         {{ warning }}
       </div>
@@ -113,7 +136,7 @@ function paramsText(params: Record<string, unknown> | undefined): string {
               <th scope="col">类别</th>
               <th scope="col">标题</th>
               <th scope="col">溯源（F-GEN-04）</th>
-              <th scope="col">参数</th>
+              <th scope="col">参数与场景条件</th>
               <th scope="col">预期</th>
               <th scope="col">脚本</th>
             </tr>
@@ -145,11 +168,42 @@ function paramsText(params: Record<string, unknown> | undefined): string {
                 </div>
               </td>
               <td>
-                <span class="mono loc">{{ paramsText(item.params) }}</span>
+                <span class="mono loc">{{
+                  item.execution_blockers?.length && !Object.keys(item.params ?? {}).length
+                    ? '有效请求待补齐'
+                    : paramsText(item.params)
+                }}</span>
+                <div
+                  v-for="(condition, index) in item.state_conditions ?? []"
+                  :key="index"
+                  class="loc"
+                >
+                  {{ condition.mode === 'integration' ? '联调前提' : '指定状态' }}：{{
+                    condition.description
+                  }}
+                </div>
+                <div
+                  v-for="(blocker, index) in item.execution_blockers ?? []"
+                  :key="`blocker-${index}`"
+                  class="state-error"
+                >
+                  待执行：{{ blocker }}
+                </div>
+                <div
+                  v-if="item.execution_readiness === 'blocked' && !item.execution_blockers?.length"
+                  class="loc"
+                >
+                  设计已保留，执行时检查所需状态控制能力
+                </div>
               </td>
               <td>
                 <div class="req-cell">
-                  <span class="desc">{{ item.expected }}</span>
+                  <span class="desc">{{
+                    item.expected === 'unresolved' ? 'HTTP 响应映射待确认' : item.expected
+                  }}</span>
+                  <span v-if="item.expected_behavior" class="desc">{{
+                    item.expected_behavior.description
+                  }}</span>
                   <span v-if="item.assertions?.length" class="mono loc">
                     {{ item.assertions.length }} 条响应字段断言
                   </span>

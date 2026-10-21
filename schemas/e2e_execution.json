@@ -1,0 +1,566 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/execution",
+  "title": "执行结果（模块 6 EXEC，主笔：丙；D5 载体，数值程序化汇总不经 LLM）",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "job_id",
+    "results",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^job-"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "interface_id",
+          "passed",
+          "timestamp"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "pattern": "^(TC|E2E)-\\d{3,}$"
+          },
+          "interface_id": {
+            "type": "string",
+            "pattern": "^(IF-[A-Z]+|UI-E2E)-\\d{3}$"
+          },
+          "case_type": {
+            "type": "string",
+            "enum": [
+              "api",
+              "e2e"
+            ]
+          },
+          "requirement_id": {
+            "type": "string",
+            "pattern": "^REQ-\\d{3}$"
+          },
+          "claim_id": {
+            "type": "string",
+            "pattern": "^CLM-\\d{3,}$"
+          },
+          "testpoint_id": {
+            "type": "string",
+            "pattern": "^TP-\\d{3}$"
+          },
+          "oracle_id": {
+            "type": "string",
+            "pattern": "^ORC-IF-[A-Z]+-\\d{3}-\\d{3}$"
+          },
+          "oracle_status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "unverified"
+            ]
+          },
+          "oracle_evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^EVD-\\d{4,}$"
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "boundary",
+              "exception",
+              "e2e"
+            ]
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "failure_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "assertion",
+              "environment",
+              null
+            ],
+            "description": "R-EXEC-03 二态：断言失败进缺陷清单；环境失败隔离待环境确认（X-EXEC-01）"
+          },
+          "failure_reason": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "string",
+            "description": "用例预期断言，供失败明细对照"
+          },
+          "actual_status": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "实际响应状态"
+          },
+          "actual_body": {
+            "description": "完整实际响应体（敏感字段已脱敏）"
+          },
+          "request": {
+            "type": "object",
+            "description": "接口调用的实际请求详情；URL 查询参数与敏感字段已脱敏",
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "headers": {
+                "type": "object"
+              },
+              "query_params": {},
+              "body": {},
+              "attempted": {
+                "type": "boolean",
+                "description": "false 表示仅生成预览，未发送请求"
+              }
+            },
+            "additionalProperties": false
+          },
+          "assertion_scope": {
+            "type": "string",
+            "enum": [
+              "business",
+              "response_structure",
+              "framework_boundary",
+              "status_only",
+              "ui_steps",
+              "unverified"
+            ]
+          },
+          "assertion_results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "op",
+                "found",
+                "passed"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string"
+                },
+                "expected": {},
+                "actual": {},
+                "found": {
+                  "type": "boolean"
+                },
+                "passed": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "http_response",
+                  "browser"
+                ]
+              },
+              "method": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "page_url": {
+                "type": "string"
+              },
+              "page_title": {
+                "type": "string"
+              },
+              "screenshot_ref": {
+                "type": "string"
+              },
+              "console_errors": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "request_failures": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "capture_error": {
+                "type": "string"
+              }
+            }
+          },
+          "timeout": {
+            "type": "boolean",
+            "description": "X-EXEC-02 执行超时"
+          },
+          "skipped": {
+            "type": "boolean",
+            "description": "true 仅表示未执行，不包含已请求待判定"
+          },
+          "skipped_reason": {
+            "type": "string",
+            "enum": [
+              "前置缺失",
+              "源码预期待确认",
+              "框架响应待确认",
+              "目标分支未触达",
+              "响应契约待确认",
+              "取值未确认"
+            ],
+            "description": "未执行或已请求待判定原因；使用 execution_state 区分"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC ISO-8601"
+          },
+          "execution_state": {
+            "type": "string",
+            "enum": [
+              "executed",
+              "not_executed",
+              "observed_unjudged",
+              "reused_response"
+            ]
+          },
+          "execution_blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "missing_control_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source_case_id": {
+            "type": "string"
+          },
+          "source_params": {
+            "type": "object",
+            "description": "复用真实响应的原请求参数，仅脱敏"
+          },
+          "response_contract_passed": {
+            "type": "boolean"
+          },
+          "fixture_context": {
+            "type": "boolean"
+          },
+          "branch_observation": {
+            "type": "object",
+            "description": "依据当前源码直接字段拷贝与返回条件进行观测，不代表已跟踪内部执行",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "unconfirmed",
+                  "not_reached",
+                  "matched_observable_path"
+                ]
+              },
+              "conditions": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "unknown_conditions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "scenario_type": {
+            "enum": [
+              "normal",
+              "boundary",
+              "exception",
+              "permission",
+              "state_transition",
+              "consistency"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "passed",
+              "assertion_failed",
+              "environment_failed",
+              "automation_error",
+              "blocked",
+              "unjudged",
+              "not_executed",
+              "running"
+            ]
+          },
+          "step_results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "step_id",
+                "phase",
+                "intent",
+                "action",
+                "status"
+              ]
+            }
+          },
+          "failed_step_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence_complete": {
+            "type": "boolean"
+          },
+          "evidence_errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "trace_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cleanup_errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "network_requests": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "case_fingerprint": {
+            "type": "string"
+          },
+          "rule_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "priority": {
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "程序化汇总（F-RPT-02 数据源；骨架 ExecutionSummary 已实现）",
+      "required": [
+        "total",
+        "passed",
+        "failed_assertion",
+        "failed_environment"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_assertion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_environment": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "interrupted": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "X-EXEC-04：服务崩溃后剩余用例标中断"
+        },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "真正未执行用例数，已请求待判定单独统计"
+        },
+        "by_type": {
+          "type": "object",
+          "description": "可选 API/E2E 分项汇总；存在 E2E 结果时由执行节点程序化生成",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "total",
+              "passed",
+              "failed_assertion",
+              "failed_environment"
+            ],
+            "properties": {
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "passed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed_assertion": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed_environment": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "skipped": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "actual_requests": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "not_executed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "observed_unjudged": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reused_response": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "actual_requests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_executed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observed_unjudged": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reused_response": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "description": "全局和单用例造数记录；单用例包含软删除确认状态",
+      "items": {
+        "type": "object"
+      }
+    },
+    "degraded_protocols": {
+      "type": "array",
+      "description": "F-RPT-03 降级清单：降级协议显式记录（X-EXEC-03）",
+      "items": {
+        "type": "object",
+        "required": [
+          "protocol",
+          "mode"
+        ],
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "rest",
+              "grpc",
+              "graphql",
+              "soap",
+              "mq"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "const": "脚本生成成功+Mock执行演示"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "running",
+        "completed",
+        "failed"
+      ]
+    },
+    "design_run_id": {
+      "type": "string"
+    },
+    "report_ref": {
+      "type": "string"
+    }
+  }
+}

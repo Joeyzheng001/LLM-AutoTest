@@ -5,6 +5,7 @@ import { onMounted, ref } from 'vue'
 import { listJobs } from '../api/client'
 import type { JobListItem } from '../api/types'
 
+const props = withDefaults(defineProps<{ showNodeCount?: boolean }>(), { showNodeCount: true })
 const model = defineModel<string>({ default: '' })
 
 const jobs = ref<JobListItem[]>([])
@@ -43,8 +44,11 @@ defineExpose({ refresh })
         {{ loading ? '加载中…' : '暂无任务（先在「任务配置」页提交）' }}
       </option>
       <option v-for="job in jobs" :key="job.job_id" :value="job.job_id">
-        {{ job.job_id }}{{ job.running ? '（运行中）' : '' }} · {{ job.completed }}/{{ 9 }} 节点{{
-          job.degraded ? ` · ${job.degraded} 降级` : ''
+        {{ job.job_id }}{{ job.running ? '（运行中）' : ''
+        }}{{
+          props.showNodeCount
+            ? ` · ${job.completed}/9 节点${job.degraded ? ` · ${job.degraded} 降级` : ''}`
+            : ''
         }}
       </option>
     </select>

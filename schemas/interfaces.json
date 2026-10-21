@@ -52,10 +52,21 @@
                       "required": { "type": "boolean", "description": "字段级必填性；未明确声明时省略" },
                       "required_evidence": { "type": "string", "description": "字段级 required 判定依据" },
                       "description": { "type": "string" }
+                      ,"description_origin": { "type": "string", "enum": ["source", "inferred", "unknown"] }
                       ,"default": {},
                       "constraints": { "type": "array", "items": { "type": "string" } },
                       "observed_values": { "type": "array" },
-                      "source_refs": { "type": "array", "items": { "type": "object" } }
+                      "source_refs": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "file": { "type": "string" },
+                            "line": { "type": "integer", "minimum": 1 },
+                            "end_line": { "type": "integer", "minimum": 1 }
+                          }
+                        }
+                      }
                     }
                   }
                 },
@@ -96,11 +107,75 @@
           },
           "is_fallback": { "type": "boolean", "description": "兜底仓库标记，全链路透传（D5 分列基础）" },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          ,"controller_name": { "type": "string" }
+          ,"controller_annotations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "start_line", "end_line"],
+              "properties": {
+                "name": { "type": "string" },
+                "start_line": { "type": "integer", "minimum": 1 },
+                "end_line": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
           ,"parameter_evidence": { "type": "array", "items": { "type": "object" } }
           ,"method_body_truncated": { "type": "boolean" }
           ,"method_body_char_count": { "type": "integer", "minimum": 0 }
           ,"method_body_context": { "type": "array", "items": { "type": "object" } }
-          ,"call_graph": { "type": "object" }
+          ,"code_spans": {
+            "type": "array",
+            "description": "源码方法定义节点；行号与目标代码版本一致",
+            "items": {
+              "type": "object",
+              "required": ["file", "role", "kind", "start_line", "end_line"],
+              "properties": {
+                "file": { "type": "string" },
+                "role": { "type": "string" },
+                "kind": { "type": "string", "enum": ["body", "callee"] },
+                "method_name": { "type": "string" },
+                "parameter_count": { "type": "integer", "minimum": 0 },
+                "start_line": { "type": "integer", "minimum": 1 },
+                "end_line": { "type": "integer", "minimum": 1 },
+                "depth": { "type": "integer", "minimum": 0 },
+                "call_line": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
+          ,"call_graph": {
+            "type": "object",
+            "required": ["status", "resolved_calls", "resolved_nodes", "unresolved_calls", "max_depth"],
+            "properties": {
+              "status": { "type": "string", "enum": ["complete", "partial"] },
+              "resolved_calls": { "type": "integer", "minimum": 0 },
+              "resolved_nodes": { "type": "integer", "minimum": 0 },
+              "unresolved_calls": { "type": "integer", "minimum": 0 },
+              "max_depth": { "type": "integer", "minimum": 0 },
+              "edges": {
+                "type": "array",
+                "description": "静态解析确认的直接调用边，包含 caller/callee 的方法位置与调用行",
+                "items": {
+                  "type": "object",
+                  "required": ["caller_file", "caller_start_line", "callee_file", "callee_start_line", "depth"],
+                  "properties": {
+                    "caller_file": { "type": "string" },
+                    "caller_role": { "type": "string" },
+                    "caller_method": { "type": "string" },
+                    "caller_start_line": { "type": "integer", "minimum": 1 },
+                    "caller_end_line": { "type": "integer", "minimum": 1 },
+                    "callee_file": { "type": "string" },
+                    "callee_role": { "type": "string" },
+                    "callee_method": { "type": "string" },
+                    "callee_start_line": { "type": "integer", "minimum": 1 },
+                    "callee_end_line": { "type": "integer", "minimum": 1 },
+                    "depth": { "type": "integer", "minimum": 1 },
+                    "call_line": { "type": "integer", "minimum": 1 }
+                  }
+                }
+              }
+            }
+          }
           ,"call_graph_incomplete": { "type": "boolean" }
           ,"unresolved": { "type": "array", "items": { "type": "object" } }
         }

@@ -23,7 +23,9 @@ from executor.nodes import run_testcase_generate
 from executor.nodes.testcase_generate import (
     _complete_cases_with_coverage_recovery,
     _derive_testpoints,
+    _enrich_field_descriptions,
     _enrich_testpoint_hints,
+    _filter_oracle_violations,
     _filter_param_violations,
     _parse_e2e_cases,
     _parse_llm_cases,
@@ -31,6 +33,7 @@ from executor.nodes.testcase_generate import (
     _summarize_violations,
     _synthesize_fallback_cases,
     _validate_batch_coverage,
+    _validated_review_test_oracles,
 )
 
 from helpers import change_set_payload, requirement_review_payload
@@ -38,6 +41,138 @@ from helpers import change_set_payload, requirement_review_payload
 _SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 _PROMPTS = Path(__file__).resolve().parents[3] / "prompts"
 _JOB = "job-3f2a1b8c-0000-4000-8000-000000000001"
+
+
+def _observed_request_contract() -> tuple[dict[str, Any], dict[str, Any]]:
+    interface = {
+        **_INTERFACES[0], "signature": {"method": "POST", "path": "/trial", "summary": "试算"},
+        "params": [{"name": "param", "type": "JSONObject", "in": "body", "required": True}],
+    }
+    source = 'StringUtils.isBlank(param.getString("accountNo"))'
+    runtime = (
+        '请求：POST /trial\n请求 JSON：{"accountNo":""}\nHTTP status=200\n'
+        'Content-Type: application/json\n响应 JSON：{"code":9}\n重复观测次数：2'
+    )
+    review = {
+        "schema_version": "2.2", "job_id": _JOB, "mappings": [],
+        "test_oracles": [{
+            "oracle_id": "ORC-IF-REST-001-001", "interface_id": "IF-REST-001",
+            "category": "exception", "scenario": "账户为空时拒绝请求",
+            "preconditions": [{"path": "param.accountNo", "op": "equals", "value": ""}],
+            "expected_status": "status=200", "assertions": [{"path": "code", "op": "equals", "value": 9}],
+            "evidence_refs": ["EVD-0001", "EVD-0002"],
+            "evidence_quotes": [
+                {"target": "preconditions[0]", "evidence_ref": "EVD-0001", "quote": source},
+                {"target": "expected_status", "evidence_ref": "EVD-0002", "quote": "HTTP status=200"},
+                {"target": "assertions[0]", "evidence_ref": "EVD-0002", "quote": '"code":9'},
+            ],
+        }],
+        "evidence_catalog": [
+            {"evidence_id": ref, "category": category, "role": role,
+             "interface_ids": ["IF-REST-001"], "repo": "test", "file": "Trial.java",
+             "start_line": 1, "end_line": 1, "excerpt": excerpt, "excerpt_truncated": False}
+            for ref, category, role, excerpt in [
+                ("EVD-0001", "interface_implementation", "controller", source),
+                ("EVD-0002", "runtime_observation", "runtime_contract", runtime),
+            ]
+        ],
+    }
+    return interface, review
+
+
+def test_observed_contract_rejects_variants_and_false_requirement_trace() -> None:
+    interface, review = _observed_request_contract()
+    oracles, warnings = _validated_review_test_oracles(review, [interface])
+    assert not warnings
+    base = {
+        "interface_id": interface["id"], "category": "exception",
+        "oracle_id": oracles[0]["oracle_id"], "title": "验证另一个业务分支",
+        "requirement_id": "REQ-001", "claim_id": "CLM-0001", "testpoint_id": "TP-001",
+        "params": {"param": {"accountNo": ""}},
+    }
+    valid, _ = _filter_oracle_violations([base], [interface], oracles)
+    assert valid[0]["title"] == "账户为空时拒绝请求"
+    assert not {"requirement_id", "claim_id", "testpoint_id"}.intersection(valid[0])
+    variant = {**base, "params": {"param": {"accountNo": "", "BusinType": "H3"}}}
+    rejected, issues = _filter_oracle_violations([variant], [interface], oracles)
+    assert rejected[0]["oracle_status"] == "unverified"
+    assert "精确请求" in issues[0]["message"]
+
+
+async def test_runtime_only_generation_never_asks_llm_to_invent_variants(env) -> None:
+    engine, store, te_store = env
+    interface, review = _observed_request_contract()
+    store.write(_JOB, "interfaces.json", {"schema_version": "1.0", "job_id": _JOB, "interfaces": [interface]})
+    store.write(_JOB, "review_mapping.json", review)
+    # 仅有运行观测时，任何 LLM 调用都会使本测试失败。
+    class NoLlm:
+        async def complete(self, *args, **kwargs):
+            raise AssertionError("运行观测不应展开或补产")
+    await run_testcase_generate(engine, engine.open_job(_JOB), te_store, NoLlm(), _PROMPTS)
+    payload = te_store.read_json(_JOB, "testcases.json")
+    assert len(payload["cases"]) == 1
+    case = payload["cases"][0]
+    assert case["params"] == {"param": {"accountNo": ""}}
+    assert case["title"] == "账户为空时拒绝请求"
+    assert "requirement_id" not in case and "testpoint_id" not in case
+
+
+def test_generated_success_case_uses_dto_enum_code(tmp_path: Path) -> None:
+    dto = tmp_path / "AutoApprovalAddRequest.java"
+    dto.write_text(
+        'class AutoApprovalAddRequest {\n'
+        '    @ApiModelProperty(value = "业务类型：01一级投标 02存单申购")\n'
+        '    private String businessType;\n'
+        '    @ApiModelProperty(value = "风控系统：01O32 02合规中心")\n'
+        '    private String riskSystem;\n'
+        '    @ApiModelProperty(value = "债券类型：01非利率债（含地方债） '
+        '02非利率债（不含地方债）")\n'
+        '    private java.util.List<String> bondTypes;\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    interface = {
+        "id": "IF-REST-005",
+        "code_location": {"repo": "riskwkb"},
+        "params": [{
+            "name": "request", "in": "body", "type": "AutoApprovalAddRequest",
+            "fields": [
+                {"name": "businessType", "description": "业务类型", "source_refs": [
+                    {"file": dto.name, "line": 2, "end_line": 3}
+                ]},
+                {"name": "riskSystem", "description": "风控系统", "source_refs": [
+                    {"file": dto.name, "line": 4, "end_line": 5}
+                ]},
+                {"name": "bondTypes", "description": "债券类型", "source_refs": [
+                    {"file": dto.name, "line": 6, "end_line": 8}
+                ]},
+            ],
+        }],
+    }
+    enriched = _enrich_field_descriptions([interface], {"riskwkb": tmp_path})
+    assert "01一级投标" in enriched[0]["params"][0]["fields"][0]["description"]
+    cases = [{
+        "interface_id": "IF-REST-005", "category": "normal", "expected": "status=200",
+        "params": {"request": {
+            "businessType": "一级投标", "riskSystem": "O32",
+            "bondTypes": ["非利率债（含地方债）", "非利率债（不含地方债）"],
+        }},
+    }, {
+        "interface_id": "IF-REST-005", "category": "exception", "expected": "status_class=4xx",
+        "params": {"request": {"businessType": "一级投标", "riskSystem": "O32"}},
+    }]
+    valid, violations = _filter_param_violations(cases, enriched)
+    assert not violations
+    assert valid[0]["params"]["request"] == {
+        "businessType": "01", "riskSystem": "01", "bondTypes": ["01", "02"]
+    }
+    assert valid[1]["params"]["request"] == {"businessType": "一级投标", "riskSystem": "O32"}
+    invalid, enum_violations = _filter_param_violations([{
+        "interface_id": "IF-REST-005", "category": "normal", "expected": "status=200",
+        "params": {"request": {"businessType": "01", "riskSystem": "01", "bondTypes": ["国债"]}},
+    }], enriched)
+    assert not invalid
+    assert "body.bondTypes" in enum_violations[0]["message"]
 
 _INTERFACES: list[dict[str, Any]] = [
     {
@@ -130,6 +265,31 @@ class _StubLlm:
         self.received.append(user_content)
         self.case_attempts.append(max_attempts)
         text = self._outputs[min(len(self.received), len(self._outputs)) - 1]
+        # 主流程已要求模型引用源码 oracle；旧桩的三类用例补上本测试的固定契约。
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("cases"), list):
+            context, _ = json.JSONDecoder().raw_decode(user_content)
+            for case in payload["cases"]:
+                category = case.get("category")
+                if category in ("normal", "boundary", "exception"):
+                    index = ("normal", "boundary", "exception").index(category) + 1
+                    case["oracle_id"] = f"ORC-{case.get('interface_id')}-{index:03d}"
+                    case["expected"] = "status=200"
+                    case["assertions"] = [{"path": "code", "op": "equals", "value": index}]
+                points = [
+                    point for point in context.get("testpoints", [])
+                    if point.get("interface_id") == case.get("interface_id")
+                ]
+                if points:
+                    point = points[-1] if category == "exception" else points[0]
+                    case["testpoint_id"] = point["id"]
+                    case["requirement_id"] = point["requirement_id"]
+                    if point.get("claim_id"):
+                        case["claim_id"] = point["claim_id"]
+            text = json.dumps(payload)
         return LlmResult(text=text, tokens=128, call_id=f"LLM-stub-{len(self.received):03d}")
 
 
@@ -156,6 +316,7 @@ def env(
     te_store = ArtifactStore(tmp_path, _SCHEMAS, "test-executor")
     engine = Engine(store)
     state = engine.init_job(_JOB)
+    (store.job_dir(_JOB) / "job_input.json").write_text("{}", encoding="utf-8")
     store.write(_JOB, "requirement_review.json", requirement_review_payload(_JOB))
     payloads: list[tuple[str, str, dict[str, Any] | None]] = [
         (
@@ -253,6 +414,33 @@ def env(
                     }
                 ],
                 "missing_features": [],
+                "test_oracles": [
+                    {
+                        "oracle_id": f"ORC-{interface_id}-{index:03d}",
+                        "interface_id": interface_id, "category": category,
+                        "scenario": f"测试契约 {category}", "preconditions": [],
+                        "expected_status": "status=200",
+                        "assertions": [{"path": "code", "op": "equals", "value": index}],
+                        "evidence_refs": [f"EVD-{interface_index:04d}"],
+                        "evidence_quotes": [
+                            {"target": "expected_status", "evidence_ref": f"EVD-{interface_index:04d}",
+                             "quote": "status(200)"},
+                            {"target": "assertions[0]", "evidence_ref": f"EVD-{interface_index:04d}",
+                             "quote": f'return Map.of("code", {index});'},
+                        ],
+                    }
+                    for interface_index, interface_id in enumerate(("IF-REST-001", "IF-GRPC-001"), 1)
+                    for index, category in enumerate(("normal", "boundary", "exception"), 1)
+                ],
+                "evidence_catalog": [
+                    {
+                        "evidence_id": f"EVD-{index:04d}", "category": "interface_implementation",
+                        "repo": "test-source", "file": "Contract.java", "start_line": 1, "end_line": 4,
+                        "interface_ids": [interface_id], "excerpt_truncated": False,
+                        "excerpt": 'status(200); return Map.of("code", 1); return Map.of("code", 2); return Map.of("code", 3);',
+                    }
+                    for index, interface_id in enumerate(("IF-REST-001", "IF-GRPC-001"), 1)
+                ],
             },
         ),
     ]
@@ -508,7 +696,7 @@ async def test_testcase_generate_abandon_interface(
     assert all(c["interface_id"] == "IF-GRPC-001" for c in payload["cases"])
     assert len(payload["cases"]) == 3
     # 告警必须带具体原因（原先只有接口号，排查时无法区分违规类型）
-    target = next(w for w in payload["warnings"] if "IF-REST-001" in w)
+    target = next(w for w in payload["warnings"] if "IF-REST-001" in w and "X-GEN-02" in w)
     assert "清单外参数" in target and "pageSize" in target
     # 明细落盘：含两轮记录与归一化后的入参快照
     detail = _read_param_violations(te_store)
@@ -517,10 +705,10 @@ async def test_testcase_generate_abandon_interface(
     assert detail["rounds"][0]["violations"][0]["params"].get("pageSize") == 20
 
 
-async def test_testcase_generate_missing_interface_synthesized(
+async def test_testcase_generate_missing_interface_does_not_invent_required_input(
     env: tuple[Engine, ArtifactStore, ArtifactStore],
 ) -> None:
-    """漏产接口进修复轮后，程序确定性兜底补齐，不生成残缺报告。"""
+    """模型漏产且源码预期未提供必填 id 时，明确报告缺口，不能编造输入。"""
     engine, _store, te_store = env
     state = engine.open_job(_JOB)
     # 只产 GRPC 用例（REST 漏产）
@@ -540,10 +728,11 @@ async def test_testcase_generate_missing_interface_synthesized(
 
     await run_testcase_generate(engine, state, te_store, _StubLlm([grpc_only]), _PROMPTS)
 
-    cases = te_store.read_json(_JOB, "testcases.json")["cases"]
+    payload = te_store.read_json(_JOB, "testcases.json")
+    cases = payload["cases"]
     rest = [c for c in cases if c["interface_id"] == "IF-REST-001"]
-    # 兜底补齐 REST 接口三类场景
-    assert {c["category"] for c in rest} == {"normal", "boundary", "exception"}
+    assert not rest
+    assert any("IF-REST-001" in warning for warning in payload["warnings"])
 
 
 async def test_testcase_generate_repairs_cross_node_recon_payload(
@@ -1284,12 +1473,12 @@ def test_expand_long_markers_leaves_out_of_range_and_partial_forms() -> None:
     assert expand(1025) == 1025
 
 
-def test_implementation_excerpt_reads_method_body_with_limits(tmp_path: Path) -> None:
-    """按 code_location 读实现片段：行号窗口生效、超出单接口上限即截断并标注。"""
+def test_implementation_excerpt_keeps_complete_large_method(tmp_path: Path) -> None:
+    """长方法超过旧行数和字符上限时，尾部仍完整传入。"""
     repo = tmp_path / "svc"
     repo.mkdir()
     (repo / "C.java").write_text(
-        "\n".join(f"line{i}" for i in range(1, 121)), encoding="utf-8"
+        "\n".join(f"line{i}" + "x" * 100 for i in range(1, 121)), encoding="utf-8"
     )
     excerpt = testcase_generate_module._implementation_excerpt(
         {
@@ -1297,17 +1486,17 @@ def test_implementation_excerpt_reads_method_body_with_limits(tmp_path: Path) ->
                 "repo": "svc",
                 "file": "C.java",
                 "start_line": 10,
-                "end_line": 500,  # 远超文件行数与单接口上限
+                "end_line": 120,
             }
         },
         {"svc": repo},
     )
     assert excerpt is not None
     assert excerpt["excerpt"].startswith("line10")
-    assert excerpt["truncated"] is True
-    assert excerpt["end_line"] - excerpt["start_line"] + 1 == (
-        testcase_generate_module._MAX_IMPLEMENTATION_LINES
-    )
+    assert excerpt["truncated"] is False
+    assert len(excerpt["excerpt"]) > 8_000
+    assert excerpt["excerpt"].endswith("line120" + "x" * 100)
+    assert excerpt["end_line"] == 120
 
 
 def test_implementation_excerpt_rejects_escape_and_missing(tmp_path: Path) -> None:
@@ -1520,3 +1709,28 @@ def test_implementation_excerpt_redacts_secrets_in_changed_lines() -> None:
     assert excerpt is not None
     assert "p@ss" not in excerpt["excerpt"]
     assert "<redacted>" in excerpt["excerpt"]
+
+
+def test_changed_source_retains_all_large_fragments() -> None:
+    fragments = ["x" * 12000, "TAIL_MARKER"]
+    excerpt = testcase_generate_module._changed_excerpt({
+        "change_evidence": {"truncated": False, "changed_snippets": [
+            {"file": "S.java", "start_line": i, "end_line": i, "text": text}
+            for i, text in enumerate(fragments, 1)
+        ]},
+    })
+    assert excerpt is not None and not excerpt["truncated"]
+    assert all(fragment in excerpt["excerpt"] for fragment in fragments)
+
+
+def test_old_truncated_change_uses_complete_target_method(tmp_path: Path) -> None:
+    (tmp_path / "S.java").write_text("first\nlast\n", encoding="utf-8")
+    excerpt = testcase_generate_module._implementation_excerpt({
+        "code_location": {"repo": "svc", "file": "S.java", "start_line": 1, "end_line": 2},
+        "change_evidence": {"truncated": True, "changed_snippets": [
+            {"file": "S.java", "start_line": 1, "end_line": 1, "text": "first"},
+        ]},
+    }, {"svc": tmp_path})
+    assert excerpt is not None
+    assert excerpt["source"] == "method_body"
+    assert excerpt["excerpt"] == "first\nlast"

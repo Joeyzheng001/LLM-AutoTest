@@ -12,6 +12,7 @@ import RequirementsView from './views/RequirementsView.vue'
 import TaskConfigView from './views/TaskConfigView.vue'
 import TestCasesView from './views/TestCasesView.vue'
 import TestReportView from './views/TestReportView.vue'
+import E2eWorkspace from './views/E2eWorkspace.vue'
 import { clearAccessContext, getAccessContext, getAccessMode, setAccessContext } from './api/client'
 import { navigation } from './api/navigation'
 
@@ -24,6 +25,7 @@ interface NavView {
 }
 
 const coreViews: NavView[] = [
+  { key: 'e2e', label: 'E2E 业务测试', component: E2eWorkspace, section: '分析与设计' },
   { key: 'config', label: '任务配置', component: TaskConfigView, section: '工作台' },
   { key: 'overview', label: '流水线总览', component: PipelineOverviewView, section: '工作台' },
   // C-10：三个产物独立展示屏（需求解析 / 源码扫描与接口还原 / 用例生成）
@@ -48,7 +50,7 @@ const views = computed<NavView[]>(() => {
     optional.push({
       key: 'e2e-cases',
       label: 'E2E 用例',
-      component: TestCasesView,
+      component: E2eWorkspace,
       section: '分析与设计',
       child: true,
     })
@@ -88,21 +90,21 @@ const views = computed<NavView[]>(() => {
     validation.splice(2, 0, {
       key: 'e2e-execution',
       label: 'E2E 测试报告',
-      component: TestReportView,
+      component: E2eWorkspace,
       section: '验证与交付',
       child: true,
     })
     validation.splice(5, 0, {
       key: 'e2e-defects',
       label: 'E2E 缺陷',
-      component: DefectLoopView,
+      component: E2eWorkspace,
       section: '验证与交付',
       child: true,
     })
     validation.push({
       key: 'e2e-regression',
       label: 'E2E 回归资产',
-      component: RegressionMetricsView,
+      component: E2eWorkspace,
       section: '验证与交付',
       child: true,
     })
@@ -216,7 +218,7 @@ watch(views, (next) => {
     <div class="main">
       <header class="topbar">
         <span class="topbar-title">{{ active?.label }}</span>
-        <span class="topbar-badge mono">实时数据 · orchestrator :8000</span>
+        <span class="topbar-badge mono">任务实时数据</span>
         <div
           v-if="accessMode === 'token'"
           class="access-bar"

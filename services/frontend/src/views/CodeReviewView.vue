@@ -7,7 +7,12 @@
 // 人工审核不在 9 节点口径内（D6/D7）：approved 仅记录；rejected 回流 testcase_generate。
 import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
-import { getRequirementItems, getReviewMapping, postReviewLog } from '../api/client'
+import {
+  getRequirementItems,
+  getReviewMapping,
+  getReviewDiagnostics,
+  postReviewLog,
+} from '../api/client'
 import type {
   ChangeScopeEntry,
   ChangeSummary,
@@ -20,8 +25,15 @@ import type {
   ReviewClaimAssessment,
   ReviewScanCoverage,
   ReviewCallChain,
+  FieldValueContract,
+  ReviewTestOracle,
+  OracleDiagnostic,
 } from '../api/types'
-import { CONFIDENCE_TIER_LABELS, EVIDENCE_QUALITY_LABELS, MAPPING_STATUS_LABELS } from '../api/labels'
+import {
+  CONFIDENCE_TIER_LABELS,
+  EVIDENCE_QUALITY_LABELS,
+  MAPPING_STATUS_LABELS,
+} from '../api/labels'
 
 const _jobId = ref('')
 
@@ -30,8 +42,55 @@ const props = defineProps<{ initialJobId?: string }>()
 
 const items = ref<RequirementItem[]>([])
 const mappings = ref<ReviewMapping[]>([])
+const fieldContracts = ref<FieldValueContract[]>([])
+const testOracles = ref<ReviewTestOracle[]>([])
+const testOracleWarnings = ref<string[]>([])
+const oracleDiagnostics = ref<OracleDiagnostic[]>([])
+const diagnosticGroups = computed(() =>
+  [
+    { status: 'candidate_invalid', title: '本轮仍未形成有效预期' },
+    { status: 'control_required', title: '运行控制条件未满足' },
+    { status: 'execution_pending', title: '异常触发或数据条件未满足' },
+    { status: 'response_evidence_missing', title: '响应预期尚未确认' },
+    { status: 'framework_boundary', title: 'HTTP 框架边界处理结果' },
+    { status: 'resolved', title: '系统已处理 · 正常设计或候选已保留' },
+    { status: 'replaced', title: '系统已处理 · 重复候选已替代' },
+  ]
+    .map((group) => ({
+      ...group,
+      items: oracleDiagnostics.value.filter((item) => item.status === group.status),
+    }))
+    .filter((group) => group.items.length),
+)
+const fieldFilter = ref('')
+const visibleFieldContracts = computed(() => {
+  const query = fieldFilter.value.trim().toLowerCase()
+  const matched = query
+    ? fieldContracts.value.filter((item) =>
+        `${item.interface_id} ${item.field} ${item.description}`.toLowerCase().includes(query),
+      )
+    : fieldContracts.value
+  return matched.slice(0, 200)
+})
+const unresolvedFieldCount = computed(
+  () => fieldContracts.value.filter((item) => item.value_rule_status === 'unspecified').length,
+)
 const evidenceCatalog = ref<ReviewEvidence[]>([])
 const callChains = ref<ReviewCallChain[]>([])
+const callChainFilter = ref('')
+const visibleCallChains = computed(() => {
+  const query = callChainFilter.value.trim().toLowerCase()
+  return query
+    ? callChains.value.filter((chain) =>
+        `${chain.interface_id} ${chain.entry.repo ?? ''} ${chain.entry.file ?? ''}`
+          .toLowerCase()
+          .includes(query),
+      )
+    : callChains.value
+})
+const visibleCallChainDiagrams = computed(() =>
+  visibleCallChains.value.map((chain) => ({ chain, diagram: callChainGraph(chain) })),
+)
 const scanCoverage = ref<ReviewScanCoverage | null>(null)
 const changeScope = ref<ChangeScopeEntry[]>([])
 const changeSummary = ref<ChangeSummary | null>(null)
@@ -80,12 +139,17 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const [req, review] = await Promise.all([
+    const [req, review, diagnostics] = await Promise.all([
       getRequirementItems(_jobId.value),
       getReviewMapping(_jobId.value),
+      getReviewDiagnostics(_jobId.value).catch(() => null),
     ])
     items.value = req.items
     mappings.value = review.mappings
+    fieldContracts.value = review.field_value_contracts ?? []
+    testOracles.value = review.test_oracles ?? []
+    testOracleWarnings.value = review.test_oracle_warnings ?? []
+    oracleDiagnostics.value = diagnostics?.items ?? review.test_oracle_diagnostics ?? []
     evidenceCatalog.value = review.evidence_catalog ?? []
     callChains.value = review.call_chains ?? []
     scanCoverage.value = review.scan_coverage ?? null
@@ -99,6 +163,10 @@ async function load(): Promise<void> {
     error.value = err instanceof Error ? err.message : 'Review 产物加载失败'
     items.value = []
     mappings.value = []
+    fieldContracts.value = []
+    testOracles.value = []
+    testOracleWarnings.value = []
+    oracleDiagnostics.value = []
     evidenceCatalog.value = []
     callChains.value = []
     scanCoverage.value = null
@@ -189,6 +257,197 @@ function callChainSummary(interfaceIds: string[] | undefined): string {
     : '调用链已确认'
 }
 
+type CallChainGraphNode = {
+  key: string
+  file: string
+  role: string
+  methodName: string
+  startLine: number | null
+  endLine: number | null
+  depth: number
+  x: number
+  y: number
+}
+
+type CallChainGraphEdge = {
+  key: string
+  path: string
+  callLine?: number
+  labelX: number
+  labelY: number
+  isBackEdge: boolean
+}
+
+function callChainGraph(chain: ReviewCallChain): {
+  nodes: CallChainGraphNode[]
+  edges: CallChainGraphEdge[]
+  width: number
+  height: number
+  hasEdges: boolean
+  legacyNames: string[]
+} {
+  const nodeByKey = new Map<string, CallChainGraphNode>()
+  const keyFor = (file: string, line: number | null) => `${file}:${line ?? 'entry'}`
+  const addNode = (
+    file: string,
+    role: string,
+    methodName: string | undefined,
+    startLine: number | null | undefined,
+    endLine: number | null | undefined,
+    depth: number,
+  ): string => {
+    const key = keyFor(file, startLine ?? null)
+    const existing = nodeByKey.get(key)
+    if (existing) {
+      existing.depth = Math.min(existing.depth, Math.max(0, depth))
+      if (!existing.methodName && methodName) existing.methodName = methodName
+      if (!existing.endLine && endLine) existing.endLine = endLine
+      return key
+    }
+    nodeByKey.set(key, {
+      key,
+      file,
+      role,
+      methodName: methodName ?? '',
+      startLine: startLine ?? null,
+      endLine: endLine ?? null,
+      depth: Math.max(0, depth),
+      x: 0,
+      y: 0,
+    })
+    return key
+  }
+
+  const legacyNames: string[] = []
+  const entryFile = chain.entry.file ?? '接口入口'
+  addNode(
+    entryFile,
+    chain.entry.role ?? 'controller',
+    chain.entry.method_name,
+    chain.entry.start_line,
+    chain.entry.end_line,
+    0,
+  )
+  chain.callees.forEach((callee) => {
+    if (typeof callee === 'string') {
+      legacyNames.push(callee)
+      return
+    }
+    if (!callee.file) return
+    addNode(
+      callee.file,
+      callee.role ?? 'other',
+      callee.method_name,
+      callee.start_line,
+      callee.end_line,
+      callee.depth ?? 1,
+    )
+  })
+
+  const rawEdges = chain.edges ?? []
+  rawEdges.forEach((edge) => {
+    addNode(
+      edge.caller_file,
+      edge.caller_role ?? 'other',
+      edge.caller_method,
+      edge.caller_start_line,
+      edge.caller_end_line,
+      edge.depth - 1,
+    )
+    addNode(
+      edge.callee_file,
+      edge.callee_role ?? 'other',
+      edge.callee_method,
+      edge.callee_start_line,
+      edge.callee_end_line,
+      edge.depth,
+    )
+  })
+
+  const nodes = [...nodeByKey.values()].sort(
+    (left, right) =>
+      left.depth - right.depth ||
+      left.file.localeCompare(right.file) ||
+      (left.startLine ?? 0) - (right.startLine ?? 0),
+  )
+  const columns = new Map<number, CallChainGraphNode[]>()
+  nodes.forEach((node) => columns.set(node.depth, [...(columns.get(node.depth) ?? []), node]))
+  const nodeWidth = 250
+  const nodeHeight = 88
+  const columnGap = 112
+  const rowGap = 108
+  const padding = 24
+  let maxDepth = 0
+  let maxRows = 1
+  columns.forEach((column, depth) => {
+    maxDepth = Math.max(maxDepth, depth)
+    maxRows = Math.max(maxRows, column.length)
+    column.forEach((node, index) => {
+      node.x = padding + depth * (nodeWidth + columnGap)
+      node.y = padding + index * rowGap
+    })
+  })
+  const positions = new Map(nodes.map((node) => [node.key, node]))
+  const edges = rawEdges.flatMap((edge, index) => {
+    const from = positions.get(keyFor(edge.caller_file, edge.caller_start_line))
+    const to = positions.get(keyFor(edge.callee_file, edge.callee_start_line))
+    if (!from || !to) return []
+    const x1 = from.x + nodeWidth
+    const y1 = from.y + nodeHeight / 2
+    const x2 = to.x
+    const y2 = to.y + nodeHeight / 2
+    const bend = Math.max(40, Math.abs(x2 - x1) / 2)
+    return [
+      {
+        key: `${edge.caller_file}:${edge.caller_start_line}-${edge.callee_file}:${edge.callee_start_line}-${index}`,
+        path: `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`,
+        callLine: edge.call_line,
+        labelX: (x1 + x2) / 2,
+        labelY: (y1 + y2) / 2 - 8,
+        isBackEdge: to.depth <= from.depth,
+      },
+    ]
+  })
+  return {
+    nodes,
+    edges,
+    width: padding * 2 + nodeWidth + maxDepth * (nodeWidth + columnGap),
+    height: padding * 2 + maxRows * rowGap,
+    hasEdges: edges.length > 0,
+    legacyNames,
+  }
+}
+
+function callChainRole(role: string): string {
+  const labels: Record<string, string> = {
+    controller: '控制器',
+    service: 'Service',
+    dao: 'DAO',
+    mapper: 'Mapper',
+    repository: 'Repository',
+    dto: 'DTO',
+    listener: '监听器',
+    other: '其他源码方法',
+  }
+  return labels[role.toLowerCase()] ?? role
+}
+
+function callChainFileLabel(file: string): string {
+  const parts = file.split('/')
+  const label = parts.slice(-2).join('/')
+  return label.length > 34 ? `…${label.slice(-33)}` : label
+}
+
+function callChainMethodLabel(methodName: string): string {
+  if (!methodName) return '方法名未记录'
+  return methodName.length > 34 ? `${methodName.slice(0, 33)}…` : methodName
+}
+
+function callChainNodeLines(node: CallChainGraphNode): string {
+  if (!node.startLine) return '源码行未记录'
+  return `源码行 ${node.startLine}${node.endLine ? `–${node.endLine}` : ''}`
+}
+
 function claimCountSummary(mapping: ReviewMapping): string {
   const counts = mapping.claim_counts
   if (!counts) return ''
@@ -234,6 +493,111 @@ const claimTotals = computed(() =>
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
 
     <template v-else-if="mappings.length">
+      <div class="view-head">
+        <span class="tag tag-accent">Code Review · 源码测试设计</span>
+        <span class="coverage-note"
+          >已确认 {{ testOracles.length }} 条条件化预期；执行准备单独检查</span
+        >
+      </div>
+      <details
+        v-for="group in diagnosticGroups"
+        :key="`${_jobId}-${group.status}`"
+        class="coverage-warning"
+        :class="{ 'diagnostic-done': ['resolved', 'replaced'].includes(group.status) }"
+        :open="!['resolved', 'replaced'].includes(group.status)"
+        role="status"
+      >
+        <summary>
+          <strong>{{ group.title }}</strong> · {{ group.items.length }} 条
+        </summary>
+        <ul class="coverage-details">
+          <li v-for="item in group.items" :key="`${item.interface_id}-${item.message}`">
+            {{ item.summary || item.message }}<br />系统处理结果：{{ item.action }}
+            <p v-if="item.oracle_ids?.length" class="diagnostic-links">
+              关联设计：{{ item.oracle_ids.join('、') }}
+            </p>
+            <details
+              v-if="item.summary && item.summary !== item.message"
+              class="diagnostic-original"
+            >
+              <summary>查看原始过程记录</summary>
+              {{ item.message }}
+            </details>
+          </li>
+        </ul>
+      </details>
+      <div
+        v-if="!oracleDiagnostics.length && testOracleWarnings.length"
+        class="coverage-warning"
+        role="status"
+      >
+        <strong>未进入执行清单的分支</strong>
+        <ul class="coverage-details">
+          <li v-for="warning in testOracleWarnings" :key="warning">{{ warning }}</li>
+        </ul>
+      </div>
+      <div v-if="testOracles.length" class="card">
+        <table class="mapping-table">
+          <thead>
+            <tr>
+              <th scope="col">接口 / 场景</th>
+              <th scope="col">源码确认的预期</th>
+              <th scope="col">前置条件</th>
+              <th scope="col">源码证据</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="oracle in testOracles" :key="oracle.oracle_id">
+              <td>
+                <span class="mono">{{ oracle.interface_id }}</span> · {{ oracle.category }}<br />{{
+                  oracle.scenario
+                }}
+              </td>
+              <td>
+                <span class="mono">{{
+                  oracle.expected_status === 'unresolved'
+                    ? 'HTTP 响应映射待确认'
+                    : oracle.expected_status
+                }}</span>
+                <div v-if="oracle.expected_behavior">
+                  {{ oracle.expected_behavior.description }}
+                </div>
+                <div v-for="(assertion, index) in oracle.assertions" :key="index" class="mono loc">
+                  {{ assertion.path }} {{ assertion.op }}
+                  {{ 'value' in assertion ? JSON.stringify(assertion.value) : '' }}
+                </div>
+              </td>
+              <td class="mono loc">
+                <div v-for="(condition, index) in oracle.state_conditions ?? []" :key="index">
+                  {{
+                    condition.mode === 'integration' ? '真实环境联调前提' : '待控制的场景条件'
+                  }}：{{ condition.description }}
+                </div>
+                <div
+                  v-for="(blocker, index) in oracle.execution_blockers ?? []"
+                  :key="`blocker-${index}`"
+                >
+                  待准备：{{ blocker }}
+                </div>
+                <template v-if="oracle.fixture_plan">
+                  任务自动新增记录 → 查询真实 ID → 执行用例 → 接口软删除
+                </template>
+                <template v-else>{{
+                  oracle.preconditions.length
+                    ? JSON.stringify(oracle.preconditions)
+                    : '无请求前置条件'
+                }}</template>
+              </td>
+              <td class="mono loc">
+                {{ oracle.evidence_refs.join('、') }}
+                <div v-if="oracle.fixture_plan">
+                  造数链路：{{ oracle.fixture_plan.source_refs.join('、') }}
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div v-if="scanCoverage && !scanCoverage.complete" class="coverage-warning" role="status">
         <strong>证据覆盖未闭合</strong>
         <span>当前“缺失”结论已自动降为“待核查”，请先补齐下面列出的证据范围。</span>
@@ -389,10 +753,217 @@ const claimTotals = computed(() =>
         </table>
       </div>
 
+      <section
+        v-if="callChains.length"
+        class="card call-chain-card"
+        aria-labelledby="call-chain-title"
+      >
+        <header id="call-chain-title" class="derived-title">
+          源码调用链图（{{ callChains.length }} 个接口）
+        </header>
+        <p class="dim call-chain-intro">
+          连线只表示静态解析确认的直接调用关系；虚线表示回到已出现的方法。未解析调用单独列出，不补画推测路径。
+        </p>
+        <input
+          v-model="callChainFilter"
+          class="call-chain-filter"
+          type="search"
+          placeholder="按接口编号、仓库或入口文件筛选"
+          aria-label="筛选源码调用链"
+        />
+        <details
+          v-for="{ chain, diagram } in visibleCallChainDiagrams"
+          :key="chain.interface_id"
+          class="call-chain-item"
+        >
+          <summary>
+            <span class="mono req-id">{{ chain.interface_id }}</span>
+            <span class="mono loc">{{ chain.entry.file ?? '入口文件未记录' }}</span>
+            <span class="tag" :data-chain-status="chain.status ?? 'partial'">
+              {{
+                chain.status === 'complete'
+                  ? '静态解析完整'
+                  : `待核查 · 未解析 ${chain.unresolved_calls ?? chain.unresolved?.length ?? 0} 个`
+              }}
+            </span>
+            <span class="mapping-meta">
+              {{ chain.resolved_nodes ?? diagram.nodes.length - 1 }} 个已定位方法 ·
+              {{ chain.resolved_calls ?? diagram.edges.length }} 条已确认调用
+            </span>
+          </summary>
+          <div class="call-chain-scroll">
+            <svg
+              v-if="diagram.nodes.length"
+              class="call-chain-svg"
+              :viewBox="`0 0 ${diagram.width} ${diagram.height}`"
+              :style="{ width: `${diagram.width}px`, height: `${diagram.height}px` }"
+              role="img"
+              :aria-label="`${chain.interface_id} 源码调用链，${diagram.nodes.length} 个源码方法节点，${diagram.edges.length} 条已确认调用边`"
+            >
+              <defs>
+                <marker
+                  :id="`chain-arrow-${chain.interface_id}`"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                  markerUnits="strokeWidth"
+                >
+                  <path d="M 0 0 L 8 4 L 0 8 z" class="call-chain-arrow" />
+                </marker>
+              </defs>
+              <g v-for="edge in diagram.edges" :key="edge.key">
+                <path
+                  :d="edge.path"
+                  class="call-chain-edge"
+                  :class="{ 'call-chain-back-edge': edge.isBackEdge }"
+                  :marker-end="`url(#chain-arrow-${chain.interface_id})`"
+                />
+                <text
+                  v-if="edge.callLine"
+                  :x="edge.labelX"
+                  :y="edge.labelY"
+                  class="call-chain-edge-label"
+                >
+                  调用行 {{ edge.callLine }}
+                </text>
+              </g>
+              <g
+                v-for="node in diagram.nodes"
+                :key="node.key"
+                :transform="`translate(${node.x} ${node.y})`"
+              >
+                <title>
+                  {{ node.methodName }} · {{ node.file }}:{{ node.startLine ?? '?' }}-{{
+                    node.endLine ?? '?'
+                  }}
+                </title>
+                <rect
+                  class="call-chain-node"
+                  :data-role="node.role"
+                  :width="250"
+                  :height="88"
+                  rx="10"
+                />
+                <text x="14" y="23" class="call-chain-node-role">
+                  {{ callChainRole(node.role) }} · 深度 {{ node.depth }}
+                </text>
+                <text x="14" y="44" class="call-chain-node-file">
+                  {{ callChainMethodLabel(node.methodName) }}
+                </text>
+                <text x="14" y="63" class="call-chain-node-path">
+                  {{ callChainFileLabel(node.file) }}
+                </text>
+                <text x="14" y="80" class="call-chain-node-lines">
+                  {{ callChainNodeLines(node) }}
+                </text>
+              </g>
+            </svg>
+          </div>
+          <p v-if="!diagram.hasEdges" class="call-chain-note">
+            该报告没有保存调用边数据；当前只展示能定位的源码节点，不画推测连线。
+          </p>
+          <p v-if="diagram.legacyNames.length" class="call-chain-note">
+            旧报告只保留了被调对象名称：{{
+              diagram.legacyNames.join('、')
+            }}；没有源码方法位置可绘图。
+          </p>
+          <ul v-if="chain.unresolved?.length" class="call-chain-unresolved">
+            <li
+              v-for="(unresolved, index) in chain.unresolved"
+              :key="`${chain.interface_id}-unresolved-${index}`"
+            >
+              <span class="mono"
+                >{{ String(unresolved.type ?? '未知类型') }}.{{
+                  String(unresolved.method ?? '未知方法')
+                }}</span
+              >
+              <span> {{ String(unresolved.reason ?? '未解析原因未记录') }}</span>
+            </li>
+          </ul>
+        </details>
+        <p v-if="!visibleCallChainDiagrams.length" class="dim">没有匹配的接口调用链。</p>
+      </section>
+
+      <div v-if="fieldContracts.length" class="card">
+        <details>
+          <summary>
+            字段取值依据（{{ fieldContracts.length }} 个字段；{{ unresolvedFieldCount }}
+            个取值规则未明确）
+          </summary>
+          <p class="dim">
+            编码来自源码字段说明；“示例”不代表全部合法值。未明确的字段需在执行前核对。
+          </p>
+          <input
+            v-model="fieldFilter"
+            type="search"
+            placeholder="按接口、字段或说明筛选"
+            aria-label="筛选字段取值依据"
+          />
+          <table class="mapping-table">
+            <thead>
+              <tr>
+                <th>接口</th>
+                <th>字段</th>
+                <th>取值规则</th>
+                <th>源码位置</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="item in visibleFieldContracts"
+                :key="`${item.interface_id}-${item.parameter}-${item.field}`"
+              >
+                <td class="mono">{{ item.interface_id }}</td>
+                <td class="mono">
+                  {{ item.field }} <small>({{ item.type }})</small>
+                  <small v-if="item.required !== undefined" class="mapping-meta">
+                    {{ item.required ? '必填' : '可选' }}
+                  </small>
+                </td>
+                <td>
+                  <template v-if="item.value_rule_status === 'coded_values'">
+                    {{
+                      item.documented_values
+                        .map((value) => `${value.code} ${value.label}`)
+                        .join('；')
+                    }}
+                  </template>
+                  <template v-else-if="item.value_rule_status === 'examples_only'">
+                    示例：{{ item.example_codes.join('、') }}
+                  </template>
+                  <template v-else>未明确</template>
+                  <small v-if="item.description" class="mapping-meta">
+                    {{ item.description_origin === 'source' ? '源码说明' : '未核实说明' }}：{{
+                      item.description
+                    }}
+                  </small>
+                  <small v-if="item.constraints?.length" class="mapping-meta">
+                    代码约束：{{ item.constraints.join('；') }}
+                  </small>
+                </td>
+                <td class="mono loc">
+                  {{
+                    item.source_refs
+                      .map((ref) => `${ref.file ?? ''}:${ref.line ?? ''}`)
+                      .join('；') || '—'
+                  }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="fieldContracts.length > 200" class="dim">
+            最多显示 200 条；可输入接口或字段继续筛选。
+          </p>
+        </details>
+      </div>
+
       <!-- 视图二：变更范围（C-09 双分支 diff；C-108 事实程序化派生 + LLM 影响分析） -->
       <div v-if="hasChangeScope" class="card change-scope-card">
         <header class="derived-title">
-          视图二 · 变更范围与存量回归影响（C-09 基线→被测分支 diff · 事实程序化派生 + LLM 回归影响分析）
+          视图二 · 变更范围与存量回归影响（C-09 基线→被测分支 diff · 事实程序化派生 + LLM
+          回归影响分析）
         </header>
         <div v-if="changeSummary" class="change-summary">
           <span class="tag severity-tag">{{ changeSummary.overall_risk }}</span>
@@ -671,6 +1242,27 @@ const claimTotals = computed(() =>
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
+.coverage-warning > summary {
+  cursor: pointer;
+}
+.coverage-warning.diagnostic-done {
+  background: var(--surface-2);
+  color: var(--text-2);
+  border-color: var(--border);
+}
+.diagnostic-original {
+  margin-top: 6px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.diagnostic-original > summary {
+  cursor: pointer;
+}
+.diagnostic-links {
+  margin: 4px 0;
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
 
 .coverage-warning > span {
   display: block;
@@ -775,6 +1367,110 @@ const claimTotals = computed(() =>
 .claim-detail-row > td {
   padding: var(--space-2) var(--space-3) var(--space-3);
   background: var(--surface-2);
+}
+.call-chain-card > .derived-title {
+  margin-bottom: var(--space-2);
+}
+.call-chain-intro {
+  margin: 0 0 var(--space-3);
+}
+.call-chain-filter {
+  width: min(100%, 420px);
+  margin-bottom: var(--space-3);
+}
+.call-chain-item {
+  border-top: 1px solid var(--border);
+}
+.call-chain-item > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  cursor: pointer;
+}
+.call-chain-item > summary .loc {
+  overflow-wrap: anywhere;
+}
+.tag[data-chain-status='complete'] {
+  color: var(--accent-strong);
+  background: var(--accent-dim);
+}
+.tag[data-chain-status='partial'] {
+  color: var(--warning);
+  background: var(--warning-dim);
+}
+.call-chain-scroll {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.call-chain-svg {
+  display: block;
+  max-width: none;
+}
+.call-chain-edge {
+  fill: none;
+  stroke: var(--accent-strong);
+  stroke-width: 2;
+  opacity: 0.8;
+}
+.call-chain-back-edge {
+  stroke: var(--warning);
+  stroke-dasharray: 5 4;
+}
+.call-chain-arrow {
+  fill: var(--accent-strong);
+}
+.call-chain-edge-label {
+  fill: var(--text-3);
+  font-size: 10px;
+  text-anchor: middle;
+}
+.call-chain-node {
+  fill: var(--surface);
+  stroke: var(--border-strong);
+  stroke-width: 1.25;
+}
+.call-chain-node[data-role='controller'] {
+  stroke: var(--accent-strong);
+}
+.call-chain-node[data-role='service'] {
+  stroke: var(--warning);
+}
+.call-chain-node-role {
+  fill: var(--text-3);
+  font-size: 10px;
+}
+.call-chain-node-file {
+  fill: var(--text-1);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+.call-chain-node-path {
+  fill: var(--text-3);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+}
+.call-chain-node-lines {
+  fill: var(--text-3);
+  font-size: 10px;
+}
+.call-chain-note {
+  margin: var(--space-2) 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.call-chain-unresolved {
+  margin: var(--space-2) 0 var(--space-3);
+  padding-left: var(--space-4);
+  color: var(--warning);
+  font-size: var(--text-xs);
+}
+.call-chain-unresolved li + li {
+  margin-top: var(--space-1);
 }
 .claim-detail-row summary {
   cursor: pointer;

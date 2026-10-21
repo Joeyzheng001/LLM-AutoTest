@@ -1,0 +1,63 @@
+{
+  "job_id": "job-web-a6a7f845a435",
+  "run_id": "2bab0737a20f",
+  "code_review_duration_ms": 7066339,
+  "code_review_calls": 2050,
+  "stages": {
+    "code_review_evidence_select@1.0": {
+      "calls": 477,
+      "duration_ms": 824596
+    },
+    "code_review@2.2": {
+      "calls": 1508,
+      "duration_ms": 5139964
+    },
+    "code_review_test_oracles@1.18": {
+      "calls": 64,
+      "duration_ms": 1065006
+    },
+    "code_review_change_impact@1.1": {
+      "calls": 1,
+      "duration_ms": 22692
+    }
+  },
+  "models": {
+    "deepseek-chat": 2050
+  },
+  "all_calls_ok": true,
+  "finish_reasons": {
+    "stop": 2050
+  },
+  "payload_integrity_issues": [],
+  "execution_summary": {
+    "total": 56,
+    "passed": 33,
+    "failed_assertion": 0,
+    "failed_environment": 6,
+    "skipped": 17,
+    "actual_requests": 33,
+    "observed_unjudged": 0,
+    "not_executed": 17,
+    "reused_response": 0
+  },
+  "scenario_categories": {
+    "normal": 14,
+    "boundary": 10,
+    "exception": 32
+  },
+  "interfaces_without_execution_records": [
+    "IF-REST-003",
+    "IF-REST-008"
+  ],
+  "not_executed_reasons": {
+    "downstream_response": 5,
+    "service_registry": 1,
+    "database_state_or_provenance": 3,
+    "missing_body_boundary_rejected_as_missing_required": 8
+  },
+  "implementation": {
+    "per_job_review_concurrency": 4,
+    "merge_order": "input order",
+    "full_benchmark_after_change": false
+  }
+}

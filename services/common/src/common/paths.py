@@ -26,7 +26,8 @@ def normalize_path(value: str | Path | None) -> str:
     text = str(value).strip()
     if not text:
         return ""
-    return Path(text).as_posix()
+    # POSIX 的 Path 不把反斜杠视为分隔符；先归一历史 Windows 产物。
+    return Path(text.replace("\\", "/")).as_posix()
 
 
 def paths_equal(left: str | Path | None, right: str | Path | None) -> bool:

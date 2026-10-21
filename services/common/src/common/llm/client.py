@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -24,7 +25,7 @@ from typing import Any
 import httpx
 
 from common.config import Settings
-from common.errors import X_LLM_01, PipelineError
+from common.errors import X_LLM_01, X_LLM_02, PipelineError
 from common.prompts_loader import PromptSpec
 
 # docs/12 §三：重试退避间隔（秒）；测试注入 0 加速
@@ -32,6 +33,11 @@ DEFAULT_RETRY_BACKOFF: tuple[float, float] = (5.0, 20.0)
 _MAX_ATTEMPTS = 3  # 1 次首发 + 2 次重试
 # 429 的 Retry-After 上限：防止网关给出异常大值把节点长时间挂在 sleep 上
 _MAX_RETRY_AFTER_S = 60.0
+_CONTINUE_INSTRUCTION = (
+    "上一条 assistant 内容因单次输出长度限制而中断。请从它的最后一个字符之后继续，"
+    "让新内容可以直接拼接到该内容后成为原始任务的完整输出。不要重述、删改、总结或跳过前文，"
+    "不要添加续接说明、代码围栏或其它标记。"
+)
 
 # C-17：推理模型思考块不属回答正文，
 # 不剥离则下游 JSON 解析节点全部 X-LLM-02。留痕 output_digest 仍取原始输出（诚实红线）。
@@ -120,10 +126,7 @@ def describe_transport_error(exc: httpx.TimeoutException | httpx.TransportError)
             f"{suffix}"
         )
     if isinstance(exc, httpx.WriteTimeout):
-        return (
-            f"LLM 中转站请求发送超时（{exception_name}）：请检查服务器出口网络或代理策略"
-            f"{suffix}"
-        )
+        return f"LLM 中转站请求发送超时（{exception_name}）：请检查服务器出口网络或代理策略{suffix}"
     if isinstance(exc, httpx.ProxyError):
         return f"LLM 中转站代理连接失败（{exception_name}）：请检查代理地址、凭据和网络策略{suffix}"
     if isinstance(exc, httpx.ConnectError):
@@ -191,7 +194,7 @@ class LlmClient:
                 取更小值仍在该口径内。
 
         Raises:
-            PipelineError: X-LLM-01——重试耗尽仍失败（网络/超时类）。
+            PipelineError: 网络/超时类重试耗尽，或响应无法确认完整。
         """
         call_id = f"LLM-{self._job_short()}-{self._seq:03d}"
         self._seq += 1
@@ -207,11 +210,16 @@ class LlmClient:
         error: PipelineError | None = None
         text: str | None = None
         tokens: int | None = None
+        finish_reason: str | None = None
+        continuation_rounds = 0
         try:
-            text, tokens = await self._request(system, user_content, max_attempts)
+            text, tokens, finish_reason, continuation_rounds = await self._request(
+                system, user_content, max_attempts
+            )
         except PipelineError as exc:
             error = exc
         duration_ms = int((time.monotonic() - started) * 1000)
+        payload_file = self._persist_payload(call_id, system, user_content, text)
         self._append_trace(
             {
                 "call_id": call_id,
@@ -223,7 +231,12 @@ class LlmClient:
                 "knowledge_refs": list(prompt.knowledge_refs),
                 "sampling": sampling,
                 "input_digest": _digest(system + "\x00" + user_content),
+                "input_chars": len(system) + len(user_content),
                 "output_digest": _digest(text) if text is not None else None,
+                "output_chars": len(text) if text is not None else None,
+                "payload_file": payload_file,
+                "finish_reason": finish_reason,
+                "continuation_rounds": continuation_rounds,
                 "duration_ms": duration_ms,
                 "tokens": tokens,
                 "ok": error is None,
@@ -241,36 +254,90 @@ class LlmClient:
 
     async def _request(
         self, system: str, user_content: str, max_attempts: int | None = None
-    ) -> tuple[str, int | None]:
-        """带重试的 HTTP 调用；仅网络/超时/5xx/429 类失败重试（docs/12 §三）。"""
+    ) -> tuple[str, int | None, str | None, int]:
+        """完整获取响应；遇到输出 token 上限时续接并无损拼回正文。"""
         attempts = self._max_attempts if max_attempts is None else max_attempts
         if attempts < 1:
             raise ValueError("max_attempts 必须大于 0")
+        output_parts: list[str] = []
+        total_tokens = 0
+        usage_complete = True
+        continuation_rounds = 0
+        finish_reason: str | None = None
+        while True:
+            partial_output = "".join(output_parts)
+            text, tokens, finish_reason = await self._request_with_retries(
+                system, user_content, partial_output if continuation_rounds else None, attempts
+            )
+            if tokens is None:
+                usage_complete = False
+            else:
+                total_tokens += tokens
+            if _is_output_length_limited(finish_reason):
+                delta = _continuation_delta(partial_output, text)
+                if not delta:
+                    raise PipelineError(
+                        code=X_LLM_02,
+                        message="LLM 输出达到单次上限且续接没有新增内容，无法组成完整响应",
+                    )
+                output_parts.append(delta)
+                continuation_rounds += 1
+                continue
+            if not _is_response_complete(self._settings.llm_protocol, finish_reason):
+                raise PipelineError(
+                    code=X_LLM_02,
+                    message=(
+                        "LLM 响应没有提供可确认的正常结束标记"
+                        f"（protocol={self._settings.llm_protocol}, finish_reason={finish_reason!r}）"
+                    ),
+                )
+            final_delta = _continuation_delta(partial_output, text) if continuation_rounds else text
+            if continuation_rounds and not final_delta:
+                raise PipelineError(
+                    code=X_LLM_02,
+                    message="LLM 续接响应没有新增内容，无法确认返回正文完整",
+                )
+            output_parts.append(final_delta)
+            complete_text = "".join(output_parts)
+            return (
+                complete_text,
+                total_tokens if usage_complete else None,
+                finish_reason,
+                continuation_rounds,
+            )
+
+    async def _request_with_retries(
+        self,
+        system: str,
+        user_content: str,
+        partial_output: str | None,
+        attempts: int,
+    ) -> tuple[str, int | None, str | None]:
+        """单个完整或续接请求的网络重试。"""
         last_error: PipelineError | None = None
         retry_after_s: float | None = None
         for attempt in range(attempts):
             if attempt > 0:
                 backoff_index = min(attempt - 1, len(self._retry_backoff) - 1)
-                # 网关明确要求退避（429 Retry-After）时以其为准，且不小于本地退避：
-                # 限流场景下多等一会儿比立刻回冲更能恢复，也避免各批互相挤占。
                 delay = max(self._retry_backoff[backoff_index], retry_after_s or 0.0)
                 await asyncio.sleep(delay)
             try:
-                return await self._request_once(system, user_content)
+                return await self._request_once(system, user_content, partial_output)
             except _RetryableError as exc:
                 last_error = exc.to_pipeline_error()
                 retry_after_s = exc.retry_after_s
-        if last_error is None:  # pragma: no cover —— 循环至少执行一次且必赋值
-            msg = "unreachable: max_attempts >= 1"
-            raise RuntimeError(msg)
+        if last_error is None:  # pragma: no cover
+            raise RuntimeError("unreachable: max_attempts >= 1")
         raise last_error
 
-    async def _request_once(self, system: str, user_content: str) -> tuple[str, int | None]:
+    async def _request_once(
+        self, system: str, user_content: str, partial_output: str | None = None
+    ) -> tuple[str, int | None, str | None]:
         """单次 HTTP 调用；网络/超时异常转可重试错误，其余按状态码分类。"""
         # 配置类错误在建连接前拦下：非 ASCII 密钥会让 httpx 抛 UnicodeEncodeError，
         # 该异常不在下方 except 的捕获范围内，会绕过节点级重试直达编排层兜底。
         ensure_header_safe_api_key(self._settings.llm_api_key)
-        endpoint, payload, headers = self._request_spec(system, user_content)
+        endpoint, payload, headers = self._request_spec(system, user_content, partial_output)
         async with httpx.AsyncClient(
             base_url=self._settings.llm_base_url,
             timeout=self._settings.llm_timeout_s,
@@ -300,7 +367,10 @@ class LlmClient:
                 code=X_LLM_01,
                 message=f"LLM 调用被拒绝：HTTP {response.status_code}（重试无意义）",
             )
-        data = response.json()
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise _RetryableError("LLM 响应体不完整或无法解析，正在重试完整请求") from exc
         try:
             text = _extract_response_text(self._settings.llm_protocol, data)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
@@ -308,10 +378,14 @@ class LlmClient:
                 code=X_LLM_01,
                 message=f"LLM 响应结构异常（{self._settings.llm_protocol}）：{exc}",
             ) from exc
-        return text, _extract_total_tokens(data)
+        return (
+            text,
+            _extract_total_tokens(data),
+            _extract_finish_reason(self._settings.llm_protocol, data),
+        )
 
     def _request_spec(
-        self, system: str, user_content: str
+        self, system: str, user_content: str, partial_output: str | None = None
     ) -> tuple[str, dict[str, Any], dict[str, str]]:
         """按配置协议构造端点、请求体与鉴权头。
 
@@ -321,9 +395,15 @@ class LlmClient:
         api_key = self._settings.llm_api_key
         protocol = self._settings.llm_protocol
         if protocol == "openai-responses":
+            full_input = f"{system}\n\n--- 用户输入 ---\n{user_content}"
+            if partial_output is not None:
+                full_input += (
+                    f"\n\n--- 已生成的 assistant 内容（续接位置在末尾）---\n{partial_output}"
+                    f"\n\n--- 续接要求 ---\n{_CONTINUE_INSTRUCTION}"
+                )
             payload: dict[str, Any] = {
                 "model": self._settings.llm_model_name,
-                "input": f"{system}\n\n--- 用户输入 ---\n{user_content}",
+                "input": full_input,
                 "max_output_tokens": self._settings.llm_max_tokens,
             }
             return (
@@ -332,20 +412,36 @@ class LlmClient:
                 {"Authorization": f"Bearer {api_key}"} if api_key else {},
             )
         if protocol == "anthropic-messages":
+            anthropic_messages: list[dict[str, str]] = [{"role": "user", "content": user_content}]
+            if partial_output is not None:
+                anthropic_messages.extend(
+                    [
+                        {"role": "assistant", "content": partial_output},
+                        {"role": "user", "content": _CONTINUE_INSTRUCTION},
+                    ]
+                )
             payload = {
                 "model": self._settings.llm_model_name,
                 "max_tokens": self._settings.llm_max_tokens,
                 "system": system,
-                "messages": [{"role": "user", "content": user_content}],
+                "messages": anthropic_messages,
             }
             return "/messages", payload, {"x-api-key": api_key} if api_key else {}
 
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+        if partial_output is not None:
+            messages.extend(
+                [
+                    {"role": "assistant", "content": partial_output},
+                    {"role": "user", "content": _CONTINUE_INSTRUCTION},
+                ]
+            )
         payload = {
             "model": self._settings.llm_model_name,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ],
+            "messages": messages,
             "temperature": self._settings.llm_temperature,
             "top_p": self._settings.llm_top_p,
             "max_tokens": self._settings.llm_max_tokens,
@@ -357,6 +453,30 @@ class LlmClient:
             {"Authorization": f"Bearer {api_key}"} if api_key else {},
         )
 
+    def _persist_payload(
+        self, call_id: str, system: str, user_content: str, output: str | None
+    ) -> str:
+        """保存完整输入和原始正文供离线复现；不保存 HTTP 鉴权头。"""
+        directory = self._trace_path.parent / "llm_payloads"
+        directory.mkdir(parents=True, exist_ok=True)
+        # 临时文件以 0600 权限创建；即使写完正文后进程在写摘要前退出，
+        # 下一次调用复用序号也不会覆盖这一份原始记录。
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=directory,
+            prefix=f"{call_id}-",
+            suffix=".json",
+            delete=False,
+        ) as output_file:
+            json.dump(
+                {"system": system, "user": user_content, "output": output},
+                output_file,
+                ensure_ascii=False,
+            )
+            path = Path(output_file.name)
+        return path.relative_to(self._trace_path.parent).as_posix()
+
     def _append_trace(self, record: dict[str, Any]) -> None:
         """追加一行 JSONL 留痕（禁止覆盖历史——文件以追加模式打开）。"""
         self._trace_path.parent.mkdir(parents=True, exist_ok=True)
@@ -364,11 +484,21 @@ class LlmClient:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def _count_trace_lines(self) -> int:
-        """已存在的留痕行数（进程重启后 call_id 序号接续，不重置）。"""
+        """接续已分配的最大序号；并行任务取消留下的空号不能导致调用编号复用。"""
         if not self._trace_path.is_file():
             return 0
+        count = 0
+        maximum = 0
         with self._trace_path.open(encoding="utf-8") as fh:
-            return sum(1 for line in fh if line.strip())
+            for line in fh:
+                if not line.strip():
+                    continue
+                count += 1
+                try:
+                    maximum = max(maximum, int(json.loads(line)["call_id"].rsplit("-", 1)[1]))
+                except (ValueError, KeyError, TypeError):
+                    continue
+        return max(count, maximum)
 
     def _job_short(self) -> str:
         """job 短码：`job-` 前缀后的首段 UUID（样例口径 job-3f2a1b8c-… → 3f2a1b8c）。"""
@@ -401,6 +531,16 @@ def _extract_response_text(protocol: str, data: Any) -> str:
         text = message.get("content")
         if isinstance(text, str) and text.strip():
             return text
+        if isinstance(text, list):
+            text_blocks = [
+                str(item["text"])
+                for item in text
+                if isinstance(item, dict)
+                and item.get("type") in {"text", "output_text"}
+                and isinstance(item.get("text"), str)
+            ]
+            if text_blocks:
+                return "".join(text_blocks)
         # C-17：DeepSeek Reasoner 等推理模型可能把正文放在 reasoning_content，
         # content 为空（思考通道与正文通道分离）；此时回退 reasoning_content，
         # 避免把可用正文当成失败丢弃。仍以非空为下限，不静默吞掉结构变化。
@@ -438,6 +578,59 @@ def _extract_response_text(protocol: str, data: Any) -> str:
             return "".join(fragments)
         raise ValueError("缺少 content[].text")
     raise ValueError(f"不支持的协议：{protocol}")
+
+
+def _extract_finish_reason(protocol: str, data: Any) -> str | None:
+    """读取各协议完成标记；调用端要求该标记确认响应正常结束。"""
+    if not isinstance(data, dict):
+        return None
+    if protocol == "openai-chat":
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            reason = choices[0].get("finish_reason")
+            return str(reason) if reason is not None else None
+    elif protocol == "openai-responses":
+        status = data.get("status")
+        details = data.get("incomplete_details")
+        reason = details.get("reason") if isinstance(details, dict) else None
+        if status == "incomplete":
+            return f"incomplete:{reason or 'unknown'}"
+        if status is not None:
+            return str(status)
+    elif protocol == "anthropic-messages":
+        reason = data.get("stop_reason")
+        return str(reason) if reason is not None else None
+    return None
+
+
+def _is_output_length_limited(reason: str | None) -> bool:
+    """识别模型因单次输出 token 上限停止的协议标记。"""
+    normalized = (reason or "").lower()
+    return normalized in {"length", "max_tokens", "max_output_tokens"} or normalized in {
+        "incomplete:max_output_tokens",
+        "incomplete:max_tokens",
+    }
+
+
+def _is_response_complete(protocol: str, reason: str | None) -> bool:
+    """仅接受协议明确标记为正常结束的响应；未知状态不能作为完整返回。"""
+    if protocol == "openai-chat":
+        return reason == "stop"
+    if protocol == "openai-responses":
+        return reason == "completed"
+    if protocol == "anthropic-messages":
+        return reason in {"end_turn", "stop_sequence"}
+    return False
+
+
+def _continuation_delta(previous: str, current: str) -> str:
+    """剔除续接模型重复的边界文本，其余字符原样保留并拼接。"""
+    if not previous:
+        return current
+    if current.startswith(previous):
+        return current[len(previous) :]
+    # 不猜测并删除部分重叠：边界重复可能与原文相同字符，误删会造成不可见截断。
+    return current
 
 
 def _extract_total_tokens(data: Any) -> int | None:

@@ -363,6 +363,19 @@ components:
         snippet:
           type: string
           description: 接口定义源码片段（供 LLM 语义解析的上下文）
+        controller_name:
+          type: string
+          description: 接口所在 Controller 类型名，由 JavaParser AST 确定
+        controller_annotations:
+          type: array
+          description: Controller 类级注解及完整 AST 行范围
+          items:
+            type: object
+            required: [name, start_line, end_line]
+            properties:
+              name: { type: string }
+              start_line: { type: integer, minimum: 1 }
+              end_line: { type: integer, minimum: 1 }
         method_body:
           type: string
         method_body_truncated:
@@ -392,7 +405,14 @@ components:
               type: { type: string }
               required: { type: boolean }
               required_evidence: { type: string }
-              source_refs: { type: array, items: { type: object } }
+              source_refs:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    file: { type: string }
+                    line: { type: integer, minimum: 1 }
+                    end_line: { type: integer, minimum: 1 }
         related_files:
           type: array
           items:
@@ -409,6 +429,17 @@ components:
           type: array
           items:
             type: object
+            required: [file, role, kind, start_line, end_line]
+            properties:
+              file: { type: string }
+              role: { type: string }
+              kind: { type: string, enum: [body, callee] }
+              method_name: { type: string }
+              parameter_count: { type: integer, minimum: 0 }
+              start_line: { type: integer, minimum: 1 }
+              end_line: { type: integer, minimum: 1 }
+              depth: { type: integer, minimum: 0 }
+              call_line: { type: integer, minimum: 1 }
           description: 仓内递归调用链的已定位方法跨度；kind=body 为接口本体，kind=callee 为调用链节点
         call_graph:
           type: object
@@ -419,6 +450,25 @@ components:
             resolved_nodes: { type: integer, minimum: 0 }
             unresolved_calls: { type: integer, minimum: 0 }
             max_depth: { type: integer, minimum: 0 }
+            edges:
+              type: array
+              description: Statically resolved direct caller-to-callee source edges.
+              items:
+                type: object
+                required: [caller_file, caller_start_line, callee_file, callee_start_line, depth]
+                properties:
+                  caller_file: { type: string }
+                  caller_role: { type: string }
+                  caller_method: { type: string }
+                  caller_start_line: { type: integer, minimum: 1 }
+                  caller_end_line: { type: integer, minimum: 1 }
+                  callee_file: { type: string }
+                  callee_role: { type: string }
+                  callee_method: { type: string }
+                  callee_start_line: { type: integer, minimum: 1 }
+                  callee_end_line: { type: integer, minimum: 1 }
+                  depth: { type: integer, minimum: 1 }
+                  call_line: { type: integer, minimum: 1 }
         unresolved:
           type: array
           items:

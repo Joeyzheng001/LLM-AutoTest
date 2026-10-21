@@ -51,11 +51,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -81,17 +78,8 @@ public class ExtractJobRunner {
     /** 快照创建的进程内互斥：同一 (仓库, 提交) 并发建 worktree 会互相打架。 */
     private static final Object SNAPSHOT_LOCK = new Object();
 
-    /** 单候选"变动代码"片段上限（防把整个文件塞进候选，撑爆下游上下文）。 */
-    private static final int CHANGE_SNIPPET_MAX_LINES = 40;
-
-    /** 单候选"变动代码"累计字符上限（与实现注入的上限同量级）。 */
-    private static final int CHANGE_SNIPPET_MAX_CHARS = 4000;
-
-    /** 参数语义解析使用的完整方法体上限；超过时显式标记截断，禁止下游误以为已读全。 */
-    private static final int METHOD_BODY_MAX_CHARS = 8000;
-
-    /** 长方法截断后的参数证据上下文上限；只保留访问点附近源码，不丢失后半段字段。 */
-    private static final int METHOD_CONTEXT_MAX_CHARS = 8000;
+    /** 长方法另附参数访问位置索引；方法原文始终完整保留。 */
+    private static final int METHOD_CONTEXT_THRESHOLD = 8000;
 
     /** 动态 body 字段最多跨越的调用层数；超过后保留 unresolved/forwarded 证据，不无限展开。 */
     private static final int MAX_FIELD_TRACE_DEPTH = 3;
@@ -161,9 +149,6 @@ public class ExtractJobRunner {
 
     /** 静态定位置信度：注解命中为确定性强特征（X-REQ-04 置信度标记）。 */
     private static final double STATIC_CONFIDENCE = 0.9;
-
-    /** snippet 截断上限（供 LLM 上下文，防止超大方法撑爆请求）。 */
-    private static final int SNIPPET_MAX_CHARS = 1500;
 
     /** R-REV-02 候选数底线（低于则告警提示换兜底仓库，X-REV-04）。 */
     private static final int MIN_CANDIDATES = 5;
@@ -688,9 +673,6 @@ public class ExtractJobRunner {
         location.put("end_line", method.getEnd().map(p -> p.line).orElse(1));
 
         String snippet = method.toString();
-        if (snippet.length() > SNIPPET_MAX_CHARS) {
-            snippet = snippet.substring(0, SNIPPET_MAX_CHARS) + "\n// ...（截断）";
-        }
         if (LOG.isDebugEnabled()) {
             LOG.debug("候选定位：{} {} ({}:{})", protocol, fullSignature, relative,
                     location.get("start_line"));
@@ -700,15 +682,21 @@ public class ExtractJobRunner {
         candidate.put("protocol", protocol);
         candidate.put("signature", fullSignature);
         candidate.put("code_location", location);
+        candidate.put("controller_name", controller.getNameAsString());
+        List<Map<String, Object>> controllerAnnotations = controller.getAnnotations().stream()
+                .map(annotation -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("name", annotation.getNameAsString());
+                    annotation.getBegin().ifPresent(position -> item.put("start_line", position.line));
+                    annotation.getEnd().ifPresent(position -> item.put("end_line", position.line));
+                    return item;
+                })
+                .toList();
+        candidate.put("controller_annotations", controllerAnnotations);
         candidate.put("snippet", snippet);
         String methodBody = method.toString();
-        boolean methodBodyTruncated = methodBody.length() > METHOD_BODY_MAX_CHARS;
-        if (methodBodyTruncated) {
-            methodBody = methodBody.substring(0, METHOD_BODY_MAX_CHARS)
-                    + "\n// ...（method_body 截断，参数证据可能不完整）";
-        }
         candidate.put("method_body", methodBody);
-        candidate.put("method_body_truncated", methodBodyTruncated);
+        candidate.put("method_body_truncated", false);
         List<Map<String, Object>> parameterEvidence = extractParameterEvidence(method);
         if (!parameterEvidence.isEmpty()) {
             candidate.put("parameter_evidence", parameterEvidence);
@@ -740,6 +728,7 @@ public class ExtractJobRunner {
         callGraphSummary.put("resolved_nodes", Math.max(0, callGraph.spans().size() - 1));
         callGraphSummary.put("unresolved_calls", callGraph.unresolved().size());
         callGraphSummary.put("max_depth", callGraph.maxDepth());
+        callGraphSummary.put("edges", callGraph.edges());
         candidate.put("call_graph", callGraphSummary);
         if (callGraph.incomplete()) {
             candidate.put("call_graph_incomplete", true);
@@ -839,12 +828,13 @@ public class ExtractJobRunner {
     /** 可重新加载的被调方法元数据：不长期持有 AST，避免大仓库扫描时堆内存膨胀。 */
     private record MethodTarget(
             String ownerType, String methodName, String file, int startLine, int endLine,
-            List<String> parameterNames, String returnType) {
+            List<String> parameterNames, int parameterCount, String returnType) {
     }
 
     /** 调用链解析结果：resolved 与 unresolved 必须同时输出，不能只给一个模糊提示。 */
     private record CallGraphResult(
             List<Map<String, Object>> spans,
+            List<Map<String, Object>> edges,
             List<Map<String, Object>> unresolved,
             boolean incomplete,
             int resolvedCalls,
@@ -854,6 +844,7 @@ public class ExtractJobRunner {
     /** 递归遍历期间的可变状态，候选完成后转成不可变结果。 */
     private static final class CallGraphState {
         private final List<Map<String, Object>> spans;
+        private final List<Map<String, Object>> edges = new ArrayList<>();
         private final List<Map<String, Object>> unresolved;
         private final Set<String> recordedUnresolved = new LinkedHashSet<>();
         private final Set<String> visited = new LinkedHashSet<>();
@@ -926,6 +917,7 @@ public class ExtractJobRunner {
                                     method.getParameters().stream()
                                             .map(Parameter::getNameAsString)
                                             .toList(),
+                                    method.getParameters().size(),
                                     primaryTypeName(method.getType())));
                 }
             }
@@ -1002,7 +994,10 @@ public class ExtractJobRunner {
         List<Map<String, Object>> unresolved = new ArrayList<>();
         int start = method.getBegin().map(p -> p.line).orElse(1);
         int end = method.getEnd().map(p -> p.line).orElse(start);
-        spans.add(span(controllerFile, "controller", "body", start, end));
+        Map<String, Object> entrySpan = span(controllerFile, "controller", "body", start, end);
+        entrySpan.put("method_name", method.getNameAsString());
+        entrySpan.put("parameter_count", method.getParameters().size());
+        spans.add(entrySpan);
         CallGraphState state = new CallGraphState(spans, unresolved);
         walkCallGraph(
                 root, rootUnit, method, controllerFile, controller.getNameAsString(), injected,
@@ -1010,7 +1005,7 @@ public class ExtractJobRunner {
         // resolveCallTarget 记录的未解析调用也意味着这条调用链不能宣称 complete。
         state.incomplete = state.incomplete || !unresolved.isEmpty();
         return new CallGraphResult(
-                spans, unresolved, state.incomplete, state.resolvedCalls, state.maxDepth);
+                spans, state.edges, unresolved, state.incomplete, state.resolvedCalls, state.maxDepth);
     }
 
     /** 深度优先展开单个方法；visited 防止共享方法重复展开，active 防止递归环路。 */
@@ -1040,9 +1035,25 @@ public class ExtractJobRunner {
                 int targetDepth = depth + 1;
                 state.maxDepth = Math.max(state.maxDepth, targetDepth);
                 String role = roleOf(target.ownerType());
+                Map<String, Object> edge = new LinkedHashMap<>();
+                edge.put("caller_file", file);
+                edge.put("caller_role", depth == 0 ? "controller" : roleOf(ownerType));
+                edge.put("caller_method", method.getNameAsString());
+                edge.put("caller_start_line", start);
+                edge.put("caller_end_line", method.getEnd().map(p -> p.line).orElse(start));
+                edge.put("callee_file", target.file());
+                edge.put("callee_role", role);
+                edge.put("callee_method", target.methodName());
+                edge.put("callee_start_line", target.startLine());
+                edge.put("callee_end_line", target.endLine());
+                edge.put("depth", targetDepth);
+                call.getBegin().ifPresent(begin -> edge.put("call_line", begin.line));
+                state.edges.add(edge);
                 if (!containsSpan(state.spans, target)) {
                     Map<String, Object> targetSpan = span(
                             target.file(), role, "callee", target.startLine(), target.endLine());
+                    targetSpan.put("method_name", target.methodName());
+                    targetSpan.put("parameter_count", target.parameterCount());
                     targetSpan.put("depth", targetDepth);
                     call.getBegin().ifPresent(begin -> targetSpan.put("call_line", begin.line));
                     targetSpan.put("caller_file", file);
@@ -1258,9 +1269,6 @@ public class ExtractJobRunner {
         List<Map<String, Object>> hits = new ArrayList<>();
         List<Map<String, Object>> snippets = new ArrayList<>();
         String level = null;
-        int snippetLines = 0;
-        int snippetChars = 0;
-        boolean snippetTruncated = false;
         for (Map<String, Object> item : spans) {
             String file = String.valueOf(item.get("file"));
             List<int[]> changed = added.getOrDefault(file, List.of());
@@ -1280,15 +1288,8 @@ public class ExtractJobRunner {
             hitEntry.put("changed", hit);
             hits.add(hitEntry);
             for (List<Integer> range : hit) {
-                int lines = range.get(1) - range.get(0) + 1;
-                if (snippetLines + lines > CHANGE_SNIPPET_MAX_LINES
-                        || snippetChars >= CHANGE_SNIPPET_MAX_CHARS) {
-                    snippetTruncated = true;
-                    break;
-                }
                 String text = readLines(
-                        root, file, range.get(0), range.get(1),
-                        CHANGE_SNIPPET_MAX_CHARS - snippetChars);
+                        root, file, range.get(0), range.get(1));
                 if (text == null) {
                     continue;
                 }
@@ -1298,8 +1299,6 @@ public class ExtractJobRunner {
                 snippet.put("end_line", range.get(1));
                 snippet.put("text", text);
                 snippets.add(snippet);
-                snippetLines += lines;
-                snippetChars += text.length();
             }
         }
         List<Map<String, Object>> sources = new ArrayList<>();
@@ -1328,7 +1327,7 @@ public class ExtractJobRunner {
             evidence.put("sources", sources);
         }
         evidence.put("changed_snippets", snippets);
-        evidence.put("truncated", snippetTruncated);
+        evidence.put("truncated", false);
         return evidence;
     }
 
@@ -1369,8 +1368,8 @@ public class ExtractJobRunner {
         return value instanceof Number number ? number.intValue() : 0;
     }
 
-    /** 读快照里的 [from, to] 行（1 基闭区间，带上限）；读不到返回 null（不阻断提取）。 */
-    private static String readLines(Path root, String relative, int from, int to, int maxChars) {
+    /** 完整读快照里的 [from, to] 行（1 基闭区间）；读不到返回 null。 */
+    private static String readLines(Path root, String relative, int from, int to) {
         Path base = root.normalize();
         Path file = base.resolve(relative).normalize();
         if (!file.startsWith(base)) {
@@ -1385,10 +1384,6 @@ public class ExtractJobRunner {
             StringBuilder text = new StringBuilder();
             for (int line = from; line <= last; line++) {
                 text.append(lines.get(line - 1)).append('\n');
-                if (text.length() >= maxChars) {
-                    text.append("// ...（截断）\n");
-                    break;
-                }
             }
             return text.toString();
         } catch (IOException ex) {
@@ -1575,11 +1570,11 @@ public class ExtractJobRunner {
         return Character.toLowerCase(suffix.charAt(0)) + suffix.substring(1);
     }
 
-    /** 长方法截断时，补充所有参数访问点附近的源码窗口，避免只看前 8000 字符。 */
+    /** 长方法完整原文之外，补充所有参数访问点的源码位置索引。 */
     private static List<Map<String, Object>> methodBodyContext(
             MethodDeclaration method, List<Map<String, Object>> evidence) {
         String source = method.toString();
-        if (source.length() <= METHOD_BODY_MAX_CHARS) {
+        if (source.length() <= METHOD_CONTEXT_THRESHOLD) {
             return List.of();
         }
         String[] lines = source.split("\\R", -1);
@@ -1599,7 +1594,6 @@ public class ExtractJobRunner {
         }
         List<Integer> sorted = evidenceLines.stream().sorted().toList();
         List<Map<String, Object>> windows = new ArrayList<>();
-        int chars = 0;
         int previousEnd = -1;
         for (int absoluteLine : sorted) {
             int relative = absoluteLine - methodStart + 1;
@@ -1612,15 +1606,11 @@ public class ExtractJobRunner {
             for (int line = from; line <= to; line++) {
                 text.append(lines[line - 1]).append('\n');
             }
-            if (chars + text.length() > METHOD_CONTEXT_MAX_CHARS) {
-                break;
-            }
             Map<String, Object> window = new LinkedHashMap<>();
             window.put("start_line", methodStart + from - 1);
             window.put("end_line", methodStart + to - 1);
             window.put("text", text.toString());
             windows.add(window);
-            chars += text.length();
             previousEnd = to;
         }
         return windows;
@@ -1775,9 +1765,7 @@ public class ExtractJobRunner {
         if (field.isStatic()) {
             return;
         }
-        String description = field.getJavadocComment()
-                .map(comment -> comment.parse().getDescription().toText().trim())
-                .orElse("");
+        String description = fieldDescription(field);
         for (VariableDeclarator variable : field.getVariables()) {
             if (!seenFields.add(variable.getNameAsString())) {
                 continue;
@@ -1792,6 +1780,38 @@ public class ExtractJobRunner {
             }
             fields.add(entry);
         }
+    }
+
+    /** 优先保留 DTO 注解里的业务取值说明；普通注释作为兜底。只读取字面量，不推测表达式。 */
+    private static String fieldDescription(FieldDeclaration field) {
+        for (AnnotationExpr annotation : field.getAnnotations()) {
+            String name = simpleAnnotationName(annotation.getNameAsString());
+            if (!Set.of("ApiModelProperty", "Schema").contains(name)) {
+                continue;
+            }
+            if (annotation instanceof SingleMemberAnnotationExpr single
+                    && single.getMemberValue().isStringLiteralExpr()) {
+                String value = single.getMemberValue().asStringLiteralExpr().asString().trim();
+                if (!value.isEmpty()) {
+                    return value;
+                }
+            }
+            if (annotation instanceof NormalAnnotationExpr normal) {
+                for (MemberValuePair pair : normal.getPairs()) {
+                    if (!Set.of("value", "description").contains(pair.getNameAsString())
+                            || !pair.getValue().isStringLiteralExpr()) {
+                        continue;
+                    }
+                    String value = pair.getValue().asStringLiteralExpr().asString().trim();
+                    if (!value.isEmpty()) {
+                        return value;
+                    }
+                }
+            }
+        }
+        return field.getJavadocComment()
+                .map(comment -> comment.parse().getDescription().toText().trim())
+                .orElse("");
     }
 
     private static void addParameterEntry(
@@ -1817,7 +1837,9 @@ public class ExtractJobRunner {
                 file = normalizeRelative(root.normalize().relativize(storagePath.get()));
             }
             if (!file.isBlank()) {
-                entry.put("source_refs", List.of(Map.of("file", file, "line", begin.line)));
+                int endLine = node.getEnd().map(position -> position.line).orElse(begin.line);
+                entry.put("source_refs", List.of(Map.of(
+                        "file", file, "line", begin.line, "end_line", endLine)));
             }
         });
     }

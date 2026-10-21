@@ -199,6 +199,18 @@ class PipelineRunner:
                 run_id,
                 service_base_urls,
             )
+            if (
+                node_name == "code_review"
+                and state.node(node_name).status is NodeStatus.MANUAL_INTERVENTION
+            ):
+                self._append_runtime_event(
+                    job_id,
+                    run_id=run_id,
+                    event="run_blocked",
+                    node="pipeline",
+                    message="Code Review 未完成，已暂停后续用例生成与执行",
+                )
+                break
 
         self._refresh_final_metrics(state)
         self._orch_store.write_manifest(job_id)
@@ -432,7 +444,16 @@ class PipelineRunner:
                 repositories,
             )
         elif node_name == "code_review":
-            await run_code_review(self._engine, state, self._orch_store, llm, prompts_dir)
+            job_input = self._orch_store.read_json(state.job_id, "job_input.json")
+            observe_runtime = bool(job_input.get("observe_runtime_contracts", False))
+            await run_code_review(
+                self._engine, state, self._orch_store, llm, prompts_dir,
+                rest_base_url=rest_base_url if observe_runtime else None,
+                rest_insecure_tls=rest_insecure_tls,
+                auth=auth,
+                auth_headers=auth_headers,
+                max_concurrency=self._settings.code_review_max_concurrency,
+            )
         elif node_name == "testcase_generate":
             await run_testcase_generate(
                 self._engine, state, self._te_store, llm, prompts_dir, auth=auth, e2e=e2e
@@ -449,6 +470,8 @@ class PipelineRunner:
                 insecure_tls=rest_insecure_tls,
                 fixtures=fixtures,
                 service_base_urls=service_base_urls,
+                llm=llm,
+                prompts_dir=prompts_dir,
             )
         elif node_name == "test_report":
             await run_test_report(self._engine, state, self._orch_store)

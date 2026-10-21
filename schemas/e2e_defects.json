@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/defects",
+  "title": "本地缺陷记录（模块 8 DEF，主笔：丙；D3 口径：本地文件，非 Jira）",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "job_id",
+    "defects"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^job-"
+    },
+    "warnings": {
+      "type": "array",
+      "description": "v1.1 可选：处理告警（X-DEF-02 复测跳过记录等）",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "defects": {
+      "type": "array",
+      "description": "R-DEF-01：仅断言失败进入；环境失败隔离于待环境确认（不入本清单）",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "case_id",
+          "interface_id",
+          "failure_reason",
+          "reproduce",
+          "status",
+          "history",
+          "is_fallback"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^DEF-\\d{3}$"
+          },
+          "case_id": {
+            "type": "string",
+            "pattern": "^(TC|E2E)-\\d{3,}$",
+            "description": "R-DEF-02 双向关联（接口或前端 E2E）"
+          },
+          "interface_id": {
+            "type": "string",
+            "pattern": "^(IF-[A-Z]+-\\d{3}|UI-E2E-001)$"
+          },
+          "requirement_id": {
+            "type": "string",
+            "pattern": "^REQ-\\d{3}$"
+          },
+          "claim_id": {
+            "type": "string",
+            "pattern": "^CLM-\\d{3,}$"
+          },
+          "testpoint_id": {
+            "type": "string",
+            "pattern": "^TP-\\d{3}$"
+          },
+          "failure_reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "triage": {
+            "type": "object",
+            "description": "R-DEF-04：程序化失败归因，仅辅助分流，不替代人工确认",
+            "required": [
+              "kind",
+              "confidence",
+              "reason"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "input_construction",
+                  "assertion_or_setup",
+                  "product_suspect",
+                  "needs_evidence"
+                ]
+              },
+              "confidence": {
+                "type": "string",
+                "enum": [
+                  "high",
+                  "medium",
+                  "low"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "interface": {
+            "type": "object",
+            "description": "从 interfaces.json 回填的接口定位信息",
+            "properties": {
+              "protocol": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            }
+          },
+          "testcase": {
+            "type": "object",
+            "description": "从 testcases.json 回填的用例事实",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "category": {
+                "type": "string"
+              },
+              "expected": {
+                "type": "string"
+              },
+              "claim_id": {
+                "type": "string",
+                "pattern": "^CLM-\\d{3,}$"
+              },
+              "testpoint_id": {
+                "type": "string",
+                "pattern": "^TP-\\d{3}$"
+              }
+            }
+          },
+          "actual": {
+            "type": "object",
+            "description": "从 execution.json 回填的实际执行结果；敏感字段已脱敏",
+            "properties": {
+              "status": {
+                "type": "integer"
+              },
+              "body": {},
+              "assertion_results": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "http_response",
+                  "browser"
+                ]
+              },
+              "method": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "page_url": {
+                "type": "string"
+              },
+              "page_title": {
+                "type": "string"
+              },
+              "screenshot_ref": {
+                "type": "string"
+              },
+              "console_errors": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "request_failures": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "capture_error": {
+                "type": "string"
+              }
+            }
+          },
+          "reproduce": {
+            "type": "object",
+            "description": "复现步骤（F-DEF-01：用例脚本引用）",
+            "required": [
+              "script_path"
+            ],
+            "properties": {
+              "script_path": {
+                "type": "string"
+              },
+              "params": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "discovered",
+              "retesting",
+              "passed",
+              "closed_suggested",
+              "retained"
+            ],
+            "description": "F-DEF-03：发现→复测中→复测通过→关闭建议/保留"
+          },
+          "based_on_new_version": {
+            "type": "boolean",
+            "description": "X-DEF-01：复测时代码已变更标注"
+          },
+          "is_fallback": {
+            "type": "boolean",
+            "description": "演示埋入缺陷（独立分支）随兜底标记透传（X-DEF-03）"
+          },
+          "history": {
+            "type": "array",
+            "description": "R-DEF-03：可审计生命周期（时间戳流转）",
+            "items": {
+              "type": "object",
+              "required": [
+                "event",
+                "timestamp"
+              ],
+              "properties": {
+                "event": {
+                  "type": "string",
+                  "enum": [
+                    "discovered",
+                    "retest_started",
+                    "retest_passed",
+                    "retest_failed",
+                    "close_suggested",
+                    "retained"
+                  ]
+                },
+                "timestamp": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "UTC ISO-8601"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

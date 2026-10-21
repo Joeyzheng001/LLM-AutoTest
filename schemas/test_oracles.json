@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llm-autotest/test_oracles",
+  "title": "源码证据绑定的接口测试预期（Code Review 内部 LLM 结构）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "oracles"
+  ],
+  "properties": {
+    "oracles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "interface_id",
+          "category",
+          "scenario",
+          "preconditions",
+          "expected_status",
+          "assertions",
+          "evidence_refs",
+          "evidence_quotes"
+        ],
+        "properties": {
+          "interface_id": {
+            "type": "string",
+            "pattern": "^IF-[A-Z]+-\\d{3}$"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "boundary",
+              "exception"
+            ]
+          },
+          "scenario": {
+            "type": "string",
+            "minLength": 1
+          },
+          "branch_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "preconditions": {
+            "$ref": "#/$defs/assertions"
+          },
+          "expected_status": {
+            "type": "string",
+            "pattern": "^(status=[1-5][0-9]{2}|status_class=[1-5]xx|unresolved)$"
+          },
+          "assertions": {
+            "$ref": "#/$defs/assertions"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^EVD-\\d{4,}$"
+            }
+          },
+          "evidence_quotes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "evidence_ref",
+                "quote"
+              ],
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "evidence_ref": {
+                  "type": "string",
+                  "pattern": "^EVD-\\d{4,}$"
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "branch_outcome": {
+            "type": "boolean",
+            "description": "目标 if 条件成立或不成立；兼容旧产物时默认为 true"
+          },
+          "state_conditions": {
+            "type": "array",
+            "description": "本接口处理逻辑所需的下游/环境状态；独立于请求参数，不代表已准备",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "description",
+                "mode",
+                "evidence_ref",
+                "quote"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "downstream_response",
+                    "application_config",
+                    "service_registry",
+                    "test_data"
+                  ]
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mode": {
+                  "enum": [
+                    "integration",
+                    "controlled"
+                  ]
+                },
+                "evidence_ref": {
+                  "type": "string",
+                  "pattern": "^EVD-\\d{4,}$"
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "expected_behavior": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "description",
+              "evidence_ref",
+              "quote"
+            ],
+            "properties": {
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence_ref": {
+                "type": "string",
+                "pattern": "^EVD-\\d{4,}$"
+              },
+              "quote": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "oracle_basis": {
+            "enum": [
+              "spring_required_body",
+              "integration_entry"
+            ]
+          },
+          "covered_claim_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^CLM-\\d{3,}$"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "op"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "equals",
+              "not_equals",
+              "exists",
+              "not_exists",
+              "null_or_missing",
+              "non_empty",
+              "contains",
+              "greater_than",
+              "less_than",
+              "not_blank",
+              "equals_request",
+              "in",
+              "not_in"
+            ]
+          },
+          "value": {}
+        }
+      }
+    }
+  }
+}

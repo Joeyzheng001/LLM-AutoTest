@@ -214,18 +214,30 @@ export interface E2eConfig {
   execute_cases: boolean
   insecure_tls?: boolean
   auth_mode?: 'reuse' | 'browser'
+  max_concurrency?: number
+  max_routes?: number
+  browser_channel?: string
+  auto_login?: boolean
+  roles?: Record<string, AuthConfig & { password_configured?: boolean }>
+  data_fixtures?: Record<string, unknown>
+  files?: Record<string, string>
 }
 
-/** 接口测试前置夹具；仅用于任务配置和执行前造数，不送入 LLM。 */
+/** 接口测试前置夹具；请求正文和控制地址不送入 LLM，场景选择元数据可参与源码预期判断。 */
 export interface FixtureStep {
   name: string
   phase: 'setup' | 'teardown'
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   path: string
+  base_url?: string
   query?: Record<string, unknown>
   body?: Record<string, unknown>
   expected: string
   required: boolean
+  scope?: 'job' | 'case'
+  control_kind?: 'downstream_response' | 'application_config' | 'service_registry'
+  interface_id?: string
+  scenario_contains?: string
 }
 
 export interface JobSubmitPayload {
@@ -241,6 +253,8 @@ export interface JobSubmitPayload {
   llm?: LlmConfig // 运行时模型配置；密钥不在任务产物中保存
   e2e?: E2eConfig
   fixtures?: FixtureStep[]
+  auto_record_fixtures?: boolean
+  observe_runtime_contracts?: boolean
 }
 
 /** 完整任务配置读取结果；密码和 API Key 永不返回，只说明能否复用。 */
@@ -253,9 +267,16 @@ export interface JobConfiguration {
   rest_insecure_tls: boolean
   resume: boolean
   auth: (Omit<AuthConfig, 'password'> & { password_configured: boolean }) | null
-  llm: (Omit<LlmConfig, 'api_key'> & { api_key_configured: boolean }) | null
+  llm:
+    | (Omit<LlmConfig, 'api_key'> & {
+        api_key_configured: boolean
+        api_key_encrypted?: boolean
+      })
+    | null
   e2e: E2eConfig | null
   fixtures: FixtureStep[]
+  auto_record_fixtures: boolean
+  observe_runtime_contracts: boolean
 }
 
 export interface JobConfigurationUpdatePayload {
@@ -275,6 +296,8 @@ export interface JobConfigurationUpdatePayload {
   e2e?: E2eConfig
   fixtures?: FixtureStep[]
   replace_fixtures?: boolean
+  auto_record_fixtures?: boolean
+  observe_runtime_contracts?: boolean
 }
 
 export interface JobConfigurationUpdateResponse {
@@ -460,6 +483,22 @@ export interface ReviewMapping {
   claim_assessments?: ReviewClaimAssessment[]
 }
 
+export interface FieldValueContract {
+  interface_id: string
+  parameter: string
+  field: string
+  type: string
+  required?: boolean
+  required_evidence?: string
+  value_rule_status: 'coded_values' | 'examples_only' | 'unspecified'
+  description: string
+  description_origin?: 'source' | 'inferred' | 'unknown'
+  documented_values: Array<{ code: string; label: string }>
+  example_codes: string[]
+  constraints?: string[]
+  source_refs: Array<{ file?: string; line?: number }>
+}
+
 export interface ReviewClaimAssessment {
   claim_id: string
   status: 'implemented' | 'partial' | 'missing' | 'undetermined'
@@ -482,24 +521,80 @@ export interface ReviewEvidence {
   start_line: number
   end_line: number
   excerpt: string
+  excerpt_truncated?: boolean
   interface_ids?: string[]
   role?: string
 }
 
+export interface OracleStateCondition {
+  kind: 'downstream_response' | 'application_config' | 'service_registry' | 'test_data'
+  description: string
+  mode: 'integration' | 'controlled'
+  evidence_ref: string
+  quote: string
+}
+
+export interface ReviewTestOracle {
+  oracle_id: string
+  interface_id: string
+  category: 'normal' | 'boundary' | 'exception'
+  scenario: string
+  control_kinds?: Array<'downstream_response' | 'application_config' | 'service_registry'>
+  branch_outcome?: boolean
+  expected_behavior?: { description: string; evidence_ref: string; quote: string }
+  state_conditions?: OracleStateCondition[]
+  execution_readiness?: 'ready' | 'conditional' | 'blocked'
+  execution_blockers?: string[]
+  preconditions: Array<{ path: string; op: string; value?: unknown }>
+  expected_status: string
+  assertions: Array<{ path: string; op: string; value?: unknown }>
+  evidence_refs: string[]
+  fixture_plan?: {
+    kind: 'create_query_soft_delete'
+    add_interface_id: string
+    query_interface_id: string
+    delete_interface_id: string
+    cleanup_mode: 'soft_delete'
+    source_refs: string[]
+  }
+}
+
 export interface ReviewCallChain {
   interface_id: string
-  entry: { repo?: string; file?: string }
+  entry: {
+    repo?: string
+    file?: string
+    role?: string
+    method_name?: string
+    start_line?: number | null
+    end_line?: number | null
+  }
   callees: Array<
     | string
     | {
         file?: string
         role?: string
+        method_name?: string
         start_line?: number | null
         end_line?: number | null
         depth?: number | null
         call_line?: number | null
       }
   >
+  edges?: Array<{
+    caller_file: string
+    caller_role?: string
+    caller_method?: string
+    caller_start_line: number
+    caller_end_line?: number
+    callee_file: string
+    callee_role?: string
+    callee_method?: string
+    callee_start_line: number
+    callee_end_line?: number
+    depth: number
+    call_line?: number
+  }>
   status?: 'complete' | 'partial'
   resolved_calls?: number
   resolved_nodes?: number
@@ -612,19 +707,58 @@ export interface RepoInventory {
 }
 
 // C-10：用例清单（testcases.json；F-GEN-01 三类 / F-GEN-04 溯源）
+export interface OracleDiagnostic {
+  status:
+    | 'framework_boundary'
+    | 'control_required'
+    | 'response_evidence_missing'
+    | 'candidate_invalid'
+    | 'resolved'
+    | 'replaced'
+    | 'execution_pending'
+  interface_id: string
+  scenario: string
+  message: string
+  summary?: string
+  oracle_ids?: string[]
+  action: string
+  control_kinds: Array<'downstream_response' | 'application_config' | 'service_registry'>
+}
+
 export interface TestCaseEntry {
+  oracle_basis?: string
   id: string
   interface_id: string
   requirement_id?: string
   claim_id?: string
   testpoint_id?: string
+  oracle_scenario?: string
+  expected_behavior?: { description: string; evidence_ref: string; quote: string }
+  state_conditions?: OracleStateCondition[]
+  execution_readiness?: 'ready' | 'conditional' | 'blocked'
+  execution_blockers?: string[]
+  request_conditions?: Array<{ path: string; op: string; value?: unknown }>
+  oracle_control_kinds?: Array<'downstream_response' | 'application_config' | 'service_registry'>
   category: 'normal' | 'boundary' | 'exception'
   title: string
   params?: Record<string, unknown>
   expected: string
   assertions?: Array<{
     path: string
-    op: 'equals' | 'not_equals' | 'exists' | 'not_exists' | 'non_empty' | 'contains' | 'greater_than' | 'less_than'
+    op:
+      | 'equals'
+      | 'not_equals'
+      | 'exists'
+      | 'not_exists'
+      | 'null_or_missing'
+      | 'not_blank'
+      | 'equals_request'
+      | 'in'
+      | 'not_in'
+      | 'non_empty'
+      | 'contains'
+      | 'greater_than'
+      | 'less_than'
     value?: unknown
   }>
   script_path: string
@@ -633,14 +767,31 @@ export interface TestCaseEntry {
 }
 
 export interface E2eTestStep {
-  action: 'goto' | 'click' | 'fill' | 'check' | 'select' | 'expect_text' | 'expect_url'
+  action: string
+  intent?: string
+  frame?: { url?: string; name?: string } | null
+  page?: string
+  variable?: string
+  resource?: string
+  basis?: { rule_id: string; quote: string }
   selector?: string
-  value?: string
+  value?: unknown
 }
 
 export interface E2eTestCaseEntry {
   id: string
   case_type: 'e2e'
+  contract_version?: '2.0'
+  design_id?: string
+  rule_refs?: string[]
+  scenario_type?: string
+  priority?: string
+  role?: string
+  setup?: E2eTestStep[]
+  precondition_checks?: E2eTestStep[]
+  cleanup?: E2eTestStep[]
+  execution_blockers?: string[]
+  execution_readiness?: string
   requirement_id: string
   claim_id?: string
   testpoint_id?: string
@@ -651,6 +802,17 @@ export interface E2eTestCaseEntry {
 }
 
 export interface ExecResult {
+  run_id?: string
+  scenario_type?: string
+  outcome?: string
+  step_results?: BrowserStepResult[]
+  failed_step_id?: string
+  evidence_complete?: boolean
+  evidence_errors?: string[]
+  evidence_files?: string[]
+  network_requests?: number
+  trace_ref?: string
+  oracle_status?: 'verified' | 'unverified'
   case_id: string
   interface_id: string
   case_type?: 'api' | 'e2e'
@@ -659,7 +821,13 @@ export interface ExecResult {
   testpoint_id?: string
   title?: string
   category?: 'normal' | 'boundary' | 'exception' | 'e2e'
-  assertion_scope?: 'business' | 'status_only' | 'ui_steps'
+  assertion_scope?:
+    | 'business'
+    | 'response_structure'
+    | 'framework_boundary'
+    | 'status_only'
+    | 'ui_steps'
+    | 'unverified'
   assertion_results?: Array<{
     path: string
     op: string
@@ -677,7 +845,17 @@ export interface ExecResult {
     screenshot_ref?: string
     console_errors?: string[]
     request_failures?: string[]
+    network_ref?: string
+    console_ref?: string
     capture_error?: string
+  }
+  request?: {
+    method?: string
+    url?: string
+    headers?: Record<string, unknown>
+    query_params?: unknown
+    body?: unknown
+    attempted?: boolean
   }
   passed: boolean
   timeout?: boolean
@@ -688,6 +866,15 @@ export interface ExecResult {
   actual_status?: number
   actual_body?: unknown
   skipped_reason?: string
+  execution_state?: 'executed' | 'not_executed' | 'observed_unjudged' | 'reused_response'
+  execution_blockers?: string[]
+  missing_control_kinds?: string[]
+  source_case_id?: string
+  source_params?: Record<string, unknown>
+  branch_observation?: {
+    status: 'unconfirmed' | 'not_reached' | 'matched_observable_path'
+    unknown_conditions: string[]
+  }
   timestamp?: string
 }
 
@@ -697,10 +884,16 @@ export interface ExecSummary {
   failed_assertion: number
   failed_environment: number
   skipped?: number
+  actual_requests?: number
+  observed_unjudged?: number
+  not_executed?: number
+  reused_response?: number
   by_type?: Record<'api' | 'e2e', Omit<ExecSummary, 'by_type'>>
 }
 
 export interface DefectEntry {
+  execution_snapshot?: ExecResult
+  title?: string
   id: string
   case_id: string
   interface_id: string
@@ -762,4 +955,72 @@ export interface MetricsPayload {
   }>
   caveat?: string
   measured_at?: string
+}
+
+export interface BrowserStepResult {
+  step_id: string
+  phase: 'setup' | 'precondition_checks' | 'steps' | 'cleanup'
+  intent: string
+  action: string
+  status: 'running' | 'passed' | 'failed'
+  step?: E2eTestStep
+  actual?: unknown
+  error?: string
+  duration_ms?: number
+  before_ref?: string
+  after_ref?: string
+  before_state_ref?: string
+  after_state_ref?: string
+  frame?: { url?: string; name?: string } | null
+  assertion?: NonNullable<ExecResult['assertion_results']>[number]
+  recovery?: unknown
+}
+
+export interface E2eDesign {
+  progress?: { intent?: string; pages_read?: number; pages_total?: number }
+  rules?: Array<{ rule_id: string; requirement_id: string; statement: string }>
+  run_id: string
+  status: string
+  cases: E2eTestCaseEntry[]
+  scenarios?: Array<{
+    scenario_id: string
+    title: string
+    scenario_type: string
+    design_status?: string
+    reason?: string
+  }>
+  gaps?: Array<{ rule_id?: string; scenario_id?: string; stage?: string; reason: string }>
+  coverage?: { rules: number; rules_with_cases: number; scenarios: number; cases: number }
+  exploration_pending?: Array<{ url?: string; state?: string; reason: string }>
+}
+export interface E2eExecution {
+  planned_cases?: number
+  status?: string
+  run_id: string
+  design_run_id: string
+  results: ExecResult[]
+  summary: ExecSummary & {
+    pending?: number
+    unjudged?: number
+    blocked?: number
+    automation_errors?: number
+    executed_cases?: number
+    steps?: number
+    assertions?: number
+    evidence_incomplete?: number
+    outcomes?: Record<string, number>
+  }
+  report_ref?: string
+  scope?: 'all' | 'selected'
+}
+export interface E2eOperationStatus {
+  job_id: string
+  running: boolean
+  configuration?: E2eConfig | null
+  operation?: {
+    operation: string
+    status: string
+    error?: string
+    progress?: { event: string; case_id: string; step_id: string; intent?: string; status?: string }
+  }
 }

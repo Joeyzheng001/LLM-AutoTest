@@ -1,0 +1,32 @@
+{
+  "job_id": "job-precodetest",
+  "source_design_count": 44,
+  "final_request_bindings": 44,
+  "remaining_request_gaps": 0,
+  "requirement_testpoints_without_link": 37,
+  "unique_claims": 10,
+  "execution_summary": {
+    "total": 44,
+    "passed": 19,
+    "failed_assertion": 0,
+    "failed_environment": 0,
+    "skipped": 16,
+    "actual_requests": 26,
+    "observed_unjudged": 9,
+    "not_executed": 16,
+    "reused_response": 2
+  },
+  "source_artifact_digests_before_report_refresh": {
+    "review_mapping.json": "e1cadec15f9515dc7b34f8927c456e048c8e5b7130479a71eca5bc12a8a1f5af",
+    "testcases.json": "05ea7de967cb0b03e2778c6f7f6eb4ed68e16a9ed27bc0f416d6ac2e0b107dde",
+    "execution.json": "661977603dbfa9bb2d5f0c73d464dcb10c6d8493cbf4bca2ff2255c09390d592"
+  },
+  "verification": [
+    "frontend build",
+    "backend mypy (3 files)",
+    "UI passed filter 19/44 and request/response details",
+    "UI response reuse filter 2/44 and source request",
+    "report refresh completed, original review/cases/execution digests unchanged"
+  ],
+  "scope": "本次只重生成报告；没有重新运行 Code Review、用例生成或实际 HTTP 执行。生成器告警逻辑以现有真实产物核对，尚未新跑一轮模型生成。"
+}

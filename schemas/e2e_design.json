@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "job_id",
+    "run_id",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^job-"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "running",
+        "completed",
+        "incomplete",
+        "failed"
+      ]
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "case_type",
+          "requirement_id",
+          "title",
+          "steps",
+          "expected"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^E2E-\\d{3,}$"
+          },
+          "case_type": {
+            "const": "e2e"
+          },
+          "requirement_id": {
+            "type": "string",
+            "pattern": "^REQ-\\d{3}$"
+          },
+          "claim_id": {
+            "type": "string",
+            "pattern": "^CLM-\\d{3,}$"
+          },
+          "testpoint_id": {
+            "type": "string",
+            "pattern": "^TP-\\d{3}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "preconditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object"
+            }
+          },
+          "expected": {
+            "type": "string",
+            "minLength": 1
+          },
+          "contract_version": {
+            "type": "string",
+            "enum": [
+              "2.0"
+            ]
+          },
+          "design_id": {
+            "type": "string"
+          },
+          "rule_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "scenario_type": {
+            "enum": [
+              "normal",
+              "boundary",
+              "exception",
+              "permission",
+              "state_transition",
+              "consistency"
+            ]
+          },
+          "priority": {
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "setup": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "cleanup": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "precondition_checks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "execution_blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "execution_readiness": {
+            "enum": [
+              "ready",
+              "blocked"
+            ]
+          },
+          "source_observations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "contract_version": {
+                  "const": "2.0"
+                }
+              },
+              "required": [
+                "contract_version"
+              ]
+            },
+            "then": {
+              "required": [
+                "rule_refs",
+                "scenario_type",
+                "setup",
+                "precondition_checks",
+                "cleanup",
+                "execution_readiness"
+              ],
+              "properties": {
+                "steps": {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "action",
+                      "basis",
+                      "intent"
+                    ],
+                    "properties": {
+                      "action": {
+                        "pattern": "^expect_"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "coverage": {
+      "type": "object"
+    },
+    "surface_ref": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,160 @@
+openapi: 3.1.0
+info:
+  title: LLM-AutoTest Mock Service
+  version: 0.1.0
+  description: Deterministic HTTP/JSON downstream stubs installed and removed by execution fixtures.
+servers:
+  - url: http://mock-services:8082
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        '200':
+          description: Service is ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service]
+                properties:
+                  status: { type: string, const: ok }
+                  service: { type: string, const: mock-services }
+  /__admin/scenarios:
+    get:
+      operationId: listScenarios
+      responses:
+        '200':
+          description: Installed scenario summaries; response bodies are omitted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [scenarios, count]
+                properties:
+                  scenarios:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, method, path, match, priority, hits]
+                      properties:
+                        name: { type: string }
+                        method: { type: string }
+                        path: { type: string }
+                        match:
+                          type: object
+                          required: [query_keys, header_names, has_body]
+                          properties:
+                            query_keys:
+                              type: array
+                              items: { type: string }
+                            header_names:
+                              type: array
+                              items: { type: string }
+                            has_body: { type: boolean }
+                        priority: { type: integer }
+                        hits: { type: integer }
+                  count: { type: integer }
+  /__admin/scenarios/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+    put:
+      operationId: putScenario
+      description: Create or replace a scenario. Repeating setup is safe.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Scenario'
+      responses:
+        '200':
+          description: Scenario installed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, installed]
+                properties:
+                  name: { type: string }
+                  installed: { type: boolean, const: true }
+        '422': { description: Invalid scenario name or scenario document. }
+    delete:
+      operationId: deleteScenario
+      description: Delete one scenario. Repeating teardown is safe.
+      responses:
+        '200':
+          description: Teardown completed; deleted is false if it was already absent.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, deleted]
+                properties:
+                  name: { type: string }
+                  deleted: { type: boolean }
+  /{path}:
+    parameters:
+      - name: path
+        in: path
+        required: true
+        description: Exact downstream path configured by a scenario.
+        schema: { type: string }
+    get:
+      operationId: invokeGetStub
+      responses:
+        default:
+          description: Configured JSON response, 404 when no scenario matches, or 409 on ambiguity.
+  /:
+    post:
+      operationId: invokeRootPostStub
+      description: The data plane accepts all supported methods at any exact path, including /.
+      responses:
+        default:
+          description: Configured JSON response, 404 when no scenario matches, or 409 on ambiguity.
+components:
+  schemas:
+    Scenario:
+      type: object
+      additionalProperties: false
+      required: [method, path, response]
+      properties:
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD]
+        path:
+          type: string
+          pattern: '^/(?!__admin(?:/|$)|health$)(?!/)(?!.*(?:^|/)\.\.(?:/|$))(?!.*[?#]).*'
+        priority:
+          type: integer
+          minimum: -1000
+          maximum: 1000
+          default: 0
+        match:
+          type: object
+          additionalProperties: false
+          properties:
+            query: { type: object }
+            headers:
+              type: object
+              additionalProperties: { type: string }
+            body: {}
+        response:
+          type: object
+          additionalProperties: false
+          required: [status_code]
+          properties:
+            status_code:
+              type: integer
+              minimum: 200
+              maximum: 599
+              default: 200
+            headers:
+              type: object
+              additionalProperties: { type: string }
+            body: {}

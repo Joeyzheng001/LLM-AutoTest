@@ -112,7 +112,10 @@ const e2e = reactive({
   insecureTls: true,
   authMode: 'reuse' as 'reuse' | 'browser',
 })
+const e2eExtra = ref<Partial<import('../api/types').E2eConfig>>({})
 const fixturesJson = ref('')
+const autoRecordFixtures = ref(false)
+const observeRuntimeContracts = ref(false)
 const fixturePlaceholder =
   '[{"name":"seed-user","phase":"setup","method":"POST","path":"/fixtures/users","body":{"id":1},"expected":"status=201","required":true}]'
 const responseHeaderPathsPlaceholder =
@@ -209,6 +212,8 @@ function saveDraft(): void {
         e2e: { ...e2e },
         e2eEnabled: e2eEnabled.value,
         fixturesJson: fixturesJson.value,
+        autoRecordFixtures: autoRecordFixtures.value,
+        observeRuntimeContracts: observeRuntimeContracts.value,
         restInsecureTls: restInsecureTls.value,
         savedAt: new Date().toISOString(),
       }),
@@ -244,6 +249,8 @@ function restoreDraft(): void {
     if (draft.e2e && typeof draft.e2e === 'object') Object.assign(e2e, draft.e2e)
     e2eEnabled.value = Boolean(draft.e2eEnabled)
     if (typeof draft.fixturesJson === 'string') fixturesJson.value = draft.fixturesJson
+    autoRecordFixtures.value = Boolean(draft.autoRecordFixtures)
+    observeRuntimeContracts.value = Boolean(draft.observeRuntimeContracts)
     restInsecureTls.value = Boolean(draft.restInsecureTls)
     draftSavedAt.value =
       typeof draft.savedAt === 'string' ? new Date(draft.savedAt).toLocaleString() : ''
@@ -278,6 +285,7 @@ const editingJobId = ref('')
 const existingDocs = ref<string[]>([])
 const existingAuthPassword = ref(false)
 const existingLlmKey = ref(false)
+const existingLlmKeyEncrypted = ref<boolean | null>(null)
 const repositoryRoot = ref('/opt/repos')
 const loadingConfiguration = ref(false)
 const preflightResult = ref<{
@@ -557,7 +565,7 @@ const fixturesValid = computed(() => {
   try {
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return false
-    return parsed.every((item) => {
+    const entriesValid = parsed.every((item) => {
       if (!item || typeof item !== 'object') return false
       const record = item as Record<string, unknown>
       const methodValid = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(String(record.method))
@@ -578,8 +586,46 @@ const fixturesValid = computed(() => {
         typeof record.expected === 'string' &&
         record.expected.trim() !== '' &&
         (record.required === undefined || typeof record.required === 'boolean') &&
+        (record.scope === undefined || record.scope === 'job' || record.scope === 'case') &&
+        (record.base_url === undefined ||
+          (typeof record.base_url === 'string' && /^https?:\/\//.test(record.base_url))) &&
+        (record.control_kind === undefined ||
+          ['downstream_response', 'application_config', 'service_registry'].includes(
+            String(record.control_kind),
+          )) &&
+        (record.control_kind === undefined ||
+          (record.scope === 'case' &&
+            typeof record.interface_id === 'string' &&
+            /^IF-[A-Z]+-\d{3}$/.test(record.interface_id) &&
+            typeof record.scenario_contains === 'string' &&
+            record.scenario_contains.trim() !== '' &&
+            typeof record.base_url === 'string' &&
+            record.required === true)) &&
+        (record.control_kind !== undefined ||
+          (record.scope !== 'case' &&
+            record.interface_id === undefined &&
+            record.scenario_contains === undefined)) &&
         objectFieldValid('query') &&
         objectFieldValid('body')
+      )
+    })
+    if (!entriesValid) return false
+    return parsed.every((item) => {
+      const record = item as Record<string, unknown>
+      if (!record.control_kind) return true
+      const matches = parsed.filter((candidate) => {
+        const other = candidate as Record<string, unknown>
+        return (
+          other.name === record.name &&
+          other.control_kind === record.control_kind &&
+          other.interface_id === record.interface_id &&
+          other.scenario_contains === record.scenario_contains &&
+          other.base_url === record.base_url
+        )
+      }) as Array<Record<string, unknown>>
+      return (
+        matches.filter((candidate) => candidate.phase === 'setup').length === 1 &&
+        matches.filter((candidate) => candidate.phase === 'teardown').length === 1
       )
     })
   } catch {
@@ -712,6 +758,7 @@ async function loadConfiguration(jobId: string): Promise<void> {
     })
     llmEnabled.value = config.llm !== null
     existingLlmKey.value = config.llm?.api_key_configured ?? false
+    existingLlmKeyEncrypted.value = config.llm?.api_key_encrypted ?? null
     if (config.llm)
       Object.assign(llm, {
         model: config.llm.model,
@@ -719,6 +766,7 @@ async function loadConfiguration(jobId: string): Promise<void> {
         protocol: config.llm.protocol,
         maxTokens: config.llm.max_tokens,
       })
+    e2eExtra.value = config.e2e || {}
     e2eEnabled.value = config.e2e !== null
     Object.assign(e2e, {
       baseUrl: config.e2e?.base_url ?? e2e.baseUrl,
@@ -728,6 +776,8 @@ async function loadConfiguration(jobId: string): Promise<void> {
       authMode: config.e2e?.auth_mode ?? 'browser',
     })
     fixturesJson.value = config.fixtures?.length ? JSON.stringify(config.fixtures, null, 2) : ''
+    autoRecordFixtures.value = Boolean(config.auto_record_fixtures)
+    observeRuntimeContracts.value = Boolean(config.observe_runtime_contracts)
   } catch (err) {
     submitError.value =
       err instanceof Error ? `加载任务配置失败：${err.message}` : '加载任务配置失败'
@@ -818,6 +868,8 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
     }),
     rest_url: form.restUrl.trim(),
     rest_insecure_tls: restInsecureTls.value,
+    auto_record_fixtures: autoRecordFixtures.value,
+    observe_runtime_contracts: observeRuntimeContracts.value,
     resume: form.resume,
     // C-15：鉴权配置（可选；开启才随提交发送，凭据只落本机 job_input.json）
     ...(authEnabled.value
@@ -851,6 +903,7 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
     ...(e2eEnabled.value
       ? {
           e2e: {
+            ...e2eExtra.value,
             base_url: e2e.baseUrl.trim(),
             generate_cases: e2e.generateCases,
             execute_cases: e2e.executeCases,
@@ -899,6 +952,8 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         ...commonPayload,
         llm_enabled: llmEnabled.value,
         rest_insecure_tls: restInsecureTls.value,
+        auto_record_fixtures: autoRecordFixtures.value,
+        observe_runtime_contracts: observeRuntimeContracts.value,
         resume: form.resume,
         keep_existing_docs: documentCount === 0,
         run_after_save: runAfterSave,
@@ -1459,6 +1514,22 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           接口前置夹具（可选）
           <span class="group-note">setup/teardown 造数步骤；保存任务时可清空旧夹具</span>
         </header>
+        <label class="switch-row">
+          <input v-model="autoRecordFixtures" type="checkbox" />
+          <span>在测试环境为数据库依赖用例自动创建并清理记录</span>
+        </label>
+        <p class="switch-note">
+          仅在 Code Review 从源码确认新增、查询和删除链路时启用；每条用例独立造数、查回真实
+          ID，结束后通过删除接口软删除。软删除仍保留数据库记录和操作日志。
+        </p>
+        <label class="switch-row">
+          <input v-model="observeRuntimeContracts" type="checkbox" />
+          <span>在测试环境观测源码确认无副作用的异常响应</span>
+        </label>
+        <p class="switch-note">
+          仅探测源码证明会在调用业务 Service 前拒绝的固定异常请求。HTTP
+          状态和响应字段按实测记录，并在评审产物中标记为运行实测证据。
+        </p>
         <label class="field">
           <span class="field-label">夹具 JSON</span>
           <textarea
@@ -1488,11 +1559,15 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           </button>
         </div>
         <p v-if="!fixturesValid" class="field-error" role="status">
-          夹具必须是 JSON 数组；每项至少包含 name、phase、method、path、expected，path 需以 / 开头。
+          夹具 JSON 或分支控制配置无效；分支控制项需配置 case scope、接口、场景、独立 HTTP(S)
+          地址，并成对提供同名 setup/teardown。
         </p>
         <p class="switch-note">
-          夹具只在接口用例执行前调用，不会发送给大模型；留空表示不配置夹具。支持
-          query、body、required 等字段。
+          普通夹具在任务开始和结束时执行。分支控制夹具需用
+          scope=case、control_kind、interface_id、scenario_contains 和独立 base_url，且同名
+          setup/teardown 成对配置；scenario_contains 必须能匹配生成的 oracle
+          场景，它只围绕匹配的单条用例执行。控制类型为 downstream_response、application_config 或
+          service_registry。控制夹具的 URL、请求体不会发送给大模型，也不会转发被测应用的登录凭据。
         </p>
       </section>
 
@@ -1523,14 +1598,28 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           <!-- 编辑态已存密钥：把「留空即复用」提到输入框紧邻处。
                此前提示只出现在表单底部，用户看到空白输入框会误以为密钥丢失、
                被迫重新粘贴（key 不回显是安全红线，不能靠回显解决）。 -->
-          <p v-if="editingJobId && existingLlmKey && !llm.apiKey" class="switch-note key-reuse-hint">
-            ✓ 已保存密钥（服务端加密存储，不回显）。<strong>留空即可复用</strong>，无需重新填写。
+          <p
+            v-if="editingJobId && existingLlmKey && !llm.apiKey"
+            class="switch-note key-reuse-hint"
+          >
+            ✓
+            {{
+              existingLlmKeyEncrypted === true
+                ? '密钥已加密保存'
+                : existingLlmKeyEncrypted === false
+                  ? '服务端当前可读取密钥'
+                  : '历史配置曾标记有密钥，当前版本未确认可读取'
+            }}（不回显）。
+            <strong>{{
+              existingLlmKeyEncrypted === null ? '请先验证是否可复用' : '留空即可复用'
+            }}</strong
+            >。
           </p>
           <p
             v-else-if="editingJobId && existingLlmKey && llm.apiKey"
             class="switch-note key-reuse-hint"
           >
-            将用本次填写的新 Key 覆盖已存密钥（留空则继续沿用旧密钥）。
+            将用本次填写的新 Key（留空则复用服务端当前可读取的密钥）。
           </p>
           <div class="two-col">
             <label class="field">
@@ -1586,7 +1675,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             留空时复用服务级或已有任务密钥。
           </p>
           <p v-if="editingJobId && !llm.apiKey && existingLlmKey" class="switch-note">
-            未重新填写 API Key，将复用服务端安全存储中的密钥。
+            留空时会尝试复用已有任务或服务级密钥；若验证仍提示未配置，说明当前服务实例无法读取任务密钥。
           </p>
           <p class="switch-note">
             当前默认复用部署服务器的 LLM 中转站配置；需要临时切换模型别名或 API Key
@@ -1594,8 +1683,8 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           </p>
           <p class="switch-note">
             浏览器只保存协议、模型、地址和 Token 上限；API Key
-            不进入浏览器持久化存储，提交后由服务端 SecretStore
-            安全复用。重跑已有任务时留空即可复用服务端密钥。需求解析、接口还原、Code Review、
+            不进入浏览器持久化存储。密钥是否加密持久化取决于服务端 SecretStore 配置；
+            编辑已有任务时会显示当前可复用状态。需求解析、接口还原、Code Review、
             用例生成会按章节或实体分批调用，再由程序校验并合并。
           </p>
         </template>

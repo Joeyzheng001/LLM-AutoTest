@@ -19,36 +19,51 @@ _OPERATORS = {
     "not_equals",
     "exists",
     "not_exists",
+    "null_or_missing",
     "non_empty",
     "contains",
     "greater_than",
     "less_than",
+    "not_blank",
+    "equals_request",
+    "in",
+    "not_in",
 }
-_VALUE_OPERATORS = {"equals", "not_equals", "contains", "greater_than", "less_than"}
+_VALUE_OPERATORS = {"equals", "not_equals", "contains", "greater_than", "less_than", "equals_request", "in", "not_in"}
 
 
-def normalize_response_assertions(value: Any) -> list[dict[str, Any]]:
+def normalize_response_assertions(value: Any, *, label: str = "assertions") -> list[dict[str, Any]]:
     """Validate and normalize explicit response assertions; malformed input is rejected."""
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ValueError("assertions 必须是数组")
+        raise ValueError(f"{label} 必须是数组")
     normalized: list[dict[str, Any]] = []
-    for index, raw in enumerate(value, start=1):
+    for index, raw in enumerate(value):
         if not isinstance(raw, dict):
-            raise ValueError(f"assertions[{index}] 必须是对象")
+            raise ValueError(f"{label}[{index}] 必须是对象")
         path = str(raw.get("path", "")).strip()
         if path.startswith("$."):
             path = path[2:]
         elif path.startswith("$"):
             path = path[1:]
         if not path or not _PATH_RE.fullmatch(path):
-            raise ValueError(f"assertions[{index}].path 不是受支持的 JSON 路径")
+            raise ValueError(
+                f"{label}[{index}].path 不是受支持的 JSON 路径：{path[:120]!r}"
+            )
         operator = str(raw.get("op", "")).strip()
         if operator not in _OPERATORS:
-            raise ValueError(f"assertions[{index}].op 不支持：{operator}")
+            raise ValueError(f"{label}[{index}].op 不支持：{operator}")
         if operator in _VALUE_OPERATORS and "value" not in raw:
-            raise ValueError(f"assertions[{index}] 的 {operator} 断言缺少 value")
+            raise ValueError(f"{label}[{index}] 的 {operator} 断言缺少 value")
+        if operator in {"in", "not_in"} and (
+            not isinstance(raw.get("value"), list) or not raw["value"]
+        ):
+            raise ValueError(f"{label}[{index}].value 必须是非空候选值数组")
+        if operator == "equals_request" and (
+            not isinstance(raw["value"], str) or not _PATH_RE.fullmatch(raw["value"])
+        ):
+            raise ValueError("equals_request.value 必须是请求参数 JSON 路径")
         entry: dict[str, Any] = {"path": path, "op": operator}
         if "value" in raw:
             entry["value"] = raw["value"]
@@ -57,7 +72,7 @@ def normalize_response_assertions(value: Any) -> list[dict[str, Any]]:
 
 
 def evaluate_response_assertions(
-    body: Any, assertions: list[dict[str, Any]]
+    body: Any, assertions: list[dict[str, Any]], request_params: Any = None,
 ) -> list[dict[str, Any]]:
     """Evaluate a validated assertion list and return redaction-ready outcomes."""
     outcomes: list[dict[str, Any]] = []
@@ -71,18 +86,29 @@ def evaluate_response_assertions(
             passed = found
         elif operator == "not_exists":
             passed = not found
+        elif operator == "null_or_missing":
+            passed = not found or actual is None
         elif operator == "non_empty":
             passed = found and actual is not None and actual != "" and actual != [] and actual != {}
+        elif operator == "not_blank":
+            passed = found and isinstance(actual, str) and bool(actual.strip())
+        elif operator == "equals_request":
+            input_found, expected = _resolve_json_path(request_params, str(expected))
+            passed = found and input_found and _values_equal(actual, expected)
         elif operator == "equals":
             passed = found and _values_equal(actual, expected)
         elif operator == "not_equals":
             passed = found and not _values_equal(actual, expected)
+        elif operator in {"in", "not_in"}:
+            if isinstance(expected, list) and expected:
+                member = any(_values_equal(actual, item) for item in expected)
+                passed = found and (member if operator == "in" else not member)
         elif operator == "contains":
             passed = found and _contains(actual, expected)
         elif operator in {"greater_than", "less_than"}:
             try:
                 left = float(actual)
-                right = float(expected)
+                right = float(expected) if expected is not None else float("nan")
                 passed = math.isfinite(left) and math.isfinite(right) and (
                     left > right if operator == "greater_than" else left < right
                 )
@@ -99,6 +125,18 @@ def evaluate_response_assertions(
             }
         )
     return outcomes
+
+
+def response_assertion_scope(assertions: Any) -> str:
+    """Metadata echoes and existence checks cannot establish a business outcome."""
+    normalized = normalize_response_assertions(assertions)
+    if not normalized:
+        return "status_only"
+    metadata = {"serialno", "requestid", "traceid", "correlationid"}
+    if all(item["op"] in {"exists", "null_or_missing"} or str(item["path"]).split(".")[0].replace("_", "").lower() in metadata
+           for item in normalized):
+        return "response_structure"
+    return "business"
 
 
 def legacy_response_assertions(expected: str) -> list[dict[str, Any]]:
@@ -155,7 +193,7 @@ def _values_equal(actual: Any, expected: Any) -> bool:
         return type(actual) is type(expected) and actual == expected
     if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
         return float(actual) == float(expected)
-    return actual == expected
+    return bool(actual == expected)
 
 
 def _contains(actual: Any, expected: Any) -> bool:

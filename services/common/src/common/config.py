@@ -37,9 +37,11 @@ class Settings:
     database_auto_create: bool = False
     # 单进程后台队列的并发上限；多实例部署时由数据库租约进一步约束。
     job_max_concurrency: int = 2
+    # 每个 Code Review 同时处理的独立 Claim/接口数量；1 可恢复串行调度。
+    code_review_max_concurrency: int = 4
     # 任务级租约时长；节点级租约 API 复用该部署基线。
     job_lease_seconds: int = 120
-    # 单次模型最大输出，长结果由节点分批生成而非无限提高该值。
+    # 单次模型输出预算；到达上限时客户端续接，长输入由节点按完整业务实体分页。
     llm_max_tokens: int = 16384
     # 任务级凭据加密主密钥；生产部署必须配置，开发环境可留空兼容旧任务。
     secrets_encryption_key: str | None = None
@@ -95,6 +97,8 @@ class Settings:
             raise ValueError("LLM_MAX_TOKENS 不能小于 1024")
         if self.job_max_concurrency < 1:
             raise ValueError("JOB_MAX_CONCURRENCY 必须大于 0")
+        if self.code_review_max_concurrency < 1:
+            raise ValueError("CODE_REVIEW_MAX_CONCURRENCY 必须大于 0")
         if self.job_lease_seconds < 1:
             raise ValueError("JOB_LEASE_SECONDS 必须大于 0")
         if self.artifact_retention_days < 0 or self.artifact_trash_grace_days < 0:
@@ -111,6 +115,7 @@ class Settings:
             f"llm_protocol={self.llm_protocol} "
             f"temperature={self.llm_temperature} top_p={self.llm_top_p} seed={self.llm_seed} "
             f"job_max_concurrency={self.job_max_concurrency} "
+            f"code_review_max_concurrency={self.code_review_max_concurrency} "
             f"job_lease_seconds={self.job_lease_seconds}"
             f" secrets_store={'enabled' if self.secrets_encryption_key else 'disabled'}"
             f" access_control={'single_user' if self.single_user_mode else 'enabled' if self.access_tokens_json else 'disabled'}"
@@ -145,6 +150,7 @@ class Settings:
                 database_auto_create=source.get("DATABASE_AUTO_CREATE", "false").lower()
                 in {"1", "true", "yes", "on"},
                 job_max_concurrency=int(source.get("JOB_MAX_CONCURRENCY", "2")),
+                code_review_max_concurrency=int(source.get("CODE_REVIEW_MAX_CONCURRENCY", "4")),
                 job_lease_seconds=int(source.get("JOB_LEASE_SECONDS", "120")),
                 secrets_encryption_key=source.get("SECRETS_ENCRYPTION_KEY") or None,
                 access_tokens_json=source.get("AUTOTEST_ACCESS_TOKENS_JSON") or None,

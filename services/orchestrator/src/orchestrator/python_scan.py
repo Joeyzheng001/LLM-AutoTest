@@ -734,20 +734,18 @@ def _candidate(
 
 
 def _node_snippet(file_path: Path | None, node: ast.AST | None) -> str | None:
-    """返回受限源码片段，供 LLM 还原真实字段，读取失败则不臆造。"""
+    """按 AST 节点精确行范围返回完整源码，读取失败或范围不完整时不臆造。"""
     if file_path is None or node is None:
         return None
     try:
         lines = file_path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
         return None
-    lineno = getattr(node, "lineno", 0)
-    if lineno <= 0:
+    start_line = getattr(node, "lineno", 0)
+    end_line = getattr(node, "end_lineno", None)
+    if start_line <= 0 or end_line is None or end_line < start_line or end_line > len(lines):
         return None
-    start = lineno - 1
-    # 防止单个超长方法撑爆接口还原上下文；前 120 行涵盖参数读取与 serializer 声明。
-    end = min(getattr(node, "end_lineno", lineno), start + 120, len(lines))
-    snippet = "\n".join(lines[start:end]).strip()
+    snippet = "\n".join(lines[start_line - 1 : end_line]).strip()
     return snippet or None
 
 
@@ -774,7 +772,8 @@ def _serializer_context(
             serializer_names.append(name)
 
     snippets: list[str] = []
-    for name in serializer_names[:3]:  # 一个端点最多附带三个，控制上下文体积
+    # 不按固定个数截掉 Serializer；遗漏后续 Serializer 会让请求字段清单看似完整但实际缺项。
+    for name in serializer_names:
         serializer_file = _resolve_import(root, trees, imports[name], name)
         if serializer_file is None:
             continue

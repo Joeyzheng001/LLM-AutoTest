@@ -1,0 +1,259 @@
+{
+  "model_run_id": "a85c38eeeb08",
+  "cases": 42,
+  "actual_requests": 24,
+  "old_skipped": 22,
+  "already_requested_among_old_skipped": 4,
+  "genuinely_not_sent": 18,
+  "details": [
+    {
+      "case_id": "TC-001",
+      "interface_id": "IF-REST-001",
+      "scenario": "请求体为空或为 JSON null 时，框架拒绝必填请求体绑定",
+      "request_attempted": true,
+      "first_reason": "框架默认响应与被测环境不同（HTTP 200）；需确认项目/网关异常包装，尚未判定业务缺陷",
+      "required_control_kinds": [],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-002",
+      "interface_id": "IF-REST-001",
+      "scenario": "请求参数accountNo为空字符串时，抛出业务异常",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认",
+      "required_control_kinds": [],
+      "blockers": [
+        "本接口处理行为已有源码依据，HTTP 响应映射尚未确认"
+      ]
+    },
+    {
+      "case_id": "TC-003",
+      "interface_id": "IF-REST-001",
+      "scenario": "执行器类型为null或不在服务缓存中时，抛出运行时异常",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认",
+      "required_control_kinds": [
+        "downstream_response",
+        "service_registry"
+      ],
+      "blockers": [
+        "本接口处理行为已有源码依据，HTTP 响应映射尚未确认"
+      ]
+    },
+    {
+      "case_id": "TC-004",
+      "interface_id": "IF-REST-001",
+      "scenario": "O32风控试算返回null时，使用兜底错误对象并正常返回",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，待准备指定返回或环境状态的控制条件：downstream_response",
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-005",
+      "interface_id": "IF-REST-001",
+      "scenario": "O32风控试算失败时，原样返回错误信息",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：目标源码分支的条件来源尚未能绑定到 HTTP 请求或控制夹具；需补齐调用链数据来源证据",
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "blockers": [
+        "目标源码分支的条件来源尚未能绑定到 HTTP 请求或控制夹具；需补齐调用链数据来源证据"
+      ]
+    },
+    {
+      "case_id": "TC-006",
+      "interface_id": "IF-REST-001",
+      "scenario": "业务类型对应的明细处理器不存在时，原样返回O32结果",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：目标源码分支的条件来源尚未能绑定到 HTTP 请求或控制夹具；需补齐调用链数据来源证据",
+      "required_control_kinds": [
+        "service_registry"
+      ],
+      "blockers": [
+        "目标源码分支的条件来源尚未能绑定到 HTTP 请求或控制夹具；需补齐调用链数据来源证据"
+      ]
+    },
+    {
+      "case_id": "TC-009",
+      "interface_id": "IF-REST-002",
+      "scenario": "请求体为空或为 JSON null 时，框架拒绝必填请求体绑定",
+      "request_attempted": true,
+      "first_reason": "框架默认响应与被测环境不同（HTTP 200）；需确认项目/网关异常包装，尚未判定业务缺陷",
+      "required_control_kinds": [],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-010",
+      "interface_id": "IF-REST-002",
+      "scenario": "审批授权复合试算结果为空时抛出异常",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认",
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "blockers": [
+        "本接口处理行为已有源码依据，HTTP 响应映射尚未确认"
+      ]
+    },
+    {
+      "case_id": "TC-011",
+      "interface_id": "IF-REST-002",
+      "scenario": "审批授权试算未返回O32结果时直接返回响应",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，待准备指定返回或环境状态的控制条件：downstream_response",
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-012",
+      "interface_id": "IF-REST-002",
+      "scenario": "O32试算失败时不查询审批信息直接返回响应",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，待准备指定返回或环境状态的控制条件：downstream_response",
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-013",
+      "interface_id": "IF-REST-002",
+      "scenario": "O32结果无有效风控序号时不查询审批信息",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，待准备指定返回或环境状态的控制条件：downstream_response",
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-016",
+      "interface_id": "IF-REST-002",
+      "scenario": "临时代码查询市场不支持时抛出异常",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认",
+      "required_control_kinds": [],
+      "blockers": [
+        "本接口处理行为已有源码依据，HTTP 响应映射尚未确认"
+      ]
+    },
+    {
+      "case_id": "TC-022",
+      "interface_id": "IF-REST-003",
+      "scenario": "配置的复杂执行器列表为空时抛出异常",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认",
+      "required_control_kinds": [
+        "application_config"
+      ],
+      "blockers": [
+        "本接口处理行为已有源码依据，HTTP 响应映射尚未确认"
+      ]
+    },
+    {
+      "case_id": "TC-024",
+      "interface_id": "IF-REST-003",
+      "scenario": "当执行STD风控通道且执行失败时，设置icmTrialObj为错误对象",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，待准备指定返回或环境状态的控制条件：downstream_response",
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-026",
+      "interface_id": "IF-REST-003",
+      "scenario": "当执行O32风控通道且执行失败时，设置o32TrialObj为错误对象",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，待准备指定返回或环境状态的控制条件：downstream_response",
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-027",
+      "interface_id": "IF-REST-003",
+      "scenario": "请求的风控通道在配置中不存在时抛出异常",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认",
+      "required_control_kinds": [
+        "application_config"
+      ],
+      "blockers": [
+        "本接口处理行为已有源码依据，HTTP 响应映射尚未确认"
+      ]
+    },
+    {
+      "case_id": "TC-032",
+      "interface_id": "IF-REST-003",
+      "scenario": "STD 风控通道调用失败时，返回错误对象",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，待准备指定返回或环境状态的控制条件：downstream_response",
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-034",
+      "interface_id": "IF-REST-003",
+      "scenario": "O32 风控通道调用失败时，返回错误对象",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，待准备指定返回或环境状态的控制条件：downstream_response",
+      "required_control_kinds": [
+        "downstream_response"
+      ],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-037",
+      "interface_id": "IF-REST-003",
+      "scenario": "请求体为空或为 JSON null 时，框架拒绝必填请求体绑定",
+      "request_attempted": true,
+      "first_reason": "框架默认响应与被测环境不同（HTTP 200）；需确认项目/网关异常包装，尚未判定业务缺陷",
+      "required_control_kinds": [],
+      "blockers": []
+    },
+    {
+      "case_id": "TC-038",
+      "interface_id": "IF-REST-004",
+      "scenario": "请求路径参数 code 的值不在 RequestTypeEnum 枚举定义中",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认",
+      "required_control_kinds": [],
+      "blockers": [
+        "本接口处理行为已有源码依据，HTTP 响应映射尚未确认"
+      ]
+    },
+    {
+      "case_id": "TC-039",
+      "interface_id": "IF-REST-004",
+      "scenario": "执行器类型 STD 对应的服务未在缓存中注册",
+      "request_attempted": false,
+      "first_reason": "X-EXEC-05：用例设计已保留，执行条件尚未满足：本接口处理行为已有源码依据，HTTP 响应映射尚未确认",
+      "required_control_kinds": [
+        "service_registry"
+      ],
+      "blockers": [
+        "本接口处理行为已有源码依据，HTTP 响应映射尚未确认"
+      ]
+    },
+    {
+      "case_id": "TC-042",
+      "interface_id": "IF-REST-004",
+      "scenario": "请求体为空或为 JSON null 时，框架拒绝必填请求体绑定",
+      "request_attempted": true,
+      "first_reason": "框架默认响应与被测环境不同（HTTP 200）；需确认项目/网关异常包装，尚未判定业务缺陷",
+      "required_control_kinds": [],
+      "blockers": []
+    }
+  ]
+}
