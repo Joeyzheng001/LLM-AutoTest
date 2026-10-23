@@ -585,6 +585,21 @@ def _previous_passing_source(attempt: dict[str, Any] | None, class_name: str,
         return None
 
 
+def _same_failed_source(attempt: dict[str, Any] | None,
+                        class_name: str, source: str) -> bool:
+    """Do not send an unchanged failing fixture through Maven again."""
+    if not attempt or attempt.get("status") not in (
+        "failed", "fixture_failed", "build_failed", "generation_failed",
+    ):
+        return False
+    previous = attempt.get("source")
+    old_class = str(attempt.get("test_class") or "")
+    if not isinstance(previous, str) or not previous or not old_class:
+        return False
+    previous = re.sub(rf"\b{re.escape(old_class)}\b", class_name, previous)
+    return re.sub(r"\s+", "", previous) == re.sub(r"\s+", "", source)
+
+
 def _previous_target_failures(job_dir: Path, repo_name: str, source_sha: str,
                               target_source: str) -> list[dict[str, str]]:
     """Tell the planner which expectations or fixtures failed on this source."""
@@ -1290,6 +1305,8 @@ async def generate_controlled_unit_cases(
                         package, source = _valid_generated_source(
                             answer.text, class_name, framework, context,
                             str(item.get("target_class", "")))
+                        if _same_failed_source(previous_attempt, class_name, source):
+                            raise ValueError("与上一轮失败源码相同；必须修正断言或夹具后再生成")
                         break
                     except ValueError as validation_error:
                         if validation_round == 2:
@@ -1348,6 +1365,8 @@ async def generate_controlled_unit_cases(
                     if new_source == source:
                         raise ValueError(f"编译修复未改变源码：{_maven_error_summary(compiler_text)}")
                     source = new_source
+                if _same_failed_source(previous_attempt, class_name, source):
+                    raise ValueError("编译修复退回上一轮失败源码，未解决原有断言或夹具问题")
                 store.write_raw(job_id, artifact, source)
                 item.update(status="generated", source_artifact=artifact, source=source,
                             compile_verified=True)
