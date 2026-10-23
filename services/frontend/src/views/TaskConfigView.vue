@@ -330,17 +330,41 @@ const preflightResult = ref<{
 const activeStep = ref('documents')
 
 const configSteps = [
-  { id: 'documents', label: '需求与仓库', hint: '文档版本、仓库地址' },
-  { id: 'environment', label: '被测系统', hint: 'REST 地址、登录、只读数据库、E2E 页面' },
-  { id: 'credentials', label: '模型配置', hint: '中转站与输出设置' },
-  { id: 'confirm', label: '确认提交', hint: '校验并启动' },
+  { id: 'documents', label: '需求文档', hint: '被测版本与基线' },
+  { id: 'repositories', label: '源码仓库', hint: '地址与变更范围' },
+  { id: 'unit', label: '单元测试', hint: '隔离运行与覆盖率' },
+  { id: 'api', label: '接口测试', hint: '服务地址与登录' },
+  { id: 'data', label: '数据与夹具', hint: '只读查询、分支控制' },
+  { id: 'e2e', label: 'E2E 测试', hint: '前端站点与浏览器' },
+  { id: 'model', label: '模型与运行', hint: '中转站、任务选项' },
+  { id: 'confirm', label: '确认提交', hint: '预检并启动' },
 ] as const
+type ConfigStep = (typeof configSteps)[number]['id']
+const currentStep = computed(
+  () => configSteps.find((step) => step.id === activeStep.value) ?? configSteps[0],
+)
+const currentStepIndex = computed(() =>
+  configSteps.findIndex((step) => step.id === activeStep.value),
+)
+const stepReady = computed<Record<ConfigStep, boolean>>(() => ({
+  documents: documentsValid.value,
+  repositories: reposValid.value && changeScopeValid.value,
+  api: restValid.value && authValid.value,
+  data: dbReadOnlyValid.value && fixturesValid.value,
+  e2e: e2eValid.value,
+  unit: true,
+  model: llmValid.value,
+  confirm: formValid.value,
+}))
 
-function goToStep(stepId: string): void {
+function goToStep(stepId: ConfigStep): void {
   activeStep.value = stepId
-  document
-    .getElementById(`config-step-${stepId}`)
-    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  document.querySelector('.config-layout')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function moveStep(offset: number): void {
+  const next = configSteps[currentStepIndex.value + offset]
+  if (next) goToStep(next.id)
 }
 
 function addRepo(): void {
@@ -579,13 +603,16 @@ const authValid = computed(
       authContractValid.value),
 )
 
-const dbReadOnlyValid = computed(() =>
-  !dbReadOnlyEnabled.value ||
-  (/^[A-Za-z0-9_.:-]+$/.test(dbReadOnly.host.trim()) &&
-    Number.isInteger(Number(dbReadOnly.port)) && Number(dbReadOnly.port) >= 1 &&
-    Number(dbReadOnly.port) <= 65535 && dbReadOnly.database.trim() !== '' &&
-    dbReadOnly.username.trim() !== '' &&
-    (dbReadOnly.password !== '' || (editingJobId.value !== '' && existingDbPassword.value))),
+const dbReadOnlyValid = computed(
+  () =>
+    !dbReadOnlyEnabled.value ||
+    (/^[A-Za-z0-9_.:-]+$/.test(dbReadOnly.host.trim()) &&
+      Number.isInteger(Number(dbReadOnly.port)) &&
+      Number(dbReadOnly.port) >= 1 &&
+      Number(dbReadOnly.port) <= 65535 &&
+      dbReadOnly.database.trim() !== '' &&
+      dbReadOnly.username.trim() !== '' &&
+      (dbReadOnly.password !== '' || (editingJobId.value !== '' && existingDbPassword.value))),
 )
 
 const llmValid = computed(
@@ -948,17 +975,19 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
           ...(authSessionId.value ? { auth_session_id: authSessionId.value } : {}),
         }
       : {}),
-    ...(dbReadOnlyEnabled.value ? {
-      db_readonly: {
-        database_type: dbReadOnly.databaseType,
-        host: dbReadOnly.host.trim(),
-        port: Number(dbReadOnly.port),
-        database: dbReadOnly.database.trim(),
-        ...(dbReadOnly.schemaName.trim() ? { schema_name: dbReadOnly.schemaName.trim() } : {}),
-        username: dbReadOnly.username.trim(),
-        password: dbReadOnly.password,
-      },
-    } : {}),
+    ...(dbReadOnlyEnabled.value
+      ? {
+          db_readonly: {
+            database_type: dbReadOnly.databaseType,
+            host: dbReadOnly.host.trim(),
+            port: Number(dbReadOnly.port),
+            database: dbReadOnly.database.trim(),
+            ...(dbReadOnly.schemaName.trim() ? { schema_name: dbReadOnly.schemaName.trim() } : {}),
+            username: dbReadOnly.username.trim(),
+            password: dbReadOnly.password,
+          },
+        }
+      : {}),
     ...(llmEnabled.value
       ? {
           llm: {
@@ -1051,13 +1080,23 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 
 <template>
   <div class="config">
-    <nav class="config-steps" aria-label="任务配置步骤">
+    <header class="config-intro">
+      <div>
+        <p class="config-eyebrow">任务配置</p>
+        <h2>{{ editingJobId ? '编辑测试任务' : '创建测试任务' }}</h2>
+        <p>按模块配置需求、源码和三种测试方式。填写内容会在切换模块时保留。</p>
+      </div>
+      <span class="config-progress">{{ currentStepIndex + 1 }} / {{ configSteps.length }}</span>
+    </header>
+    <div class="config-layout">
+    <nav class="config-steps" aria-label="任务配置模块">
       <button
         v-for="(step, index) in configSteps"
         :key="step.id"
         type="button"
         class="config-step"
         :class="{ active: activeStep === step.id }"
+        :aria-current="activeStep === step.id ? 'step' : undefined"
         @click="goToStep(step.id)"
       >
         <span class="step-index">{{ index + 1 }}</span>
@@ -1065,9 +1104,20 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           ><strong>{{ step.label }}</strong
           ><small>{{ step.hint }}</small></span
         >
+        <span
+          class="step-state"
+          :class="stepReady[step.id] ? 'ready' : 'needs-input'"
+          :title="stepReady[step.id] ? '已满足必填条件' : '仍有必填项待完善'"
+          aria-hidden="true"
+        />
       </button>
     </nav>
     <form class="card" @submit.prevent="handleSubmit()">
+      <header class="module-heading">
+        <span class="module-kicker">配置模块 {{ currentStepIndex + 1 }}</span>
+        <h3>{{ currentStep.label }}</h3>
+        <p>{{ currentStep.hint }}</p>
+      </header>
       <div v-if="editingJobId" class="edit-banner" role="status">
         <div>
           <strong>正在编辑完整任务配置</strong>
@@ -1076,7 +1126,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         <p>保存后会归档旧结果，并从「需求解析」开始重新运行整个流程。</p>
       </div>
       <!-- 需求文档（三格式 F-REQ-01~03；C-10 可多份） -->
-      <section id="config-step-documents" class="field-group">
+      <section v-show="activeStep === 'documents'" id="config-step-documents" class="field-group">
         <header class="group-title">
           需求文档版本
           <span class="group-note">每行一组被测/基线文档；仅上传被测版本时按原需求文档处理</span>
@@ -1111,7 +1161,9 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             移除
           </button>
         </div>
-        <button class="ghost-btn" type="button" @click="addDocumentRow">+ 添加一行版本文档</button>
+        <button class="ghost-btn" type="button" @click="addDocumentRow">
+          + 添加一行版本文档
+        </button>
         <p v-if="editingJobId && existingDocs.length" class="preserved-docs">
           当前保留：<span v-for="name in existingDocs" :key="name" class="mono">{{ name }}</span>
         </p>
@@ -1125,9 +1177,17 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         </p>
       </section>
 
-      <section id="config-step-environment" class="field-group">
-        <header class="group-title">被测系统访问与登录</header>
-        <div class="access-panel">
+      <section v-show="['api', 'data', 'e2e'].includes(activeStep)" class="field-group">
+        <header class="group-title">
+          {{
+            activeStep === 'api'
+              ? '接口访问'
+              : activeStep === 'data'
+                ? '测试数据查询'
+                : '浏览器测试'
+          }}
+        </header>
+        <div v-show="activeStep === 'api'" class="access-panel">
           <h3 class="subsection-title">接口测试地址</h3>
           <label class="field">
             <span class="field-label">被测服务地址（REST）</span>
@@ -1158,7 +1218,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           </p>
         </div>
 
-        <div class="access-panel">
+        <div v-show="activeStep === 'api'" class="access-panel">
           <h3 class="subsection-title">访问与登录</h3>
           <label class="switch-row">
             <input v-model="authEnabled" type="checkbox" />
@@ -1181,7 +1241,12 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             <div class="two-col">
               <label class="field">
                 <span class="field-label">用户名</span>
-                <input v-model="auth.username" type="text" autocomplete="off" placeholder="admin" />
+                <input
+                  v-model="auth.username"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="admin"
+                />
               </label>
               <label class="field">
                 <span class="field-label">密码</span>
@@ -1270,7 +1335,9 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               <span
                 v-if="authVerificationMessage"
                 :class="
-                  authVerificationMessage.startsWith('鉴权成功') ? 'inline-success' : 'field-error'
+                  authVerificationMessage.startsWith('鉴权成功')
+                    ? 'inline-success'
+                    : 'field-error'
                 "
               >
                 {{ authVerificationMessage }}
@@ -1292,7 +1359,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           <p v-else class="field-help">关闭后，接口用例和 E2E 用例都按未登录状态访问。</p>
         </div>
 
-        <div class="access-panel">
+        <div v-show="activeStep === 'data'" class="access-panel">
           <h3 class="subsection-title">测试数据查询</h3>
           <label class="switch-row">
             <input v-model="dbReadOnlyEnabled" type="checkbox" />
@@ -1315,7 +1382,12 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               </label>
               <label class="field">
                 <span class="field-label">主机</span>
-                <input v-model="dbReadOnly.host" class="mono" placeholder="db.test.internal" autocomplete="off" />
+                <input
+                  v-model="dbReadOnly.host"
+                  class="mono"
+                  placeholder="db.test.internal"
+                  autocomplete="off"
+                />
               </label>
               <label class="field">
                 <span class="field-label">端口</span>
@@ -1323,7 +1395,12 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               </label>
               <label class="field">
                 <span class="field-label">数据库名 / Oracle 服务名</span>
-                <input v-model="dbReadOnly.database" class="mono" placeholder="TESTDB" autocomplete="off" />
+                <input
+                  v-model="dbReadOnly.database"
+                  class="mono"
+                  placeholder="TESTDB"
+                  autocomplete="off"
+                />
               </label>
               <label class="field">
                 <span class="field-label">Schema（可选）</span>
@@ -1335,18 +1412,26 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               </label>
               <label class="field">
                 <span class="field-label">密码</span>
-                <input v-model="dbReadOnly.password" type="password" autocomplete="new-password"
-                  :placeholder="editingJobId && existingDbPassword ? '留空则保留原密码' : '••••••••'" />
+                <input
+                  v-model="dbReadOnly.password"
+                  type="password"
+                  autocomplete="new-password"
+                  :placeholder="
+                    editingJobId && existingDbPassword ? '留空则保留原密码' : '••••••••'
+                  "
+                />
               </label>
             </div>
             <p v-if="!dbReadOnlyValid" class="field-error" role="status">
               请填写主机、端口、数据库名、只读用户名和密码。
             </p>
-            <p class="switch-note">密码加密保存在服务端，不写入浏览器草稿，也不会在配置页回显。</p>
+            <p class="switch-note">
+              密码加密保存在服务端，不写入浏览器草稿，也不会在配置页回显。
+            </p>
           </template>
         </div>
 
-        <div class="access-panel e2e-panel">
+        <div v-show="activeStep === 'e2e'" class="access-panel e2e-panel">
           <div class="subsection-heading">
             <div>
               <h3 class="subsection-title">前端 E2E 功能测试</h3>
@@ -1368,7 +1453,8 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
               />
             </label>
             <p class="field-help">
-              填写站点根地址，不要加 <code>/login/</code> 等页面路径；浏览器会按探测到的页面路由（如
+              填写站点根地址，不要加
+              <code>/login/</code> 等页面路径；浏览器会按探测到的页面路由（如
               <code>/login</code>）访问。
             </p>
             <div class="e2e-options">
@@ -1377,7 +1463,11 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                 <span>生成 E2E 测试用例</span>
               </label>
               <label class="switch-row">
-                <input v-model="e2e.executeCases" type="checkbox" :disabled="!e2e.generateCases" />
+                <input
+                  v-model="e2e.executeCases"
+                  type="checkbox"
+                  :disabled="!e2e.generateCases"
+                />
                 <span>执行 E2E 用例（Playwright）</span>
               </label>
               <label class="switch-row">
@@ -1420,7 +1510,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
       </section>
 
       <!-- 被测仓库（本地目录或 Git 地址；填基线分支后 git diff 拿差异代码） -->
-      <section class="field-group">
+      <section v-show="activeStep === 'repositories'" class="field-group">
         <header class="group-title">
           被测仓库
           <span class="group-note">填本地目录或 Git 地址，按分支对比或提交号圈定差异代码</span>
@@ -1572,7 +1662,11 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             <div class="repo-advanced-grid">
               <label class="field">
                 <span class="field-label">语言</span>
-                <select v-model="row.language" class="mono" :aria-label="`仓库 ${index + 1} 语言`">
+                <select
+                  v-model="row.language"
+                  class="mono"
+                  :aria-label="`仓库 ${index + 1} 语言`"
+                >
                   <option value="java">Java</option>
                   <option value="python">Python</option>
                 </select>
@@ -1583,7 +1677,9 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                   v-model="row.accessToken"
                   type="password"
                   class="mono"
-                  :placeholder="row.accessTokenConfigured ? '已配置，留空复用' : '访问令牌（可选）'"
+                  :placeholder="
+                    row.accessTokenConfigured ? '已配置，留空复用' : '访问令牌（可选）'
+                  "
                   :aria-label="`仓库 ${index + 1} 访问令牌`"
                 />
               </label>
@@ -1614,12 +1710,13 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           通过「变更范围来源」下拉框选择：分支对比（按基线分支 diff
           圈定差异代码）或提交号（按多个提交的 diff
           并集圈定，一个分支多个功能改造时更精确）；留空则按全仓处理。远程仓库会按地址+版本建立缓存，
-          后续重跑复用同一检出结果。接口服务地址用于多仓库/多服务任务，留空则使用任务级 REST 地址。
+          后续重跑复用同一检出结果。接口服务地址用于多仓库/多服务任务，留空则使用任务级 REST
+          地址。
         </p>
       </section>
 
       <!-- 任务运行选项 -->
-      <section class="field-group">
+      <section v-show="activeStep === 'model'" class="field-group">
         <header class="group-title">任务运行选项</header>
         <label class="field">
           <span class="field-label">任务 ID（可选，留空自动生成；须以 job- 开头）</span>
@@ -1636,7 +1733,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         </p>
       </section>
 
-      <section class="field-group">
+      <section v-show="activeStep === 'data'" class="field-group">
         <header class="group-title">
           接口前置夹具（可选）
           <span class="group-note">setup/teardown 造数步骤；保存任务时可清空旧夹具</span>
@@ -1648,13 +1745,6 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         <p class="switch-note">
           仅在 Code Review 从源码确认新增、查询和删除链路时启用；每条用例独立造数、查回真实
           ID，结束后通过删除接口软删除。软删除仍保留数据库记录和操作日志。
-        </p>
-        <label class="switch-row">
-          <input v-model="generateUnitTests" type="checkbox" />
-          <span>为需 mock 或配置控制的 Java 用例生成单元测试并统计 JaCoCo 行覆盖率</span>
-        </label>
-        <p class="switch-note">
-          在任务的隔离源码副本中生成和运行，不修改被测项目；单测结果与接口执行结果分别统计。
         </p>
         <label class="switch-row">
           <input v-model="observeRuntimeContracts" type="checkbox" />
@@ -1705,7 +1795,28 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         </p>
       </section>
 
-      <section id="config-step-credentials" class="field-group">
+      <section v-show="activeStep === 'unit'" class="field-group unit-config">
+        <header class="group-title">隔离单元测试</header>
+        <label class="switch-row">
+          <input v-model="generateUnitTests" type="checkbox" />
+          <span>为需要 mock 或配置控制的 Java 用例生成单元测试</span>
+        </label>
+        <p class="switch-note">
+          用例生成阶段会在隔离源码副本中准备 Java 单测；自动执行阶段运行单测并统计 JaCoCo 行覆盖率。
+          设计、代码和结果在单元测试页面分别展示。
+          被测仓库不会被修改，接口测试结论也不会被单测结果覆盖。
+        </p>
+        <div class="mode-summary">
+          <strong>{{ generateUnitTests ? '已启用' : '未启用' }}</strong>
+          <span>{{
+            generateUnitTests
+              ? '在用例生成阶段形成候选场景和 Java 代码'
+              : '可随时开启；已有任务需从用例生成节点重跑'
+          }}</span>
+        </div>
+      </section>
+
+      <section v-show="activeStep === 'model'" id="config-step-credentials" class="field-group">
         <header class="group-title">大模型配置</header>
         <label class="switch-row">
           <input v-model="llmEnabled" type="checkbox" />
@@ -1730,8 +1841,8 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             />
           </label>
           <!-- 编辑态已存密钥：把「留空即复用」提到输入框紧邻处。
-               此前提示只出现在表单底部，用户看到空白输入框会误以为密钥丢失、
-               被迫重新粘贴（key 不回显是安全红线，不能靠回显解决）。 -->
+             此前提示只出现在表单底部，用户看到空白输入框会误以为密钥丢失、
+             被迫重新粘贴（key 不回显是安全红线，不能靠回显解决）。 -->
           <p
             v-if="editingJobId && existingLlmKey && !llm.apiKey"
             class="switch-note key-reuse-hint"
@@ -1774,8 +1885,16 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
                 <option v-if="!hasKnownLlmModel" :value="llm.model">
                   {{ llm.model }}（已有/自定义别名）
                 </option>
-                <optgroup v-for="group in LLM_MODEL_GROUPS" :key="group.label" :label="group.label">
-                  <option v-for="option in group.options" :key="option.value" :value="option.value">
+                <optgroup
+                  v-for="group in LLM_MODEL_GROUPS"
+                  :key="group.label"
+                  :label="group.label"
+                >
+                  <option
+                    v-for="option in group.options"
+                    :key="option.value"
+                    :value="option.value"
+                  >
                     {{ option.value }} · {{ option.label }}
                   </option>
                 </optgroup>
@@ -1851,7 +1970,35 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
       </section>
 
       <!-- 提交 -->
-      <div id="config-step-confirm" class="submit-row">
+      <section v-show="activeStep === 'confirm'" class="review-summary">
+        <h4>提交前概览</h4>
+        <div class="review-grid">
+          <div>
+            <span>需求与源码</span
+            ><strong
+              >{{ documentRows.filter((row) => row.target).length || existingDocs.length }} 组文档
+              · {{ repos.length }} 个仓库</strong
+            >
+          </div>
+          <div>
+            <span>接口测试</span><strong>{{ form.restUrl || '待填写地址' }}</strong>
+          </div>
+          <div>
+            <span>E2E 测试</span
+            ><strong>{{
+              e2eEnabled ? (e2e.generateCases ? '生成用例' : '仅配置地址') : '未启用'
+            }}</strong>
+          </div>
+          <div>
+            <span>单元测试</span
+            ><strong>{{ generateUnitTests ? '生成并运行' : '未启用' }}</strong>
+          </div>
+        </div>
+        <p v-if="!formValid" class="field-error">
+          还有 {{ formInvalidReasons.length }} 项配置需要完善，可从左侧标记的模块返回修改。
+        </p>
+      </section>
+      <div v-show="activeStep === 'confirm'" id="config-step-confirm" class="submit-row">
         <button class="ghost-btn" type="button" :disabled="submitting" @click="saveDraft">
           保存本地草稿
         </button>
@@ -1891,41 +2038,110 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
           >
           <template v-if="!savedOnly">—— 已跳转到「流水线总览」</template>
         </span>
-        <span v-else class="submit-note">与 CLI 走同一 PipelineRunner（Web 与命令行入口等价）</span>
+        <span v-else class="submit-note"
+          >与 CLI 走同一 PipelineRunner（Web 与命令行入口等价）</span
+        >
       </div>
-      <p v-if="!formValid" class="submit-blockers" role="status">
+      <p v-if="activeStep === 'confirm' && !formValid" class="submit-blockers" role="status">
         暂不能启动：{{ formInvalidReasons.join('；') }}。
       </p>
       <p v-if="submitError" class="field-error" role="alert">{{ submitError }}</p>
       <p v-if="draftSavedAt" class="submit-note" role="status">
         草稿仅保存在当前浏览器（{{ draftSavedAt }}），不会保存密码、API Key 或 Git Token。
       </p>
-      <div v-if="preflightResult" class="preflight-result" :data-ready="preflightResult.ready">
+      <div
+        v-if="activeStep === 'confirm' && preflightResult"
+        class="preflight-result"
+        :data-ready="preflightResult.ready"
+      >
         <strong>{{
           preflightResult.ready ? '配置预检通过，可以提交' : '配置预检未通过，请先修正问题'
         }}</strong>
         <ul>
-          <li v-for="check in preflightResult.checks" :key="check.name" :data-status="check.status">
+          <li
+            v-for="check in preflightResult.checks"
+            :key="check.name"
+            :data-status="check.status"
+          >
             <span>{{ check.name }}</span
             ><span>{{ check.message }}</span>
           </li>
         </ul>
       </div>
+      <footer class="module-actions">
+        <button
+          type="button"
+          class="ghost-btn"
+          :disabled="currentStepIndex === 0"
+          @click="moveStep(-1)"
+        >
+          上一步
+        </button>
+        <span
+          >{{ currentStepIndex + 1 }} / {{ configSteps.length }} · {{ currentStep.label }}</span
+        >
+        <button
+          v-if="activeStep !== 'confirm'"
+          type="button"
+          class="primary-btn"
+          @click="moveStep(1)"
+        >
+          下一步 →
+        </button>
+      </footer>
     </form>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .config {
-  max-width: 860px;
+  max-width: 1320px;
   margin: 0 auto;
 }
 
-.config-steps {
+.config-intro {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.config-intro h2 {
+  margin: 0;
+  font-size: 26px;
+}
+.config-intro p {
+  margin: var(--space-2) 0 0;
+  color: var(--text-2);
+}
+.config-intro .config-eyebrow {
+  margin: 0 0 var(--space-2);
+  color: var(--accent);
+  font-size: var(--text-sm);
+}
+.config-progress {
+  padding: var(--space-2) var(--space-3);
+  color: var(--accent-strong);
+  background: var(--accent-dim);
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+}
+
+.config-layout {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
+  grid-template-columns: 240px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-4);
+}
+
+.config-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: var(--space-4);
   padding: var(--space-2);
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   border: 1px solid var(--border);
@@ -1939,7 +2155,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-3);
   color: var(--text-2);
   text-align: left;
   background: transparent;
@@ -1976,6 +2192,96 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
   gap: 2px;
 }
 
+.step-state {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  margin-left: auto;
+  border-radius: 50%;
+}
+.step-state.ready {
+  background: var(--success);
+}
+.step-state.needs-input {
+  background: var(--warning);
+}
+
+.module-heading {
+  margin-bottom: var(--space-5);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.module-heading h3 {
+  margin: var(--space-1) 0;
+  font-size: 22px;
+}
+.module-heading p {
+  margin: 0;
+  color: var(--text-2);
+}
+.module-kicker {
+  color: var(--accent-strong);
+  font-size: var(--text-sm);
+}
+.module-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.module-actions span {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+.mode-summary {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.mode-summary strong {
+  color: var(--accent-strong);
+  white-space: nowrap;
+}
+.mode-summary span {
+  color: var(--text-2);
+}
+.review-summary {
+  margin-bottom: var(--space-5);
+}
+.review-summary h4 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-md);
+}
+.review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.review-grid > div {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+.review-grid span {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+.review-grid strong {
+  overflow-wrap: anywhere;
+}
+
 .step-copy strong,
 .step-copy small {
   overflow: hidden;
@@ -1993,6 +2299,7 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 }
 
 .card {
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -2464,8 +2771,13 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 }
 
 @media (max-width: 860px) {
+  .config-layout {
+    grid-template-columns: 1fr;
+  }
   .config-steps {
-    grid-template-columns: repeat(2, 1fr);
+    position: static;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .repo-advanced-grid {
@@ -2475,7 +2787,20 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
 
 @media (max-width: 560px) {
   .config-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .config-step {
+    padding: var(--space-2);
+  }
+  .step-copy small {
+    display: none;
+  }
+  .review-grid {
     grid-template-columns: 1fr;
+  }
+  .module-actions {
+    flex-wrap: wrap;
   }
 
   .submit-row {

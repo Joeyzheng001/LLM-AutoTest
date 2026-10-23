@@ -95,7 +95,10 @@ watch(
   },
   { immediate: true },
 )
-watch(_jobId, () => void load())
+watch(_jobId, (value) => {
+  navigation.jobId = value
+  void load()
+})
 
 function paramsText(params: Record<string, unknown> | undefined): string {
   if (!params || !Object.keys(params).length) return '无参数'

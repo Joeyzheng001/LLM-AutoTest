@@ -4,6 +4,7 @@ import { reactive } from 'vue'
 
 export const navigation = reactive({
   view: '', // 目标视图 key（App.vue views 清单同源）
+  requestId: 0, // 同一视图再次打开时也触发导航
   jobId: '', // 跨页携带的 job 标识
   interfaceId: '', // 接口还原 → 接口逻辑 → 用例编排的当前接口
   runId: '', // 报告之间跳转时保留当前运行轮次
@@ -16,4 +17,5 @@ export function navigateTo(view: string, jobId: string, interfaceId = '', runId 
   navigation.interfaceId = interfaceId
   navigation.runId = runId
   navigation.view = view
+  navigation.requestId += 1
 }

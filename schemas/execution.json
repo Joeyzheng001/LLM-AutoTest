@@ -12,7 +12,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "1.0"
+      "enum": ["1.0", "1.1"]
     },
     "job_id": {
       "type": "string",
@@ -557,7 +557,15 @@
               "status": {"type": "string"},
               "reason": {"type": "string"},
               "cases": {"type": "array", "items": {"type": "object"}},
-              "modules": {"type": "array", "items": {"type": "object"}}
+              "modules": {"type": "array", "items": {"type": "object"}},
+              "suite_coverage": {
+                "type": "object",
+                "description": "v1.1 同一模块生成单测合跑后的目标类 LINE/BRANCH 覆盖率",
+                "properties": {
+                  "scope": {"const": "generated_tests_only"},
+                  "modules": {"type": "array", "items": {"type": "object"}}
+                }
+              }
             }
           }
         }

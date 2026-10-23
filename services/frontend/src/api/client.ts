@@ -289,6 +289,8 @@ export function getCodeInventory(jobId: string): Promise<{ repositories: RepoInv
 export function getTestcases(jobId: string): Promise<{
   cases: TestCaseEntry[]
   e2e_cases?: E2eTestCaseEntry[]
+  unit_cases?: import('./types').UnitTestCasePlan[]
+  unit_generation_error?: string
   warnings?: string[]
 }> {
   return request(`/api/v1/jobs/${jobId}/artifacts/testcases.json`)

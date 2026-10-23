@@ -66,7 +66,8 @@ def load_prompt(prompts_dir: Path, name: str) -> PromptSpec:
     )
 
 
-# 每个模型节点只加载自己需要的知识。禁止把全部历史经验拼入每一轮调用，
+# 每个具体模型任务只加载自己需要的知识；同一编排节点可包含多个模型任务。
+# 禁止把全部历史经验拼入每一轮调用，
 # 否则 Token 膨胀并稀释当前任务约束，反而降低结构化输出稳定性。
 _NODE_KNOWLEDGE: dict[str, tuple[str, ...]] = {
     "requirement_diff": (
@@ -98,6 +99,20 @@ _NODE_KNOWLEDGE: dict[str, tuple[str, ...]] = {
         "memory/failure-triage.md",
         "skills/code-review-output-contract.md",
     ),
+    "code_review_evidence_select": (
+        "skills/code-review-evidence-selection.md",
+        "skills/structured-output-compatibility.md",
+    ),
+    "code_review_test_oracles": (
+        "skills/code-review-oracle-design.md",
+        "skills/structured-output-compatibility.md",
+        "memory/server-side-evidence.md",
+        "memory/failure-triage.md",
+    ),
+    "code_review_change_impact": (
+        "skills/code-review-change-impact.md",
+        "skills/structured-output-compatibility.md",
+    ),
     "testpoint_derive": (
         "skills/functional-test-design.md",
         "skills/structured-output-compatibility.md",
@@ -113,20 +128,40 @@ _NODE_KNOWLEDGE: dict[str, tuple[str, ...]] = {
         # 必须最后注入：将本节点唯一允许的顶层 JSON 结构置于模型上下文末尾。
         "skills/testcase-output-contract.md",
     ),
-    "e2e_scenario_plan": ("skills/structured-output-compatibility.md",),
-    "e2e_grounding": ("skills/structured-output-compatibility.md",),
-    "e2e_relocate": ("skills/structured-output-compatibility.md",),
+    "e2e_scenario_plan": (
+        "skills/e2e-scenario-planning.md",
+        "skills/structured-output-compatibility.md",
+    ),
+    "e2e_grounding": (
+        "skills/e2e-page-grounding.md",
+        "skills/structured-output-compatibility.md",
+    ),
+    "e2e_relocate": (
+        "skills/e2e-control-relocation.md",
+        "skills/structured-output-compatibility.md",
+    ),
     "e2e_case_review": (
         "skills/e2e-automation.md",
+        "skills/e2e-case-review.md",
         "skills/structured-output-compatibility.md",
         "skills/e2e-output-contract.md",
     ),
     "e2e_testcase_generate": (
         "skills/e2e-automation.md",
+        "skills/e2e-case-design.md",
         "skills/structured-output-compatibility.md",
         "memory/e2e-environment.md",
         "memory/failure-triage.md",
         "skills/e2e-output-contract.md",
+    ),
+    "unit_test_generate": (
+        "skills/unit-test-source-generation.md",
+        "skills/structured-output-compatibility.md",
+        "memory/failure-triage.md",
+    ),
+    "unit_test_plan": (
+        "skills/unit-test-scenario-planning.md",
+        "skills/structured-output-compatibility.md",
     ),
 }
 

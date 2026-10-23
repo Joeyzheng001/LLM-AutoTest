@@ -11,7 +11,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "1.0"
+      "enum": ["1.0", "1.1"]
     },
     "job_id": {
       "type": "string",
@@ -359,6 +359,43 @@
       "type": "array",
       "description": "程序化派生的需求/风险测试点，作为功能用例的可追溯设计依据"
     },
+    "unit_cases": {
+      "type": "array",
+      "description": "v1.1 独立源码驱动单测与接口缺口映射，在用例生成阶段产生；执行结论见 execution.json",
+      "items": {
+        "type": "object",
+        "required": ["case_id", "interface_id", "repo", "status"],
+        "properties": {
+          "case_id": { "type": "string", "pattern": "^(TC|UT)-\\d{3,}$" },
+          "interface_id": { "type": "string" },
+          "oracle_id": { "type": "string" },
+          "title": { "type": "string" },
+          "repo": { "type": "string" },
+          "source_sha": { "type": "string" },
+          "module": { "type": "string" },
+          "test_framework": { "type": "string" },
+          "test_class": { "type": "string" },
+          "target_source": { "type": "string" },
+          "target_class": { "type": "string" },
+          "target_method": { "type": "string" },
+          "source_kind": { "enum": ["interface_control", "source_branch"] },
+          "scenario_type": { "type": "string" },
+          "branch_ids": { "type": "array", "items": { "type": "string" } },
+          "evidence_refs": { "type": "array", "items": { "type": "string" } },
+          "linked_interface_case_ids": { "type": "array", "items": { "type": "string" } },
+          "gap_kind": { "enum": ["mock_or_config", "component_detail", "no_http_case"] },
+          "gap_reason": { "type": "string" },
+          "request_params": { "type": "object" },
+          "mock_conditions": { "type": "array" },
+          "expected": {},
+          "status": { "enum": ["generated", "generation_failed", "unsupported"] },
+          "reason": { "type": "string" },
+          "source_artifact": { "type": "string" },
+          "source": { "type": "string" }
+        }
+      }
+    },
+    "unit_generation_error": { "type": "string" },
     "e2e_cases": {
       "type": "array",
       "description": "可选浏览器端到端用例；仅在任务启用时生成",

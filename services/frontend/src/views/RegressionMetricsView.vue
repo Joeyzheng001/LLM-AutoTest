@@ -8,6 +8,7 @@ import JobPicker from '../components/JobPicker.vue'
 import { getMetrics, getRegressionIndex, retestFull } from '../api/client'
 import type { MetricsPayload, RegressionIndexPayload } from '../api/types'
 import { NODE_LABELS } from '../api/labels'
+import { navigation } from '../api/navigation'
 
 const _jobId = ref('')
 
@@ -73,7 +74,10 @@ watch(
   },
   { immediate: true },
 )
-watch(_jobId, () => void load())
+watch(_jobId, (value) => {
+  navigation.jobId = value
+  void load()
+})
 
 async function rerunSuite(): Promise<void> {
   if (!_jobId.value || rerunning.value) return

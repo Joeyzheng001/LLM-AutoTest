@@ -6,7 +6,7 @@ import JobPicker from '../components/JobPicker.vue'
 import { getDefects, getEvidenceBlob, retestFull, retestSingle } from '../api/client'
 import type { DefectEntry, RetestResponse } from '../api/types'
 import { DEFECT_STATUS_LABELS, DEFECT_EVENT_LABELS } from '../api/labels'
-import { navigateTo } from '../api/navigation'
+import { navigation, navigateTo } from '../api/navigation'
 
 const _jobId = ref('')
 
@@ -81,7 +81,10 @@ watch(
   },
   { immediate: true },
 )
-watch(_jobId, () => void load())
+watch(_jobId, (value) => {
+  navigation.jobId = value
+  void load()
+})
 
 function toggleTimeline(defectId: string): void {
   expandedId.value = expandedId.value === defectId ? '' : defectId
@@ -252,8 +255,11 @@ async function retestAll(): Promise<void> {
                     :href="evidenceUrls[defect.id]"
                     target="_blank"
                     rel="noopener"
-                  >查看浏览器截图</a>
-                  <span v-else-if="defect.evidence.capture_error" class="state-error">截图留存失败</span>
+                    >查看浏览器截图</a
+                  >
+                  <span v-else-if="defect.evidence.capture_error" class="state-error"
+                    >截图留存失败</span
+                  >
                   <span v-else>接口响应或浏览器状态见下方实际结果</span>
                 </p>
                 <p v-if="defect.evidence.page_url" class="detail-subtext mono">

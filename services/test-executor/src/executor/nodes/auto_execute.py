@@ -2070,6 +2070,7 @@ async def run_auto_execute(
                 unit_coverage = await run_controlled_unit_coverage(
                     store, state.job_id, testcases, results, interfaces, review,
                     inventory, llm, prompts_dir,
+                    planned_cases=testcase_payload.get("unit_cases"),
                 )
             except Exception as exc:  # 单测附加分析不能吞掉已完成的接口结果
                 unit_coverage = {
@@ -2078,7 +2079,7 @@ async def run_auto_execute(
                     "repositories": [],
                 }
         payload: dict[str, Any] = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "job_id": state.job_id,
             "results": results,
             "summary": _summarize(results),

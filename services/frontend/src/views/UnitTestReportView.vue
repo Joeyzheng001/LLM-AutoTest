@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
 import { exportJobRun, getJobRuns, getRunExecution } from '../api/client'
-import { navigateTo } from '../api/navigation'
+import { navigation, navigateTo } from '../api/navigation'
 import type {
   ExecResult,
   JobRun,
@@ -47,6 +47,23 @@ const rows = computed<Row[]>(() => {
     }))
   })
 })
+const classCoverageRows = computed(() => (coverage.value?.repositories ?? []).flatMap((repo) =>
+  (repo.suite_coverage?.modules ?? []).flatMap((module) =>
+    (module.classes ?? []).map((entry) => ({ ...entry, repo: repo.repo,
+      module: module.module, suiteStatus: module.status })),
+  ),
+))
+const suiteModules = computed(() => (coverage.value?.repositories ?? []).flatMap((repo) =>
+  (repo.suite_coverage?.modules ?? []).map((module) => ({ ...module, repo: repo.repo })),
+))
+const gapMappingRows = computed(() => rows.value.filter((row) => row.gap_kind).map((row) => ({
+  unitId: row.case_id,
+  interfaceId: row.interface_id || row.result?.interface_id || '',
+  linkedIds: row.linked_interface_case_ids ?? [],
+  gapKind: row.gap_kind,
+  target: row.target_class || row.target_source || '目标组件未记录',
+  status: row.status,
+})))
 const metrics = computed(() => ({
   total: coverage.value?.cases_total ?? 0,
   passed: rows.value.filter((row) => row.status === 'passed').length,
@@ -97,6 +114,24 @@ function statusTone(status: UnitTestOutcome['status']): string {
 
 function meaningfulCoverage(row: Row): boolean {
   return (row.tests ?? 0) > 0 && row.status !== 'fixture_failed' && row.module != null
+}
+
+function linkedHttpStatus(caseId: string): string {
+  const result = results.value.find((item) => item.case_id === caseId)
+  if (!result) return '本轮无记录'
+  if (result.execution_state === 'not_executed') return '接口未执行'
+  if (result.execution_state === 'observed_unjudged') return '接口已观察，未判定'
+  return result.passed ? '接口通过' : '接口未通过'
+}
+
+function gapLabel(kind?: UnitTestOutcome['gap_kind']): string {
+  return kind === 'mock_or_config' ? '需要 Mock 或配置控制'
+    : kind === 'component_detail' ? '补充组件内部断言'
+    : '接口用例尚未覆盖'
+}
+
+function rate(value: { rate: number | null } | null | undefined): string {
+  return value?.rate == null ? '—' : `${(value.rate * 100).toFixed(1)}%`
 }
 
 function runLabel(run: JobRun, index: number): string {
@@ -181,7 +216,10 @@ async function downloadRun(): Promise<void> {
   }
 }
 
-watch(jobId, () => void loadRuns())
+watch(jobId, (value) => {
+  navigation.jobId = value
+  void loadRuns()
+})
 watch(selectedRunId, () => void loadReport())
 watch(() => props.initialJobId, (value) => {
   if (value) jobId.value = value
@@ -195,7 +233,7 @@ watch(() => props.initialJobId, (value) => {
       <div>
         <p class="eyebrow">验证与交付</p>
         <h2>单元测试报告</h2>
-        <p>查看需 mock 或配置控制的用例，在隔离源码副本中的单测执行和 JaCoCo 行覆盖率。</p>
+        <p>查看源码驱动单测的执行结果、与接口测试的补缺口关系，以及 JaCoCo 类级行和分支覆盖率。</p>
       </div>
       <button v-if="jobId" class="secondary-button" type="button"
         @click="navigateTo('interface-report', jobId, '', selectedRunId)">
@@ -222,7 +260,7 @@ watch(() => props.initialJobId, (value) => {
     <p v-else-if="error" class="state-line error" role="alert">{{ error }}</p>
     <section v-else-if="!coverage" class="empty-state">
       <strong>此轮没有单元测试数据</strong>
-      <p>在任务配置中启用单元测试后，从「自动执行」节点重跑即可生成。</p>
+      <p>在任务配置中启用单元测试后，从「用例生成」节点重跑，再执行单测。</p>
     </section>
     <template v-else>
       <div class="metric-grid" aria-label="单元测试结果汇总">
@@ -233,7 +271,8 @@ watch(() => props.initialJobId, (value) => {
         <div class="metric warning"><strong>{{ metrics.notRun }}</strong><span>未运行或构建失败</span></div>
       </div>
       <p class="scope-note">
-        单测通过表示断言通过且 JaCoCo 命中源码证据行；接口 HTTP 执行结论单独统计。
+        单测通过表示断言通过且 JaCoCo 命中源码证据行；类级覆盖率来自同一模块的生成单测合跑，
+        仅统计本轮生成的测试。接口 HTTP 执行结论单独统计。
       </p>
       <p v-if="coverage.reason" class="notice">{{ coverage.reason }}</p>
       <p v-if="metrics.total > 0 && metrics.executed === 0" class="notice">
@@ -244,6 +283,51 @@ watch(() => props.initialJobId, (value) => {
         <span>源码提交 {{ repo.source_sha?.slice(0, 12) || '未记录' }}</span>
         <span v-if="repo.reason">{{ repo.reason }}</span>
       </div>
+
+      <section v-if="gapMappingRows.length" class="class-coverage" aria-label="单测与接口测试缺口映射">
+        <h3>单测补充了哪些接口测试缺口</h3>
+        <table>
+          <thead><tr><th>单测</th><th>接口用例及本轮结果</th><th>补充内容</th><th>目标组件</th><th>单测结果</th></tr></thead>
+          <tbody>
+            <tr v-for="item in gapMappingRows" :key="item.unitId">
+              <td>{{ item.unitId }}</td>
+              <td><template v-if="item.linkedIds.length">
+                <span v-for="caseId in item.linkedIds" :key="caseId">
+                  {{ caseId }}（{{ linkedHttpStatus(caseId) }}）<br>
+                </span>
+              </template><span v-else>无直接对应的 HTTP 用例</span></td>
+              <td>{{ gapLabel(item.gapKind) }}</td>
+              <td>{{ item.target }}</td>
+              <td>{{ statusLabel(item.status) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="class-coverage" aria-label="目标类 JaCoCo 覆盖率">
+        <h3>目标类覆盖率</h3>
+        <p v-if="!suiteModules.length" class="detail-note">本轮尚无生成单测合跑记录，不能给出类级覆盖率。</p>
+        <p v-for="item in suiteModules.filter((module) => module.status === 'unavailable')"
+          :key="`${item.repo}-${item.module}`" class="detail-note">
+          {{ item.repo }} · {{ item.module }}：{{ item.reason || '合跑覆盖率不可用' }}
+        </p>
+        <table v-if="classCoverageRows.length">
+          <thead><tr><th>目标类</th><th>模块</th><th>行覆盖</th><th>分支覆盖</th><th>关联单测</th></tr></thead>
+          <tbody>
+            <tr v-for="item in classCoverageRows" :key="`${item.repo}-${item.name}`">
+              <td>{{ item.name }}<small v-if="item.suiteStatus === 'partial'">部分测试失败</small>
+                <details v-if="item.missed_lines?.length"><summary>未覆盖行</summary>{{ item.missed_lines.join('、') }}</details>
+              </td>
+              <td>{{ item.module }}</td>
+              <td>{{ item.line_coverage ? `${item.line_coverage.covered}/${item.line_coverage.covered + item.line_coverage.missed}` : '—' }}
+                · {{ rate(item.line_coverage) }}</td>
+              <td>{{ item.branch_coverage ? `${item.branch_coverage.covered}/${item.branch_coverage.covered + item.branch_coverage.missed}` : '—' }}
+                · {{ rate(item.branch_coverage) }}</td>
+              <td>{{ item.case_ids.join('、') }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
 
       <div class="filter-bar" aria-label="筛选单元测试结果">
         <button v-for="item in filters" :key="item.key" type="button"
@@ -259,18 +343,15 @@ watch(() => props.initialJobId, (value) => {
           <div class="case-main">
             <div class="case-title">
               <span class="case-id">{{ row.case_id }}</span>
-              <span v-if="row.result?.interface_id" class="interface-id">{{ row.result.interface_id }}</span>
-              <strong>{{ row.result?.title || row.test_class || '单元测试候选用例' }}</strong>
+              <span v-if="row.interface_id || row.result?.interface_id" class="interface-id">{{ row.interface_id || row.result?.interface_id }}</span>
+              <strong>{{ row.title || row.result?.title || row.test_class || '单元测试候选用例' }}</strong>
             </div>
             <div class="case-outcome">
               <span class="status" :class="statusTone(row.status)">
                 {{ row.status === 'failed' && (row.errors ?? 0) > 0 ? '测试运行异常' : statusLabel(row.status) }}
               </span>
-              <span v-if="meaningfulCoverage(row)" class="coverage">
-                {{ row.module!.line_coverage.covered }}/{{ row.module!.line_coverage.covered + row.module!.line_coverage.missed }} 行
-                · {{ row.module!.line_coverage.rate == null ? '—' : `${(row.module!.line_coverage.rate * 100).toFixed(1)}%` }}
-              </span>
-              <span v-else class="coverage unavailable">无有效覆盖率</span>
+              <span v-if="meaningfulCoverage(row)" class="coverage">单次运行已记录 JaCoCo</span>
+              <span v-else class="coverage unavailable">单次运行无有效覆盖率</span>
               <button type="button" @click="toggle(row.case_id)">
                 {{ expanded.has(row.case_id) ? '收起详情' : '查看详情' }}
               </button>
@@ -279,6 +360,18 @@ watch(() => props.initialJobId, (value) => {
           <div v-if="expanded.has(row.case_id)" class="case-detail">
             <p><strong>结果原因：</strong>{{ row.reason || '单测断言通过，且命中目标源码证据行。' }}</p>
             <p v-if="row.test_class"><strong>测试类：</strong>{{ row.test_class }}</p>
+            <p v-if="row.target_class"><strong>目标组件：</strong>{{ row.target_class }}<span v-if="row.target_method">#{{ row.target_method }}</span></p>
+            <p v-if="row.gap_kind"><strong>补充的接口缺口：</strong>{{ gapLabel(row.gap_kind) }}。{{ row.gap_reason }}</p>
+            <p v-if="row.linked_interface_case_ids?.length">
+              <strong>关联接口用例：</strong>
+              <span v-for="caseId in row.linked_interface_case_ids" :key="caseId">{{ caseId }}（{{ linkedHttpStatus(caseId) }}） </span>
+            </p>
+            <p v-else-if="row.source_kind === 'source_branch'"><strong>关联接口用例：</strong>暂无直接对应项。</p>
+            <p v-if="row.branch_ids?.length"><strong>目标分支：</strong>{{ row.branch_ids.join('、') }}</p>
+            <details v-if="row.request_params || row.mock_conditions || row.expected" class="source-detail">
+              <summary>查看输入、桩数据和预期</summary>
+              <pre>{{ JSON.stringify({ input: row.request_params, mocks: row.mock_conditions, expected: row.expected }, null, 2) }}</pre>
+            </details>
             <p v-if="row.reused_verified_source"><strong>来源：</strong>复用同一源码提交下已验证通过的测试代码，本轮重新执行。</p>
             <p v-if="row.module"><strong>Maven 模块：</strong>{{ row.module.module }}</p>
             <p v-if="row.tests != null">
@@ -342,6 +435,13 @@ watch(() => props.initialJobId, (value) => {
 .status.warning { color: var(--warning); background: var(--warning-dim); }
 .coverage { color: var(--text-1); font-family: var(--font-mono); font-size: var(--text-sm); }
 .coverage.unavailable { color: var(--text-3); font-family: var(--font-sans); }
+.class-coverage { margin: var(--space-5) 0; padding: var(--space-4); background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-md); overflow-x: auto; }
+.class-coverage h3 { margin: 0 0 var(--space-3); font-size: 18px; }
+.class-coverage table { width: 100%; border-collapse: collapse; text-align: left; font-size: var(--text-sm); }
+.class-coverage th, .class-coverage td { padding: var(--space-2); border-bottom: 1px solid var(--border); vertical-align: top; }
+.class-coverage th { color: var(--text-2); white-space: nowrap; }
+.class-coverage td:first-child { overflow-wrap: anywhere; }
+.class-coverage small { display: block; color: var(--text-2); }
 .case-detail { border-top: 1px solid var(--border); padding: var(--space-4); background: var(--surface-2); }
 .case-detail p { margin: 0 0 var(--space-2); color: var(--text-2); }
 .case-detail p strong { color: var(--text-1); }

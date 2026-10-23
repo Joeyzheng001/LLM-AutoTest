@@ -67,6 +67,7 @@ from common.response_assertions import (
 )
 from executor.nodes.e2e_surface import ProbeOptions
 from executor.nodes.e2e_surface import inspect_e2e_surface as probe_surface
+from executor.unit_coverage import generate_controlled_unit_cases
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
@@ -689,14 +690,38 @@ async def run_testcase_generate(
         if any_unloadable:
             warnings.append("R-GEN-03: 存在不可加载脚本（loadable=false），详见用例清单")
 
+        unit_cases: list[dict[str, Any]] | None = None
+        unit_generation_error = ""
+        if job_input.get("generate_unit_tests"):
+            try:
+                inventory = store.read_json(state.job_id, "code_inventory.json")
+                unit_cases = await generate_controlled_unit_cases(
+                    store, state.job_id, cases, interfaces, review, inventory, llm, prompts_dir,
+                )
+                failed = sum(item.get("status") != "generated" for item in unit_cases)
+                if failed:
+                    warnings.append(
+                        f"单元测试用例生成：{len(unit_cases) - failed}/{len(unit_cases)} 条已产生 Java 代码，"
+                        f"{failed} 条需查看单元测试用例页的原因"
+                    )
+            except Exception as exc:
+                logger.exception("单元测试用例生成失败：%s", type(exc).__name__)
+                unit_cases = []
+                unit_generation_error = f"单元测试用例生成未完成（{type(exc).__name__}）"
+                warnings.append(f"{unit_generation_error}；接口用例已保留")
+
         payload: dict[str, Any] = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "job_id": state.job_id,
             "cases": cases,
             "testpoints": testpoints,
         }
         if e2e_cases:
             payload["e2e_cases"] = e2e_cases
+        if unit_cases is not None:
+            payload["unit_cases"] = unit_cases
+        if unit_generation_error:
+            payload["unit_generation_error"] = unit_generation_error
         if warnings:
             payload["warnings"] = warnings
         try:

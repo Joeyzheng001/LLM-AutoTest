@@ -14,8 +14,8 @@ import {
   saveE2eConfiguration,
 } from '../api/client'
 import type { E2eDesign, E2eExecution, E2eOperationStatus, DefectEntry } from '../api/types'
-import { navigateTo } from '../api/navigation'
-const props = defineProps<{ initialJobId?: string; viewKey?: string }>()
+import { navigation, navigateTo } from '../api/navigation'
+const props = defineProps<{ initialJobId?: string; viewKey?: string; externalTabs?: boolean }>()
 const jobId = ref(props.initialJobId || '')
 const picker = ref<InstanceType<typeof JobPicker> | null>(null)
 const active = ref('cases')
@@ -123,7 +123,8 @@ async function load(): Promise<void> {
 }
 watch(
   jobId,
-  () => {
+  (value) => {
+    navigation.jobId = value
     design.value = null
     execution.value = null
     void load()
@@ -181,7 +182,7 @@ function json(value: unknown): string {
 </script>
 
 <template>
-  <main class="workspace">
+  <div class="workspace">
     <JobPicker ref="picker" v-model="jobId" :show-node-count="false" />
     <header class="head">
       <div>
@@ -232,7 +233,7 @@ function json(value: unknown): string {
         >填写被测前端地址</span
       >
     </section>
-    <nav class="tabs">
+    <nav v-if="!externalTabs" class="tabs">
       <button
         v-for="tab in [
           { id: 'cases', label: '业务用例' },
@@ -428,7 +429,7 @@ function json(value: unknown): string {
         </details>
       </article></template
     >
-  </main>
+  </div>
 </template>
 
 <style scoped>

@@ -9,6 +9,11 @@
 3. LLM 输出（需求条目、接口还原、用例草案、Review 标注）必须通过对应 Schema 校验后才可进入下游产物；
 4. **横切约定**（三人公共语言，详见 [docs/11](../docs/11_三人分工任务书.md) §5.4）：ID 命名 `REQ-001` / `CAND-001` / `IF-<协议>-001` / `TC-001` / `DEF-001`；时间戳 UTC ISO-8601；协议枚举小写 `rest/grpc/graphql/soap/mq`；`is_fallback` 全链路透传；错误结构 `{code, message, node_id?, details}`。
 
+## 契约变更记录
+
+- `testcases.json` 1.1（2026-10-23）：`unit_cases` 增加独立 `UT-xxx` 编号、目标组件、源码分支与关联 HTTP 用例，保留 1.0 历史产物读取。
+- `execution.json` 1.1（2026-10-23）：单测结果增加缺口映射和目标类的 JaCoCo 行／分支合跑覆盖率，保留 1.0 历史产物读取。
+
 ## 目录规划（11 个产物 Schema，与 docs/11 §5.3 主笔表同一事实源）
 
 | 文件 | 对应产物 | 主笔 | 依据 |

@@ -13,7 +13,7 @@ import {
   getRunTestcases,
 } from '../api/client'
 import type { ExecResult, ExecSummary, InterfaceDef, JobRun, TestCaseEntry } from '../api/types'
-import { navigateTo } from '../api/navigation'
+import { navigation, navigateTo } from '../api/navigation'
 
 const props = defineProps<{ initialJobId?: string; initialRunId?: string; viewKey?: string }>()
 type ResultFilter =
@@ -78,7 +78,8 @@ async function loadRuns(): Promise<void> {
     if (sequence !== runListSequence) return
     runs.value = response.runs
     selectedRunId.value = response.runs.some((run) => run.id === props.initialRunId)
-      ? props.initialRunId! : response.runs[0]?.id ?? ''
+      ? props.initialRunId!
+      : (response.runs[0]?.id ?? '')
     if (!selectedRunId.value) {
       error.value = '这个任务尚无执行记录；重跑生成报告后可在这里查看。'
       loading.value = false
@@ -399,11 +400,19 @@ function scopeText(result: ExecResult): string {
   }[result.assertion_scope ?? 'unverified']
 }
 function businessErrorText(result: ExecResult): string {
-  if (!result.passed || result.execution_state === 'reused_response' ||
-      !['status_only', 'response_structure'].includes(result.assertion_scope ?? '')) return ''
+  if (
+    !result.passed ||
+    result.execution_state === 'reused_response' ||
+    !['status_only', 'response_structure'].includes(result.assertion_scope ?? '')
+  )
+    return ''
   let body: unknown = result.actual_body
   if (typeof body === 'string') {
-    try { body = JSON.parse(body) } catch { return '' }
+    try {
+      body = JSON.parse(body)
+    } catch {
+      return ''
+    }
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return ''
   const payload = body as Record<string, unknown>
@@ -413,7 +422,10 @@ function businessErrorText(result: ExecResult): string {
     if (value != null && !['0', '0000', '200'].includes(String(value)))
       errors.push(`${field}=${value}`)
   }
-  for (const [name, field] of [['icmTrialObj', 'errCode'], ['o32TrialObj', 'ErrorCode']]) {
+  for (const [name, field] of [
+    ['icmTrialObj', 'errCode'],
+    ['o32TrialObj', 'ErrorCode'],
+  ]) {
     const nested = payload[name]
     if (!nested || typeof nested !== 'object' || Array.isArray(nested)) continue
     const value = (nested as Record<string, unknown>)[field]
@@ -510,7 +522,10 @@ onBeforeUnmount(() => {
   runListSequence++
   for (const url of Object.values(evidenceUrls.value)) URL.revokeObjectURL(url)
 })
-watch(_jobId, () => void loadRuns())
+watch(_jobId, (value) => {
+  navigation.jobId = value
+  void loadRuns()
+})
 watch(selectedRunId, () => void load())
 watch(
   () => props.initialJobId,
@@ -550,8 +565,7 @@ watch(
       </button>
       <p v-if="selectedRun" class="run-summary">
         {{ selectedRun.is_current ? '当前结果' : '历史快照' }} ·
-        {{ selectedRun.summary.total }} 条用例 ·
-        {{ selectedRun.summary.passed }} 条断言符合 ·
+        {{ selectedRun.summary.total }} 条用例 · {{ selectedRun.summary.passed }} 条断言符合 ·
         {{ selectedRun.summary.failed_assertion }} 条断言失败
         <template v-if="!selectedRun.has_report"> · 完整报告尚未生成</template>
       </p>
@@ -589,8 +603,8 @@ watch(
         </button>
       </div>
       <p class="total-equation">
-        总数 {{ displaySummary?.total ?? 0 }} = 断言符合 {{ displaySummary?.passed ?? 0 }} + 断言失败
-        {{ displaySummary?.failed_assertion ?? 0 }} + 环境失败
+        总数 {{ displaySummary?.total ?? 0 }} = 断言符合 {{ displaySummary?.passed ?? 0 }} +
+        断言失败 {{ displaySummary?.failed_assertion ?? 0 }} + 环境失败
         {{ displaySummary?.failed_environment ?? 0 }} + 待判定
         {{ displaySummary?.observed_unjudged ?? 0 }} + 未执行
         {{ displaySummary?.not_executed ?? displaySummary?.skipped ?? 0 }}

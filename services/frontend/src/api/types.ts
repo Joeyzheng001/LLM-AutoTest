@@ -761,6 +761,8 @@ export interface OracleDiagnostic {
 
 export interface TestCaseEntry {
   oracle_basis?: string
+  oracle_id?: string
+  oracle_status?: 'verified' | 'unverified'
   id: string
   interface_id: string
   requirement_id?: string
@@ -837,7 +839,15 @@ export interface E2eTestCaseEntry {
 
 export interface UnitTestOutcome {
   case_id: string
-  status: 'passed' | 'failed' | 'not_run' | 'build_failed' | 'generation_failed' | 'fixture_failed' | 'unsupported' | 'source_not_covered'
+  status:
+    | 'passed'
+    | 'failed'
+    | 'not_run'
+    | 'build_failed'
+    | 'generation_failed'
+    | 'fixture_failed'
+    | 'unsupported'
+    | 'source_not_covered'
   test_class?: string
   source_artifact?: string
   log_artifact?: string
@@ -849,6 +859,50 @@ export interface UnitTestOutcome {
   errors?: number
   skipped?: number
   covered_evidence_lines?: number
+  interface_id?: string
+  title?: string
+  target_source?: string
+  target_class?: string
+  target_method?: string
+  source_kind?: 'interface_control' | 'source_branch'
+  scenario_type?: string
+  branch_ids?: string[]
+  evidence_refs?: string[]
+  linked_interface_case_ids?: string[]
+  gap_kind?: 'mock_or_config' | 'component_detail' | 'no_http_case'
+  gap_reason?: string
+  request_params?: Record<string, unknown>
+  mock_conditions?: Array<Record<string, unknown> | string>
+  expected?: unknown
+}
+
+export interface UnitTestCasePlan {
+  case_id: string
+  interface_id: string
+  oracle_id?: string
+  title?: string
+  repo: string
+  source_sha?: string
+  module?: string
+  test_framework?: string
+  test_class?: string
+  target_source?: string
+  target_class?: string
+  target_method?: string
+  source_kind?: 'interface_control' | 'source_branch'
+  scenario_type?: string
+  branch_ids?: string[]
+  evidence_refs?: string[]
+  linked_interface_case_ids?: string[]
+  gap_kind?: 'mock_or_config' | 'component_detail' | 'no_http_case'
+  gap_reason?: string
+  request_params?: Record<string, unknown>
+  mock_conditions?: Array<Record<string, unknown> | string>
+  expected?: unknown
+  status: 'generated' | 'generation_failed' | 'unsupported'
+  reason?: string
+  source_artifact?: string
+  source?: string
 }
 
 export interface UnitCoverageModule {
@@ -859,6 +913,31 @@ export interface UnitCoverageModule {
     missed: number
     rate: number | null
   }
+}
+
+export interface UnitCoverageCounter {
+  covered: number
+  missed: number
+  rate: number | null
+}
+
+export interface UnitSuiteCoverage {
+  module: string
+  status: 'completed' | 'partial' | 'unavailable'
+  reason?: string
+  scope: 'generated_tests_only'
+  tests_executed?: number
+  tests_failed?: number
+  line_coverage?: UnitCoverageCounter | null
+  branch_coverage?: UnitCoverageCounter | null
+  classes?: Array<{
+    name: string
+    source_file: string
+    case_ids: string[]
+    line_coverage: UnitCoverageCounter | null
+    branch_coverage: UnitCoverageCounter | null
+    missed_lines?: number[]
+  }>
 }
 
 export interface UnitTestCoverage {
@@ -873,6 +952,10 @@ export interface UnitTestCoverage {
     status: string
     reason?: string
     modules?: UnitCoverageModule[]
+    suite_coverage?: {
+      scope: 'generated_tests_only'
+      modules: UnitSuiteCoverage[]
+    }
     cases: UnitTestOutcome[]
   }>
 }
