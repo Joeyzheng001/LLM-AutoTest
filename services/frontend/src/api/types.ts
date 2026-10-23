@@ -845,9 +845,12 @@ export interface UnitTestOutcome {
     | 'not_run'
     | 'build_failed'
     | 'generation_failed'
+    | 'generation_deferred'
+    | 'repair_deferred'
     | 'fixture_failed'
     | 'unsupported'
     | 'source_not_covered'
+    | 'timed_out'
   test_class?: string
   source_artifact?: string
   log_artifact?: string
@@ -859,6 +862,9 @@ export interface UnitTestOutcome {
   errors?: number
   skipped?: number
   covered_evidence_lines?: number
+  suite_status?: 'passed' | 'failed' | 'fixture_failed' | 'not_run'
+  suite_reason?: string
+  consistency_warning?: string
   interface_id?: string
   title?: string
   target_source?: string
@@ -899,7 +905,7 @@ export interface UnitTestCasePlan {
   request_params?: Record<string, unknown>
   mock_conditions?: Array<Record<string, unknown> | string>
   expected?: unknown
-  status: 'generated' | 'generation_failed' | 'unsupported'
+  status: 'generated' | 'generation_failed' | 'generation_deferred' | 'unsupported'
   reason?: string
   source_artifact?: string
   source?: string
@@ -928,6 +934,7 @@ export interface UnitSuiteCoverage {
   scope: 'generated_tests_only'
   tests_executed?: number
   tests_failed?: number
+  case_outcomes?: Array<{ case_id: string; status: string; reason?: string }>
   line_coverage?: UnitCoverageCounter | null
   branch_coverage?: UnitCoverageCounter | null
   classes?: Array<{
@@ -946,6 +953,7 @@ export interface UnitTestCoverage {
   cases_total: number
   cases_passed: number
   cases_failed: number
+  cases_deferred?: number
   repositories: Array<{
     repo: string
     source_sha?: string
@@ -955,6 +963,34 @@ export interface UnitTestCoverage {
     suite_coverage?: {
       scope: 'generated_tests_only'
       modules: UnitSuiteCoverage[]
+    }
+    existing_suite?: {
+      status: string
+      reason?: string
+      scope?: 'existing_tests_separate'
+      source_sha?: string
+      tests_executed?: number
+      tests_failed?: number
+      modules?: Array<{
+        module: string
+        status: string
+        reason?: string
+        tests_executed?: number
+        tests_failed?: number
+        pom_provenance?: 'pinned_commit' | 'working_tree_uncommitted'
+        tests?: Array<{
+          target_source: string
+          test_file: string
+          test_class: string
+          provenance: 'pinned_commit' | 'working_tree_uncommitted'
+          sha256: string
+        }>
+        classes?: Array<{
+          name: string
+          line_coverage: UnitCoverageCounter | null
+          branch_coverage: UnitCoverageCounter | null
+        }>
+      }>
     }
     cases: UnitTestOutcome[]
   }>

@@ -73,13 +73,16 @@
             "required": ["case_id", "status"],
             "properties": {
               "case_id": {"type": "string"},
-              "status": {"enum": ["passed", "failed", "not_run", "build_failed", "generation_failed", "fixture_failed", "unsupported", "source_not_covered"]},
+              "status": {"enum": ["passed", "failed", "not_run", "build_failed", "generation_failed", "generation_deferred", "repair_deferred", "fixture_failed", "unsupported", "source_not_covered", "timed_out"]},
               "reason": {"type": "string"},
               "test_class": {"type": "string"},
               "source_artifact": {"type": "string"},
               "log_artifact": {"type": "string"},
               "reused_verified_source": {"type": "boolean"},
-              "covered_evidence_lines": {"type": "integer", "minimum": 0}
+              "covered_evidence_lines": {"type": "integer", "minimum": 0},
+              "suite_status": {"type": "string"},
+              "suite_reason": {"type": "string"},
+              "consistency_warning": {"type": "string"}
             }
           },
           "expectation_source": {
@@ -546,6 +549,7 @@
         "cases_total": {"type": "integer", "minimum": 0},
         "cases_passed": {"type": "integer", "minimum": 0},
         "cases_failed": {"type": "integer", "minimum": 0},
+        "cases_deferred": {"type": "integer", "minimum": 0},
         "repositories": {
           "type": "array",
           "items": {
@@ -563,6 +567,17 @@
                 "description": "v1.1 同一模块生成单测合跑后的目标类 LINE/BRANCH 覆盖率",
                 "properties": {
                   "scope": {"const": "generated_tests_only"},
+                  "modules": {"type": "array", "items": {"type": "object"}}
+                }
+              },
+              "existing_suite": {
+                "type": "object",
+                "description": "现有 Java 单测在独立快照中的执行基线；不计入生成单测用例数",
+                "properties": {
+                  "status": {"type": "string"},
+                  "scope": {"const": "existing_tests_separate"},
+                  "tests_executed": {"type": "integer", "minimum": 0},
+                  "tests_failed": {"type": "integer", "minimum": 0},
                   "modules": {"type": "array", "items": {"type": "object"}}
                 }
               }

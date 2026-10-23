@@ -9,12 +9,14 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from common.artifacts import ArtifactStore
+from common.errors import PipelineError, X_LLM_01
 from common.llm.client import LlmResult
 from common.llm_text import strip_code_fence
 from common.oracle_conditions import required_control_kinds
@@ -28,9 +30,53 @@ _SECRET = re.compile(
 )
 _JACOCO_GOAL = "org.jacoco:jacoco-maven-plugin:0.8.12"
 _MAX_CONTEXT_CHARS = 70_000
-_MAVEN_TIMEOUT_SECONDS = 900
+_CASE_MAVEN_TIMEOUT_SECONDS = 180
+_SUITE_MAVEN_TIMEOUT_SECONDS = 900
 _HOMEBREW_JAVA_21 = Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home")
 logger = logging.getLogger(__name__)
+
+
+def _model_connection_failed(exc: Exception) -> bool:
+    return isinstance(exc, PipelineError) and exc.code == X_LLM_01
+
+
+def _working_tree_matches_source(repo: dict[str, Any]) -> bool:
+    """Only borrow local tests when production Java still matches the pinned HEAD."""
+    source = Path(str(repo.get("path", ""))).resolve()
+    try:
+        head = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True, timeout=15).stdout.strip()
+        if head != str(repo.get("target_sha", "")):
+            return False
+        dirty = subprocess.run(
+            ["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all", "--", ":(glob)**/src/main/**"],
+            capture_output=True, text=True, check=True, timeout=15,
+        ).stdout
+        return not dirty.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _existing_test_path(source_file: str) -> str | None:
+    prefix, separator, relative = source_file.partition("src/main/java/")
+    if (not separator or not relative.endswith(".java")
+            or PurePosixPath(source_file).is_absolute()
+            or ".." in PurePosixPath(source_file).parts):
+        return None
+    return f"{prefix}src/test/java/{relative[:-5]}Test.java"
+
+
+def _existing_test_reference(repo: dict[str, Any], source_file: str) -> str | None:
+    if not _working_tree_matches_source(repo):
+        return None
+    relative = _existing_test_path(source_file)
+    if relative is None:
+        return None
+    path = Path(str(repo["path"])).resolve() / relative
+    if not path.is_file() or path.stat().st_size > 90_000:
+        return None
+    source = path.read_text(encoding="utf-8")[:16_000]
+    return _SECRET.sub(lambda match: f'{match.group(1)}{match.group(2)}"<redacted>"', source)
 
 
 class SupportsComplete(Protocol):
@@ -114,9 +160,20 @@ def _surefire_result(module: Path, class_name: str) -> dict[str, Any]:
         kind, issue_type, message, stack = issues[0]
         prefix = "执行异常" if kind == "error" else "断言失败"
         summary = f"{prefix}：{issue_type.split('.')[-1]} {message}".strip()[:500]
-        fixture_error = ("InjectMocksException" in issue_type
-                         or ("NullPointerException" in issue_type
-                             and ".<init>(" in stack))
+        fixture_error = (
+            any(name in issue_type for name in (
+                "InjectMocksException", "NotAMockException",
+                "MissingMethodInvocationException", "InvalidUseOfMatchersException",
+                "UnnecessaryStubbingException", "PotentialStubbingProblem",
+                "MockitoException",
+            ))
+            or ("NullPointerException" in issue_type and (
+                ".<init>(" in stack or re.search(r'because "this\.\w+" is null', message)
+                or ('"entity" is null' in message and "AbstractRiskService.postWithJson" in stack)
+            ))
+            or ("Failed to set private fields" in message
+                and any(name in stack for name in ("NoSuchFieldException", "IllegalArgumentException")))
+        )
         return {"status": "fixture_failed" if fixture_error else "failed",
                 "reason": summary, **counts}
     return {"status": "passed", **counts}
@@ -160,6 +217,27 @@ def _module_root(snapshot: Path, file: str) -> Path | None:
     return None
 
 
+def _superclass_context(snapshot: Path, file: str, content: str) -> str:
+    """Include one local parent class when the tested behavior is inherited."""
+    declaration = re.search(r"\bclass\s+\w+[^\{]*?\bextends\s+([\w.]+)", content)
+    if declaration is None:
+        return ""
+    parent_name = declaration.group(1).split(".")[-1]
+    if not re.fullmatch(r"[A-Za-z_]\w*", parent_name):
+        return ""
+    relative = PurePosixPath(file)
+    if relative.is_absolute() or ".." in relative.parts:
+        return ""
+    candidate = snapshot / relative.parent / f"{parent_name}.java"
+    if not candidate.is_file() or candidate.stat().st_size > 30_000:
+        return ""
+    parent = _SECRET.sub(
+        lambda match: f'{match.group(1)}{match.group(2)}"<redacted>"',
+        candidate.read_text(encoding="utf-8"),
+    )
+    return f"文件 {(relative.parent / candidate.name).as_posix()}（父类）:\n{parent}"
+
+
 def _source_context(snapshot: Path, oracle: dict[str, Any],
                     evidence_by_id: dict[str, dict[str, Any]], repo_name: str) -> str:
     parts: list[str] = []
@@ -184,11 +262,15 @@ def _source_context(snapshot: Path, oracle: dict[str, Any],
         if sum(map(len, parts)) + len(content) > _MAX_CONTEXT_CHARS:
             continue
         parts.append(f"文件 {file}:\n{content}")
+        parent_context = _superclass_context(snapshot, file, content)
+        if parent_context and sum(map(len, parts)) + len(parent_context) <= _MAX_CONTEXT_CHARS:
+            parts.append(parent_context)
     return "\n\n".join(parts)
 
 
 def _valid_generated_source(raw: str, class_name: str,
-                            test_framework: str | None = None) -> tuple[str, str]:
+                            test_framework: str | None = None,
+                            source_context: str = "") -> tuple[str, str]:
     parsed = json.loads(strip_code_fence(raw))
     source = str(parsed.get("source", ""))
     package = str(parsed.get("package", ""))
@@ -216,9 +298,74 @@ def _valid_generated_source(raw: str, class_name: str,
     )
     if any(token in source for token in forbidden):
         raise ValueError("生成的单测含外部进程、网络、文件或完整应用启动操作")
+    if re.search(
+        r"@Mock(?:\s*\([^)]*\))?\s+(?:(?:private|public|protected|final)\s+)*"
+        r"(?:java\.util\.concurrent\.)?(?:Executor|ExecutorService|ThreadPoolExecutor)\s+\w+",
+        source,
+    ):
+        raise ValueError("异步 Executor 不能使用不执行任务的 Mockito Mock；改用 Runnable::run 或真实可关闭执行器")
+    if re.search(r"\b(?:Mockito\.)?mockStatic\s*\(", source):
+        raise ValueError("当前隔离环境使用 Mockito subclass MockMaker，不支持静态 mock")
+    if "@InjectMocks" in source:
+        raise ValueError("不能使用 @InjectMocks 隐式构造被测类；请显式传入 Mock 和同步 Executor")
+    if re.search(r"\b(?:getDeclaredField|getDeclaredMethod|setAccessible)\s*\(", source):
+        raise ValueError("不能通过反射修改 private 成员；请从公开入口构造测试条件")
+    for match in re.finditer(r"\bverifyNoInteractions\s*\(\s*(\w+)\s*\)", source):
+        dependency = re.escape(match.group(1))
+        if re.search(rf"\bwhen\s*\(\s*{dependency}\s*\.", source):
+            raise ValueError(f"{match.group(1)} 已被桩设定，却断言无交互；请核对真实调用链")
+    if (source_context and "postForObject(" in source
+            and "RestTemplate" in source_context and ".exchange(" in source_context
+            and ".postForObject(" not in source_context):
+        raise ValueError("被测调用链使用 RestTemplate.exchange；请按实际签名设置桩和响应对象")
+    if ("class StandardRiskTrialServiceImpl" in source_context
+            and "new StandardRiskTrialServiceImpl(" in source
+            and "IcmGatewayExecutorProperties" in source
+            and "getComplexExecutors()" not in source):
+        raise ValueError("被测构造函数读取 getComplexExecutors；必须给配置 Mock 设置非空列表")
+    if ("class StandardRiskTrialServiceImpl" in source_context
+            and "new StandardRiskTrialServiceImpl(" in source
+            and "IcmGatewayExecutorProperties" in source
+            and re.search(r"\bwhen\s*\([^;]*?\.execute\s*\(", source, re.S)
+            and "getComplexTimeout()" not in source):
+        raise ValueError("并发试算路径须给 getComplexTimeout 设置稳定的正值，不能使用 Mock 默认 0")
     if not re.search(r"\b(?:assert\w+|verify|fail)\s*\(", source):
         raise ValueError("生成的单测缺少结果断言或调用验证")
     return package, source
+
+
+async def _run_maven(
+    cmd: list[str], module: Path, snapshot: Path, timeout_seconds: int,
+) -> tuple[bytes, int, bool]:
+    """Bound Maven and its Surefire descendants, including a blocked forked JVM."""
+    process = await asyncio.create_subprocess_exec(
+        *cmd, cwd=module, env=_maven_environment(module, snapshot),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        start_new_session=os.name != "nt",
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout_seconds)
+        return stdout, int(process.returncode or 0), False
+    except asyncio.TimeoutError:
+        await _stop_maven(process)
+        return b"", -1, True
+    except asyncio.CancelledError:
+        await _stop_maven(process)
+        raise
+
+
+async def _stop_maven(process: asyncio.subprocess.Process) -> None:
+    try:
+        if os.name != "nt":
+            os.killpg(process.pid, signal.SIGKILL)
+        elif process.returncode is None:
+            process.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(process.communicate(), 10)
+    except asyncio.TimeoutError:
+        logger.warning("Maven 停止后进程管道未及时关闭：pid=%s", process.pid)
 
 
 def _test_framework(module: Path, snapshot: Path) -> str | None:
@@ -444,6 +591,7 @@ async def _plan_source_unit_cases(
             lambda match: f'{match.group(1)}{match.group(2)}"<redacted>"',
             source_path.read_text(encoding="utf-8"),
         )
+        parent_context = _superclass_context(snapshot, file, source)
         interface_id = str(interface.get("id", ""))
         branches = [item for item in review.get("branch_inventory") or []
                     if item.get("interface_id") == interface_id
@@ -458,7 +606,8 @@ async def _plan_source_unit_cases(
                           "method": (interface.get("signature") or {}).get("method"),
                           "path": (interface.get("signature") or {}).get("path"),
                           "summary": (interface.get("signature") or {}).get("summary")},
-            "target": {"file": file, "class_name": source_path.stem, "source": source},
+            "target": {"file": file, "class_name": source_path.stem, "source": source,
+                       "superclass_source": parent_context},
             "branches": [{"branch_id": item.get("branch_id"), "quote": item.get("quote"),
                           "evidence_ref": item.get("evidence_ref")}
                          for item in branches],
@@ -485,8 +634,12 @@ async def _plan_source_unit_cases(
                             "title": f"{source_path.stem} 单测场景规划",
                             "target_source": file, "target_class": source_path.stem,
                             "source_kind": "source_branch",
-                            "linked_interface_case_ids": [], "status": "unsupported",
-                            "reason": f"单测场景规划未完成（{type(exc).__name__}）"})
+                            "linked_interface_case_ids": [],
+                            "status": "generation_deferred" if _model_connection_failed(exc) else "unsupported",
+                            "reason": "模型连接失败，后续源码场景规划已暂停" if _model_connection_failed(exc)
+                            else f"单测场景规划未完成（{type(exc).__name__}）"})
+            if _model_connection_failed(exc):
+                break
             continue
         before_count = len(planned)
         for candidate in candidates[:40]:
@@ -594,22 +747,23 @@ async def _run_generated_suite_coverage(
                "-DfailIfNoTests=true", "-Dsurefire.failIfNoSpecifiedTests=true",
                "-Dmaven.test.failure.ignore=true",
                f"{_JACOCO_GOAL}:prepare-agent", "test", f"{_JACOCO_GOAL}:report"]
-        process = await asyncio.create_subprocess_exec(
-            *cmd, cwd=module, env=_maven_environment(module, snapshot),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        stdout, _, timed_out = await _run_maven(
+            cmd, module, snapshot, _SUITE_MAVEN_TIMEOUT_SECONDS,
         )
-        try:
-            stdout, _ = await asyncio.wait_for(process.communicate(), _MAVEN_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.communicate()
+        if timed_out:
             return {"status": "unavailable", "reason": "生成单测合跑超时"}
         outcomes = [_surefire_result(module, class_name) for class_name in class_names]
+        case_outcomes = [
+            {"case_id": test["case_id"], "status": outcome["status"],
+             "reason": outcome.get("reason", "")}
+            for test, outcome in zip(tests, outcomes)
+        ]
         ran = sum(int(item.get("tests", 0)) - int(item.get("skipped", 0))
                   for item in outcomes)
         if ran <= 0 or not coverage_path.is_file():
             return {"status": "unavailable", "reason": "合跑未产生有效 Surefire/JaCoCo 记录",
-                    "build_error": _maven_error_summary(stdout.decode("utf-8", errors="replace"))}
+                    "build_error": _maven_error_summary(stdout.decode("utf-8", errors="replace")),
+                    "case_outcomes": case_outcomes}
         parsed = parse_jacoco_xml(coverage_path, include_missed=True)
         wanted: dict[str, set[str]] = {}
         for test in tests:
@@ -627,7 +781,8 @@ async def _run_generated_suite_coverage(
             classes.append({**item, "case_ids": sorted(wanted[item["name"]]),
                             "missed_lines": (file_item.get("missed_lines") or [])[:50]})
         if not classes:
-            return {"status": "unavailable", "reason": "JaCoCo 未找到生成单测对应的目标类"}
+            return {"status": "unavailable", "reason": "JaCoCo 未找到生成单测对应的目标类",
+                    "case_outcomes": case_outcomes}
         def total(kind: str) -> dict[str, Any] | None:
             counters = [item[kind] for item in classes if item.get(kind)]
             if not counters:
@@ -641,6 +796,7 @@ async def _run_generated_suite_coverage(
         return {"status": "partial" if failures else "completed",
                 "scope": "generated_tests_only", "tests_executed": ran,
                 "tests_failed": failures, "classes": classes,
+                "case_outcomes": case_outcomes,
                 "line_coverage": total("line_coverage"),
                 "branch_coverage": total("branch_coverage")}
     except (OSError, ET.ParseError, ValueError) as exc:
@@ -648,6 +804,93 @@ async def _run_generated_suite_coverage(
     finally:
         for target in targets:
             target.unlink(missing_ok=True)
+
+
+async def _run_existing_test_baseline(
+    repo: dict[str, Any], job_dir: Path, target_sources: set[str],
+) -> dict[str, Any]:
+    """Run exact existing *Test.java classes separately from generated UT cases."""
+    source_repo = Path(str(repo.get("path", ""))).resolve()
+    if not _working_tree_matches_source(repo):
+        return {"status": "unavailable", "reason": "工作区源码提交或生产代码与目标提交不一致，无法引用本地测试"}
+    selected: dict[str, list[tuple[str, str]]] = {}
+    for source_file in sorted(target_sources):
+        test_file = _existing_test_path(source_file)
+        if test_file is None or not (source_repo / test_file).is_file():
+            continue
+        module_name = source_file.split("/src/main/java/", 1)[0]
+        if module_name == source_file:
+            continue
+        selected.setdefault(module_name, []).append((source_file, test_file))
+    if not selected:
+        return {"status": "unavailable", "reason": "目标类没有对应的现有 Java 测试文件"}
+    snapshot = await asyncio.to_thread(_snapshot, repo, job_dir / ".unit-baseline")
+    modules: list[dict[str, Any]] = []
+    for module_name, paths in selected.items():
+        module = snapshot / module_name
+        if not (module / "pom.xml").is_file():
+            modules.append({"module": module_name, "status": "unavailable", "reason": "Maven 模块不存在"})
+            continue
+        imported: list[dict[str, str]] = []
+        pom = source_repo / module_name / "pom.xml"
+        pom_provenance = "pinned_commit"
+        if pom.is_file() and pom.read_bytes() != (module / "pom.xml").read_bytes():
+            shutil.copyfile(pom, module / "pom.xml")
+            pom_provenance = "working_tree_uncommitted"
+        for source_file, test_file in paths:
+            original = source_repo / test_file
+            target = snapshot / test_file
+            target.parent.mkdir(parents=True, exist_ok=True)
+            original_bytes = original.read_bytes()
+            committed_bytes = target.read_bytes() if target.is_file() else None
+            target.write_bytes(original_bytes)
+            imported.append({
+                "target_source": source_file, "test_file": test_file,
+                "test_class": original.stem,
+                "provenance": "pinned_commit" if original_bytes == committed_bytes else "working_tree_uncommitted",
+                "sha256": hashlib.sha256(original_bytes).hexdigest(),
+            })
+        class_names = [item["test_class"] for item in imported]
+        coverage_path = module / "target/site/jacoco/jacoco.xml"
+        for stale in (module / "target/jacoco.exec", coverage_path):
+            stale.unlink(missing_ok=True)
+        for class_name in class_names:
+            for stale in (module / "target/surefire-reports").glob(f"TEST-*.{class_name}.xml"):
+                stale.unlink(missing_ok=True)
+        command = ["mvn", "-B", "-o", f"-Dtest={','.join(class_names)}",
+                   "-DfailIfNoTests=true", "-Dsurefire.failIfNoSpecifiedTests=true",
+                   "-Dmaven.test.failure.ignore=true", f"{_JACOCO_GOAL}:prepare-agent",
+                   "test", f"{_JACOCO_GOAL}:report"]
+        try:
+            stdout, _, timed_out = await _run_maven(command, module, snapshot, _SUITE_MAVEN_TIMEOUT_SECONDS)
+            outcomes = [_surefire_result(module, class_name) for class_name in class_names]
+            tests_executed = sum(max(0, int(row.get("tests", 0)) - int(row.get("skipped", 0))) for row in outcomes)
+            tests_failed = sum(int(row.get("failures", 0)) + int(row.get("errors", 0)) for row in outcomes)
+            record: dict[str, Any] = {
+                "module": module_name, "tests": imported, "pom_provenance": pom_provenance,
+                "pom_sha256": hashlib.sha256((module / "pom.xml").read_bytes()).hexdigest(),
+                "tests_executed": tests_executed, "tests_failed": tests_failed,
+                "status": "unavailable" if timed_out or tests_executed == 0 else
+                    ("partial" if tests_failed else "completed"),
+                "test_outcomes": [dict(test, **outcome) for test, outcome in zip(imported, outcomes)],
+            }
+            if record["status"] == "unavailable":
+                record["reason"] = "现有单测超时" if timed_out else _maven_error_summary(
+                    stdout.decode("utf-8", errors="replace"))
+            if coverage_path.is_file() and tests_executed:
+                parsed = parse_jacoco_xml(coverage_path, include_missed=True)
+                wanted = {item["target_source"].partition("src/main/java/")[2]
+                          .removesuffix(".java").replace("/", ".") for item in imported}
+                record["classes"] = [item for item in parsed["classes"] if item["name"] in wanted]
+            modules.append(record)
+        except (OSError, ET.ParseError, ValueError) as exc:
+            modules.append({"module": module_name, "status": "unavailable",
+                            "tests": imported, "reason": f"现有单测运行记录不可用（{type(exc).__name__}）"})
+    return {"status": "completed" if any(item.get("tests_executed") for item in modules)
+            else "unavailable", "scope": "existing_tests_separate",
+            "source_sha": repo.get("target_sha"), "modules": modules,
+            "tests_executed": sum(int(item.get("tests_executed", 0)) for item in modules),
+            "tests_failed": sum(int(item.get("tests_failed", 0)) for item in modules)}
 
 
 async def generate_controlled_unit_cases(
@@ -684,6 +927,7 @@ async def generate_controlled_unit_cases(
 
     planned: list[dict[str, Any]] = []
     next_unit_index = 1
+    model_unavailable = False
     prompt = load_prompt(prompts_dir, "unit_test_generate") if llm and prompts_dir and groups else None
     for repo_name, entries in groups.items():
         repo = by_repo[repo_name]
@@ -699,10 +943,12 @@ async def generate_controlled_unit_cases(
             snapshot, repo_name, interfaces, review, evidence, cases, llm,
             prompts_dir, next_unit_index,
         )
+        if any(item.get("status") == "generation_deferred" for item in repo_source_plans):
+            model_unavailable = True
         next_unit_index += len(repo_source_plans)
         for source_plan in repo_source_plans:
             case_id = str(source_plan["case_id"])
-            if source_plan.get("status") == "unsupported":
+            if source_plan.get("status") in ("unsupported", "generation_deferred"):
                 planned.append({**source_plan, "source_sha": str(repo.get("target_sha", ""))})
                 continue
             source_plans[case_id] = source_plan
@@ -767,21 +1013,25 @@ async def generate_controlled_unit_cases(
                        "test_framework": framework, "case": redact_secrets(case),
                        "oracle": oracle, "source": context,
                        "pom": (module / "pom.xml").read_text(encoding="utf-8")[:12_000]}
+            reference = _existing_test_reference(repo, str((first_ref or {}).get("file", "")))
+            if reference:
+                request["existing_test_reference"] = reference
             if case_id in source_plans:
                 request["unit_plan"] = redact_secrets(source_plans[case_id])
+            if model_unavailable:
+                item.update(status="generation_deferred", reason="模型连接失败，本轮暂停后续单测生成")
+                continue
             try:
                 answer = await llm.complete("unit_test_generate", prompt,
                                             json.dumps(request, ensure_ascii=False))
                 try:
-                    package, source = _valid_generated_source(answer.text, class_name, framework)
+                    package, source = _valid_generated_source(answer.text, class_name, framework, context)
                 except ValueError as validation_error:
-                    if not any(word in str(validation_error) for word in ("JUnit", "类名")):
-                        raise
                     repaired = await llm.complete("unit_test_generate", prompt,
                                                   json.dumps({**request,
                                                               "validation_error": str(validation_error),
                                                               "previous_output": answer.text}, ensure_ascii=False))
-                    package, source = _valid_generated_source(repaired.text, class_name, framework)
+                    package, source = _valid_generated_source(repaired.text, class_name, framework, context)
                 target = module / "src/test/java" / Path(*package.split(".")) / f"{class_name}.java"
                 if target.exists():
                     raise ValueError("目标提交已有同名测试类")
@@ -789,8 +1039,12 @@ async def generate_controlled_unit_cases(
                 store.write_raw(job_id, artifact, source)
                 item.update(status="generated", source_artifact=artifact, source=source)
             except Exception as exc:
-                item.update(status="generation_failed",
-                            reason=str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+                if _model_connection_failed(exc):
+                    model_unavailable = True
+                    item.update(status="generation_deferred", reason="模型连接失败，已暂停后续单测生成")
+                else:
+                    item.update(status="generation_failed",
+                                reason=str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
     return planned
 
 
@@ -860,12 +1114,29 @@ async def run_controlled_unit_coverage(
         output["reason"] = "未配置单元测试生成模型"
         return output
     prompt = load_prompt(prompts_dir, "unit_test_generate") if llm and prompts_dir else None
+    model_unavailable = False
     for repo_name, entries in groups.items():
         repo = by_repo[repo_name]
         repo_result: dict[str, Any] = {"repo": repo_name, "source_sha": repo.get("target_sha"),
                                        "status": "unavailable", "cases": []}
         output["repositories"].append(repo_result)
         try:
+            target_sources = {
+                str(plan.get("target_source")) for plan in planned_cases or []
+                if plan.get("repo") == repo_name and plan.get("target_source")
+            }
+            for _, oracle in entries:
+                target_sources.update(
+                    str(evidence[str(ref)].get("file")) for ref in oracle.get("evidence_refs") or []
+                    if str(ref) in evidence and evidence[str(ref)].get("repo") == repo_name
+                )
+            try:
+                repo_result["existing_suite"] = await _run_existing_test_baseline(
+                    repo, store.job_dir(job_id), target_sources)
+            except Exception as baseline_error:
+                logger.warning("现有单测基线不可用：%s (%s)", repo_name, baseline_error)
+                repo_result["existing_suite"] = {"status": "unavailable",
+                    "reason": f"现有单测基线不可用（{type(baseline_error).__name__}）"}
             snapshot = await asyncio.to_thread(_snapshot, repo, store.job_dir(job_id))
             generated_count = 0
             suite_tests: dict[str, list[dict[str, str]]] = {}
@@ -912,6 +1183,9 @@ async def run_controlled_unit_coverage(
                            "test_framework": test_framework,
                            "case": redact_secrets(case), "oracle": oracle, "source": context,
                            "pom": (module / "pom.xml").read_text(encoding="utf-8")[:12_000]}
+                reference = _existing_test_reference(repo, str((first_ref or {}).get("file", "")))
+                if reference:
+                    request["existing_test_reference"] = reference
                 if planned is not None and planned.get("source_kind") == "source_branch":
                     request["unit_plan"] = redact_secrets(planned)
                 try:
@@ -923,7 +1197,7 @@ async def run_controlled_unit_coverage(
                             raise ValueError("用例生成产物缺少 Java package 声明")
                         package, source = _valid_generated_source(json.dumps({
                             "package": declaration.group(1), "source": planned_source,
-                        }), class_name, test_framework)
+                        }), class_name, test_framework, context)
                     else:
                         previous = _previous_passing_source(
                             store.job_dir(job_id), repo_name, str(repo.get("target_sha")),
@@ -932,20 +1206,20 @@ async def run_controlled_unit_coverage(
                         if previous is not None:
                             package, source = previous
                         else:
+                            if model_unavailable:
+                                raise PipelineError(X_LLM_01, "模型连接失败，本轮暂停后续单测生成")
                             answer = await llm.complete("unit_test_generate", prompt,
                                                     json.dumps(request, ensure_ascii=False))
                             try:
                                 package, source = _valid_generated_source(answer.text, class_name,
-                                                                          test_framework)
+                                                                          test_framework, context)
                             except ValueError as validation_error:
-                                if not any(word in str(validation_error) for word in ("JUnit", "类名")):
-                                    raise
                                 repair_request = {**request, "validation_error": str(validation_error),
                                                   "previous_output": answer.text}
                                 answer = await llm.complete("unit_test_generate", prompt,
                                                             json.dumps(repair_request, ensure_ascii=False))
                                 package, source = _valid_generated_source(answer.text, class_name,
-                                                                          test_framework)
+                                                                          test_framework, context)
                     relative = Path(*package.split(".")) / f"{class_name}.java"
                     target = module / "src" / "test" / "java" / relative
                     if target.exists():
@@ -954,9 +1228,15 @@ async def run_controlled_unit_coverage(
                     target.write_text(source, encoding="utf-8")
                     store.write_raw(job_id, run_source_artifact, source)
                 except Exception as exc:  # model failure belongs to this unit candidate
-                    repo_result["cases"].append({"case_id": case_id, "status": "generation_failed",
-                                                 "reason": str(exc) if isinstance(exc, ValueError)
-                                                 else type(exc).__name__})
+                    if _model_connection_failed(exc):
+                        model_unavailable = True
+                    repo_result["cases"].append({
+                        "case_id": case_id,
+                        "status": "generation_deferred" if _model_connection_failed(exc)
+                            else "generation_failed",
+                        "reason": "模型连接失败，本轮暂停后续单测生成" if _model_connection_failed(exc)
+                            else str(exc) if isinstance(exc, ValueError) else type(exc).__name__,
+                    })
                     continue
                 generated_count += 1
                 mock_maker = module / "src/test/resources/mockito-extensions/org.mockito.plugins.MockMaker"
@@ -977,26 +1257,25 @@ async def run_controlled_unit_coverage(
                         stale.unlink(missing_ok=True)
                     for stale in (module / "target/surefire-reports").glob(f"TEST-*.{class_name}.xml"):
                         stale.unlink(missing_ok=True)
-                    process: asyncio.subprocess.Process | None = None
                     stdout = b""
+                    timed_out = False
                     try:
-                        process = await asyncio.create_subprocess_exec(
-                            *cmd, cwd=module, env=_maven_environment(module, snapshot),
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.STDOUT,
+                        stdout, exit_code, timed_out = await _run_maven(
+                            cmd, module, snapshot, _CASE_MAVEN_TIMEOUT_SECONDS,
                         )
-                        stdout, _ = await asyncio.wait_for(process.communicate(), _MAVEN_TIMEOUT_SECONDS)
-                        exit_code = process.returncode
-                    except (OSError, asyncio.TimeoutError):
-                        if process is not None and process.returncode is None:
-                            process.kill()
-                            await process.communicate()
+                    except OSError:
                         exit_code = -1
                     output_text = redact_secrets(stdout.decode("utf-8", errors="replace"))
-                    run_logs.append(f"=== Maven 尝试 {attempt + 1} ===\n{output_text[-12_000:]}")
+                    timeout_detail = (f"单测运行超过 {_CASE_MAVEN_TIMEOUT_SECONDS} 秒，"
+                                      "已终止 Maven 和 Surefire 子进程") if timed_out else ""
+                    run_logs.append(f"=== Maven 尝试 {attempt + 1} ===\n"
+                                    f"{timeout_detail}\n{output_text[-12_000:]}")
                     outcome = _surefire_result(module, class_name)
                     if outcome["status"] in ("passed", "failed", "fixture_failed"):
                         last_executed = (outcome.copy(), source)
+                    if timed_out:
+                        outcome = {"status": "timed_out", "reason": timeout_detail}
+                        break
                     if outcome["status"] == "fixture_failed":
                         detail = outcome["reason"]
                     elif exit_code != 0 and outcome["status"] == "not_run":
@@ -1012,6 +1291,10 @@ async def run_controlled_unit_coverage(
                     if llm is None or prompt is None:
                         outcome["reason"] += "；未配置生成模型，无法根据编译错误修复"
                         break
+                    if model_unavailable:
+                        outcome = {**outcome, "status": "repair_deferred",
+                                   "reason": f"{detail}；模型连接失败，本轮暂停自动修复"}
+                        break
                     # Feed the actual compiler or discovery error back to the
                     # generator; otherwise one bad import leaves the case untested.
                     repair_request = {**request, "compilation_error": detail,
@@ -1022,13 +1305,18 @@ async def run_controlled_unit_coverage(
                         repaired = await llm.complete("unit_test_generate", prompt,
                                                       json.dumps(repair_request, ensure_ascii=False))
                         package, source = _valid_generated_source(repaired.text, class_name,
-                                                                  test_framework)
+                                                                  test_framework, context)
                         if package != ".".join(relative.parts[:-1]):
                             raise ValueError("修复后的 package 与测试文件路径不一致")
                         target.write_text(source, encoding="utf-8")
                         store.write_raw(job_id, run_source_artifact, source)
                     except Exception as repair_error:
-                        outcome["reason"] += f"；自动修复失败：{type(repair_error).__name__}"
+                        if _model_connection_failed(repair_error):
+                            model_unavailable = True
+                            outcome = {**outcome, "status": "repair_deferred",
+                                       "reason": f"{detail}；模型连接失败，本轮暂停自动修复"}
+                        else:
+                            outcome["reason"] += f"；自动修复失败：{type(repair_error).__name__}"
                         break
                 if outcome["status"] == "build_failed" and last_executed is not None:
                     outcome, source = last_executed
@@ -1074,6 +1362,22 @@ async def run_controlled_unit_coverage(
                 module = snapshot / module_name
                 summary = await _run_generated_suite_coverage(snapshot, module, test_sources)
                 suite_modules.append({"module": module_name, **summary})
+                by_case = {str(item.get("case_id")): item
+                           for item in summary.get("case_outcomes") or []}
+                for item in repo_result["cases"]:
+                    suite_result = by_case.get(str(item.get("case_id")))
+                    if suite_result is None:
+                        continue
+                    item["suite_status"] = suite_result["status"]
+                    if suite_result.get("reason"):
+                        item["suite_reason"] = suite_result["reason"]
+                    isolated = ("passed" if item["status"] == "source_not_covered"
+                                else item["status"])
+                    if suite_result["status"] != isolated:
+                        item["consistency_warning"] = (
+                            f"逐条执行为 {isolated}，合跑为 {suite_result['status']}；"
+                            "需复跑核对测试隔离或时序条件"
+                        )
             if suite_modules:
                 repo_result["suite_coverage"] = {"scope": "generated_tests_only",
                                                   "modules": suite_modules}
@@ -1101,6 +1405,8 @@ async def run_controlled_unit_coverage(
         if unit:
             result["unit_test"] = unit
     output["cases_passed"] = sum(item["status"] == "passed" for item in case_results.values())
+    output["cases_deferred"] = sum(item["status"] in ("generation_deferred", "repair_deferred")
+                                   for item in case_results.values())
     output["cases_failed"] = output["cases_total"] - output["cases_passed"]
     output["status"] = "completed" if output["repositories"] else "unavailable"
     return output

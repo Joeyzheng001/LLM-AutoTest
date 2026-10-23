@@ -12,13 +12,22 @@ import type {
 } from '../api/types'
 
 const props = defineProps<{ initialJobId?: string; initialRunId?: string }>()
-type Filter = 'all' | 'passed' | 'failed' | 'not_run' | 'generation_failed'
+type Filter = 'all' | 'passed' | 'failed' | 'not_run' | 'generation_failed' | 'deferred' | 'inconsistent'
 type Row = UnitTestOutcome & {
   repo: string
   sourceSha?: string
   module?: UnitCoverageModule
   result?: ExecResult
 }
+type GapGroupKey = 'not_executed' | 'observed_unjudged' | 'executed_failed' | 'reused_response' | 'executed_passed' | 'no_record'
+const gapGroupOrder: Array<{ key: GapGroupKey; title: string; description: string }> = [
+  { key: 'not_executed', title: '接口测试未执行', description: '优先查看已有通过单测的接口缺口；单测结论仅覆盖对应组件行为。' },
+  { key: 'observed_unjudged', title: '接口已请求，结果待判定', description: '已有实际请求，但当前缺少可判读的接口结论。' },
+  { key: 'executed_failed', title: '接口已执行，未通过', description: '单测可帮助定位组件行为，仍需单独分析接口失败原因。' },
+  { key: 'reused_response', title: '接口复用历史响应', description: '本轮未直接请求接口，使用已有响应完成核对。' },
+  { key: 'executed_passed', title: '接口已执行并通过', description: '单测提供更细的组件或分支验证。' },
+  { key: 'no_record', title: '本轮无接口结果', description: '关联关系已建立，但本轮没有对应的接口执行记录。' },
+]
 
 const jobId = ref('')
 const runs = ref<JobRun[]>([])
@@ -52,26 +61,48 @@ const classCoverageRows = computed(() => (coverage.value?.repositories ?? []).fl
     (module.classes ?? []).map((entry) => ({ ...entry, repo: repo.repo,
       module: module.module, suiteStatus: module.status })),
   ),
-))
+).sort((left, right) => (left.line_coverage?.rate ?? 1) - (right.line_coverage?.rate ?? 1)))
 const suiteModules = computed(() => (coverage.value?.repositories ?? []).flatMap((repo) =>
   (repo.suite_coverage?.modules ?? []).map((module) => ({ ...module, repo: repo.repo })),
 ))
-const gapMappingRows = computed(() => rows.value.filter((row) => row.gap_kind).map((row) => ({
-  unitId: row.case_id,
-  interfaceId: row.interface_id || row.result?.interface_id || '',
-  linkedIds: row.linked_interface_case_ids ?? [],
-  gapKind: row.gap_kind,
-  target: row.target_class || row.target_source || '目标组件未记录',
-  status: row.status,
-})))
+const existingSuites = computed(() => (coverage.value?.repositories ?? []).map((repo) => ({
+  ...repo.existing_suite, repo: repo.repo,
+})).filter((suite) => suite.status))
+const gapMappingRows = computed(() => {
+  const linked = new Map<string, Row[]>()
+  const byId = new Map(results.value.map((result) => [result.case_id, result]))
+  for (const row of rows.value) {
+    for (const caseId of row.linked_interface_case_ids ?? []) {
+      if (!linked.has(caseId)) linked.set(caseId, [])
+      linked.get(caseId)?.push(row)
+    }
+  }
+  return [...linked.entries()].map(([caseId, tests]) => {
+    const result = byId.get(caseId)
+    const category: GapGroupKey = !result ? 'no_record'
+      : result.execution_state === 'not_executed' ? 'not_executed'
+      : result.execution_state === 'observed_unjudged' ? 'observed_unjudged'
+      : result.execution_state === 'reused_response' ? 'reused_response'
+      : result.passed ? 'executed_passed' : 'executed_failed'
+    return { caseId, tests, category, result, verified: tests.some((test) => test.status === 'passed') }
+  }).sort((left, right) => Number(right.verified) - Number(left.verified)
+    || left.caseId.localeCompare(right.caseId))
+})
+const gapGroups = computed(() => gapGroupOrder.map((group) => {
+  const items = gapMappingRows.value.filter((row) => row.category === group.key)
+  return { ...group, items, verified: items.filter((row) => row.verified).length }
+}).filter((group) => group.items.length))
+const gapVerified = computed(() => gapMappingRows.value.filter((row) => row.verified).length)
+const inconsistentRows = computed(() => rows.value.filter((row) => row.consistency_warning))
 const metrics = computed(() => ({
   total: coverage.value?.cases_total ?? 0,
   passed: rows.value.filter((row) => row.status === 'passed').length,
-  executed: rows.value.filter((row) => (row.tests ?? 0) > 0 && row.status !== 'fixture_failed').length,
+  executed: rows.value.filter((row) => (row.tests ?? 0) > (row.skipped ?? 0)).length,
   generationFailed: rows.value.filter((row) =>
     row.status === 'generation_failed' || row.status === 'fixture_failed' || row.status === 'unsupported').length,
+  deferred: rows.value.filter((row) => row.status === 'generation_deferred' || row.status === 'repair_deferred').length,
   notRun: rows.value.filter((row) =>
-    row.status === 'not_run' || row.status === 'build_failed').length,
+    row.status === 'not_run' || row.status === 'build_failed' || row.status === 'timed_out').length,
   failed: rows.value.filter((row) =>
     row.status === 'failed' || row.status === 'source_not_covered').length,
 }))
@@ -79,17 +110,22 @@ const filters = computed<Array<{ key: Filter; label: string; count: number }>>((
   { key: 'all', label: '全部', count: rows.value.length },
   { key: 'passed', label: '通过', count: metrics.value.passed },
   { key: 'failed', label: '未通过', count: metrics.value.failed },
-  { key: 'not_run', label: '未运行', count: metrics.value.notRun },
-  { key: 'generation_failed', label: '生成失败', count: metrics.value.generationFailed },
+  { key: 'not_run', label: '未运行/超时', count: metrics.value.notRun },
+  { key: 'generation_failed', label: '生成/夹具问题', count: metrics.value.generationFailed },
+  { key: 'deferred', label: '模型连接待恢复', count: metrics.value.deferred },
+  { key: 'inconsistent', label: '结果不一致', count: inconsistentRows.value.length },
 ])
 const visibleRows = computed(() => rows.value.filter((row) => {
   if (filter.value === 'all') return true
   if (filter.value === 'failed')
     return row.status === 'failed' || row.status === 'source_not_covered'
   if (filter.value === 'not_run')
-    return row.status === 'not_run' || row.status === 'build_failed'
+    return row.status === 'not_run' || row.status === 'build_failed' || row.status === 'timed_out'
   if (filter.value === 'generation_failed')
     return row.status === 'generation_failed' || row.status === 'fixture_failed' || row.status === 'unsupported'
+  if (filter.value === 'deferred')
+    return row.status === 'generation_deferred' || row.status === 'repair_deferred'
+  if (filter.value === 'inconsistent') return Boolean(row.consistency_warning)
   return row.status === 'passed'
 }))
 
@@ -100,9 +136,12 @@ function statusLabel(status: UnitTestOutcome['status']): string {
     not_run: '未运行',
     build_failed: '构建失败',
     generation_failed: '生成失败',
+    generation_deferred: '模型连接失败，待生成',
+    repair_deferred: '模型连接失败，待修复',
     fixture_failed: '测试夹具错误',
     unsupported: '暂不支持',
     source_not_covered: '未命中源码证据',
+    timed_out: '运行超时',
   }[status]
 }
 
@@ -121,6 +160,8 @@ function linkedHttpStatus(caseId: string): string {
   if (!result) return '本轮无记录'
   if (result.execution_state === 'not_executed') return '接口未执行'
   if (result.execution_state === 'observed_unjudged') return '接口已观察，未判定'
+  if (result.execution_state === 'reused_response')
+    return result.passed ? '复用响应符合' : '复用响应不符合'
   return result.passed ? '接口通过' : '接口未通过'
 }
 
@@ -132,6 +173,10 @@ function gapLabel(kind?: UnitTestOutcome['gap_kind']): string {
 
 function rate(value: { rate: number | null } | null | undefined): string {
   return value?.rate == null ? '—' : `${(value.rate * 100).toFixed(1)}%`
+}
+
+function fraction(value: { covered: number; missed: number } | null | undefined): string {
+  return value ? `${value.covered}/${value.covered + value.missed}` : '—'
 }
 
 function runLabel(run: JobRun, index: number): string {
@@ -268,8 +313,34 @@ watch(() => props.initialJobId, (value) => {
         <div class="metric"><strong>{{ metrics.executed }}</strong><span>实际运行</span></div>
         <div class="metric success"><strong>{{ metrics.passed }}</strong><span>验证通过</span></div>
         <div class="metric warning"><strong>{{ metrics.generationFailed }}</strong><span>生成或夹具问题</span></div>
-        <div class="metric warning"><strong>{{ metrics.notRun }}</strong><span>未运行或构建失败</span></div>
+        <div class="metric warning"><strong>{{ metrics.notRun }}</strong><span>未运行、超时或构建失败</span></div>
+        <div v-if="metrics.deferred" class="metric warning"><strong>{{ metrics.deferred }}</strong><span>模型连接待恢复</span></div>
       </div>
+      <section v-if="existingSuites.length" class="class-coverage" aria-label="项目现有单元测试基线">
+        <h3>项目现有单元测试基线</h3>
+        <p class="detail-note">这里运行与目标类同名的现有测试文件，和平台生成的候选用例分开统计。工作区未提交的测试及 pom 改动会标明来源；覆盖率只对该基线有效。</p>
+        <div v-for="suite in existingSuites" :key="suite.repo">
+          <p v-if="suite.status === 'unavailable'">{{ suite.repo }}：{{ suite.reason || '现有测试不可用' }}</p>
+          <template v-else>
+            <p><strong>{{ suite.repo }}</strong>：实际执行 {{ suite.tests_executed ?? 0 }} 条，失败 {{ suite.tests_failed ?? 0 }} 条。</p>
+            <div v-for="module in suite.modules ?? []" :key="module.module">
+              <p>{{ module.module }} · {{ module.status }} · {{ module.tests_executed ?? 0 }} 条，失败 {{ module.tests_failed ?? 0 }} 条<span v-if="module.pom_provenance === 'working_tree_uncommitted'"> · 使用工作区未提交的 pom</span></p>
+              <p v-if="module.reason" class="detail-note">{{ module.reason }}</p>
+              <table v-if="module.tests?.length">
+                <thead><tr><th>现有测试类</th><th>来源</th><th>目标类行覆盖</th><th>分支覆盖</th></tr></thead>
+                <tbody>
+                  <tr v-for="test in module.tests" :key="test.test_file">
+                    <td>{{ test.test_class }}</td>
+                    <td>{{ test.provenance === 'working_tree_uncommitted' ? '工作区未提交' : '目标提交' }}</td>
+                    <td>{{ fraction(module.classes?.find((item) => item.name.endsWith(`.${test.test_class.replace(/Test$/, '')}`))?.line_coverage) }} · {{ rate(module.classes?.find((item) => item.name.endsWith(`.${test.test_class.replace(/Test$/, '')}`))?.line_coverage) }}</td>
+                    <td>{{ fraction(module.classes?.find((item) => item.name.endsWith(`.${test.test_class.replace(/Test$/, '')}`))?.branch_coverage) }} · {{ rate(module.classes?.find((item) => item.name.endsWith(`.${test.test_class.replace(/Test$/, '')}`))?.branch_coverage) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </div>
+      </section>
       <p class="scope-note">
         单测通过表示断言通过且 JaCoCo 命中源码证据行；类级覆盖率来自同一模块的生成单测合跑，
         仅统计本轮生成的测试。接口 HTTP 执行结论单独统计。
@@ -286,26 +357,44 @@ watch(() => props.initialJobId, (value) => {
 
       <section v-if="gapMappingRows.length" class="class-coverage" aria-label="单测与接口测试缺口映射">
         <h3>单测补充了哪些接口测试缺口</h3>
-        <table>
-          <thead><tr><th>单测</th><th>接口用例及本轮结果</th><th>补充内容</th><th>目标组件</th><th>单测结果</th></tr></thead>
-          <tbody>
-            <tr v-for="item in gapMappingRows" :key="item.unitId">
-              <td>{{ item.unitId }}</td>
-              <td><template v-if="item.linkedIds.length">
-                <span v-for="caseId in item.linkedIds" :key="caseId">
-                  {{ caseId }}（{{ linkedHttpStatus(caseId) }}）<br>
-                </span>
-              </template><span v-else>无直接对应的 HTTP 用例</span></td>
-              <td>{{ gapLabel(item.gapKind) }}</td>
-              <td>{{ item.target }}</td>
-              <td>{{ statusLabel(item.status) }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <p class="detail-note">{{ gapVerified }}/{{ gapMappingRows.length }} 个关联接口用例已有通过的补充单测。此结果只证明对应组件行为，不替代 HTTP 执行结论。</p>
+        <div v-for="group in gapGroups" :key="group.key" class="gap-group">
+          <div class="gap-group-heading">
+            <h4>{{ group.title }} <span>{{ group.items.length }}</span></h4>
+            <span>{{ group.verified }}/{{ group.items.length }} 已有通过单测</span>
+          </div>
+          <p class="detail-note">{{ group.description }}</p>
+          <table>
+            <thead><tr><th>接口用例及本轮结果</th><th>补缺口状态</th><th>关联单测</th><th>目标组件与补充内容</th></tr></thead>
+            <tbody>
+              <tr v-for="item in group.items" :key="item.caseId">
+                <td>{{ item.caseId }}（{{ linkedHttpStatus(item.caseId) }}）
+                  <small v-if="item.category === 'not_executed'">
+                    {{ item.result?.execution_blockers?.join('；') || item.result?.skipped_reason || '未记录未执行原因' }}
+                  </small>
+                </td>
+                <td><span class="status" :class="item.verified ? 'success' : 'warning'">
+                  {{ item.verified ? '已有通过单测' : '尚未补齐' }}
+                </span></td>
+                <td><span v-for="test in item.tests" :key="test.case_id">
+                  {{ test.case_id }}（{{ statusLabel(test.status) }}）<br>
+                </span></td>
+                <td><span v-for="test in item.tests" :key="test.case_id">
+                  {{ test.target_class || test.target_source || '目标组件未记录' }} · {{ gapLabel(test.gap_kind) }}<br>
+                </span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section class="class-coverage" aria-label="目标类 JaCoCo 覆盖率">
         <h3>目标类覆盖率</h3>
+        <p v-for="item in suiteModules.filter((module) => module.line_coverage)"
+          :key="`${item.repo}-${item.module}-total`" class="detail-note">
+          {{ item.repo }} · {{ item.module }}：目标类合计行覆盖 {{ rate(item.line_coverage) }}，
+          分支覆盖 {{ rate(item.branch_coverage) }}；合跑 {{ item.tests_executed ?? 0 }} 项，失败 {{ item.tests_failed ?? 0 }} 项。
+        </p>
         <p v-if="!suiteModules.length" class="detail-note">本轮尚无生成单测合跑记录，不能给出类级覆盖率。</p>
         <p v-for="item in suiteModules.filter((module) => module.status === 'unavailable')"
           :key="`${item.repo}-${item.module}`" class="detail-note">
@@ -329,6 +418,12 @@ watch(() => props.initialJobId, (value) => {
         </table>
       </section>
 
+      <section v-if="inconsistentRows.length" class="notice" aria-label="逐条与合跑结果不一致">
+        <strong>{{ inconsistentRows.length }} 条单测的逐条与合跑结论不一致</strong>
+        <p>这些用例需要核对线程时序、共享状态或断言稳定性；逐条结果暂不因合跑通过而改写。</p>
+        <p>{{ inconsistentRows.map((row) => row.case_id).join('、') }}</p>
+      </section>
+
       <div class="filter-bar" aria-label="筛选单元测试结果">
         <button v-for="item in filters" :key="item.key" type="button"
           :class="{ active: filter === item.key }" :aria-pressed="filter === item.key"
@@ -350,6 +445,7 @@ watch(() => props.initialJobId, (value) => {
               <span class="status" :class="statusTone(row.status)">
                 {{ row.status === 'failed' && (row.errors ?? 0) > 0 ? '测试运行异常' : statusLabel(row.status) }}
               </span>
+              <span v-if="row.consistency_warning" class="status warning">逐条与合跑不一致</span>
               <span v-if="meaningfulCoverage(row)" class="coverage">单次运行已记录 JaCoCo</span>
               <span v-else class="coverage unavailable">单次运行无有效覆盖率</span>
               <button type="button" @click="toggle(row.case_id)">
@@ -359,6 +455,8 @@ watch(() => props.initialJobId, (value) => {
           </div>
           <div v-if="expanded.has(row.case_id)" class="case-detail">
             <p><strong>结果原因：</strong>{{ row.reason || '单测断言通过，且命中目标源码证据行。' }}</p>
+            <p v-if="row.suite_status"><strong>合跑结果：</strong>{{ statusLabel(row.suite_status) }}<span v-if="row.suite_reason">；{{ row.suite_reason }}</span></p>
+            <p v-if="row.consistency_warning" class="detail-note"><strong>结果差异：</strong>{{ row.consistency_warning }}</p>
             <p v-if="row.test_class"><strong>测试类：</strong>{{ row.test_class }}</p>
             <p v-if="row.target_class"><strong>目标组件：</strong>{{ row.target_class }}<span v-if="row.target_method">#{{ row.target_method }}</span></p>
             <p v-if="row.gap_kind"><strong>补充的接口缺口：</strong>{{ gapLabel(row.gap_kind) }}。{{ row.gap_reason }}</p>
@@ -442,6 +540,12 @@ watch(() => props.initialJobId, (value) => {
 .class-coverage th { color: var(--text-2); white-space: nowrap; }
 .class-coverage td:first-child { overflow-wrap: anywhere; }
 .class-coverage small { display: block; color: var(--text-2); }
+.gap-group { margin-top: var(--space-5); }
+.gap-group + .gap-group { padding-top: var(--space-4); border-top: 1px solid var(--border); }
+.gap-group-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: var(--space-2); }
+.gap-group-heading h4 { margin: 0; font-size: var(--text-base); }
+.gap-group-heading h4 span { margin-left: var(--space-1); color: var(--text-3); font-family: var(--font-mono); font-weight: 500; }
+.gap-group-heading > span { color: var(--text-2); font-size: var(--text-sm); }
 .case-detail { border-top: 1px solid var(--border); padding: var(--space-4); background: var(--surface-2); }
 .case-detail p { margin: 0 0 var(--space-2); color: var(--text-2); }
 .case-detail p strong { color: var(--text-1); }

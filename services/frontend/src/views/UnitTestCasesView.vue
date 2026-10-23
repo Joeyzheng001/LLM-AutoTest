@@ -57,6 +57,7 @@ const passedCount = computed(() => outcomes.value.filter((item) => item.status =
 function statusLabel(outcome?: UnitTestOutcome, plan?: UnitTestCasePlan): string {
   if (!outcome) return plan?.status === 'generated' ? '已生成 · 未运行'
     : plan?.status === 'generation_failed' ? '生成失败'
+    : plan?.status === 'generation_deferred' ? '模型连接失败，待生成'
     : plan?.status === 'unsupported' ? '暂不支持' : '等待生成'
   return {
     passed: '通过',
@@ -64,9 +65,12 @@ function statusLabel(outcome?: UnitTestOutcome, plan?: UnitTestCasePlan): string
     not_run: '未运行',
     build_failed: '编译失败',
     generation_failed: '生成失败',
+    generation_deferred: '模型连接失败，待生成',
+    repair_deferred: '模型连接失败，待修复',
     fixture_failed: '夹具错误',
     unsupported: '暂不支持',
     source_not_covered: '未命中目标源码',
+    timed_out: '运行超时',
   }[outcome.status]
 }
 

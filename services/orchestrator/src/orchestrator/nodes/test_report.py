@@ -171,36 +171,150 @@ def _render_markdown(
               "复用响应数量已包含在相应判定中，实际请求次数单独统计。", "", _JUDGE_NOTE, ""]
     unit_coverage = execution.get("unit_test_coverage")
     if isinstance(unit_coverage, dict):
+        unit_rows = [item for repo in unit_coverage.get("repositories") or []
+                     for item in repo.get("cases") or []]
         lines += [
-            "### 隔离单元测试与 JaCoCo 行覆盖率", "",
+            "### 隔离单元测试与 JaCoCo 覆盖率", "",
             "单元测试验证隔离源码副本中的内部逻辑；其通过数不计入接口请求通过数。",
             f"候选用例：{unit_coverage.get('cases_total', 0)}；"
             f"单测通过：{unit_coverage.get('cases_passed', 0)}；"
             f"其余：{unit_coverage.get('cases_failed', 0)}。", "",
-            "| 用例 | 仓库 / 模块 | 目标提交 | 已覆盖行 / 可执行行 | 行覆盖率 |",
-            "| --- | --- | --- | --- | --- |",
         ]
+        if unit_coverage.get("cases_deferred"):
+            lines += [f"其中 {unit_coverage['cases_deferred']} 条因模型连接失败暂缓生成或修复，"
+                      "不能计为源码断言失败。", ""]
         if unit_coverage.get("reason"):
-            lines[-2:-2] = [f"单测说明：{unit_coverage['reason']}", ""]
-        for repo in unit_coverage.get("repositories") or []:
-            for module in repo.get("modules") or []:
-                coverage = module.get("line_coverage") or {}
-                covered = int(coverage.get("covered", 0))
-                missed = int(coverage.get("missed", 0))
-                denominator = covered + missed
-                rate = f"{covered / denominator:.1%}" if denominator else "无数据"
+            lines += [f"单测说明：{unit_coverage['reason']}", ""]
+        existing = [(repo, suite) for repo in unit_coverage.get("repositories") or []
+                    if isinstance((suite := repo.get("existing_suite")), dict)]
+        if existing:
+            lines += ["#### 项目现有单测基线（与平台生成单测分开）", "",
+                      "现有测试按目标提交创建隔离副本运行；工作区未提交的测试文件和 pom 改动另行标注，不属于该提交。", "",
+                      "| 仓库 / 模块 | 运行 | 失败 | 来源 | 状态 |",
+                      "| --- | ---: | ---: | --- | --- |"]
+            for repo, suite in existing:
+                modules = suite.get("modules") or []
+                if not modules:
+                    lines.append(f"| {repo.get('repo', '')} | 0 | 0 | — | {suite.get('reason', suite.get('status', ''))} |")
+                for module in modules:
+                    uncommitted = (module.get("pom_provenance") == "working_tree_uncommitted"
+                                   or any(test.get("provenance") == "working_tree_uncommitted"
+                                          for test in module.get("tests") or []))
+                    lines.append(
+                        f"| {repo.get('repo', '')} / {module.get('module', '')} | "
+                        f"{module.get('tests_executed', 0)} | {module.get('tests_failed', 0)} | "
+                        f"{'含未提交工作区文件' if uncommitted else '目标提交'} | "
+                        f"{module.get('status', '')} |"
+                    )
+            existing_classes = [
+                (repo, module, target)
+                for repo, suite in existing
+                for module in suite.get("modules") or []
+                for target in module.get("classes") or []
+            ]
+            if existing_classes:
+                lines += ["", "| 现有测试覆盖目标类 | 行覆盖 | 分支覆盖 |",
+                          "| --- | --- | --- |"]
+                def existing_counter(value: dict | None) -> str:
+                    if not value:
+                        return "无数据"
+                    covered = int(value.get("covered", 0))
+                    total = covered + int(value.get("missed", 0))
+                    return f"{covered}/{total}（{covered / total:.1%}）" if total else "无数据"
+                for _, _, target in existing_classes:
+                    lines.append(f"| {target.get('name', '')} | "
+                                 f"{existing_counter(target.get('line_coverage'))} | "
+                                 f"{existing_counter(target.get('branch_coverage'))} |")
+            lines += ["", "现有单测的通过数和覆盖率不计入下方平台生成用例统计。", ""]
+        class_rows = [
+            (repo, module, target)
+            for repo in unit_coverage.get("repositories") or []
+            for module in (repo.get("suite_coverage") or {}).get("modules") or []
+            for target in module.get("classes") or []
+        ]
+        if class_rows:
+            lines += ["#### 目标类覆盖率（本轮生成单测合跑）", "",
+                      "| 目标类 | 行覆盖 | 分支覆盖 | 合跑状态 |",
+                      "| --- | --- | --- | --- |"]
+            def coverage_cell(counter: dict | None) -> str:
+                if not counter:
+                    return "无数据"
+                covered = int(counter.get("covered", 0))
+                missed = int(counter.get("missed", 0))
+                total_lines = covered + missed
+                return f"{covered}/{total_lines}（{covered / total_lines:.1%}）" if total_lines else "无数据"
+            for repo, module, target in sorted(
+                class_rows, key=lambda row: (row[2].get("line_coverage") or {}).get("rate") or 0,
+            ):
                 lines.append(
-                    f"| {module.get('case_id', '')} | {repo.get('repo', '')} / {module.get('module', '')} | "
-                    f"{str(repo.get('source_sha', ''))[:12]} | {covered}/{denominator} | {rate} |"
+                    f"| {target.get('name', '')} | {coverage_cell(target.get('line_coverage'))} | "
+                    f"{coverage_cell(target.get('branch_coverage'))} | {module.get('status', '')} |"
                 )
-        lines.append("")
-        if not any(repo.get("modules") for repo in unit_coverage.get("repositories") or []):
-            lines.append("本轮未产出可核验的 JaCoCo XML；不输出覆盖率百分比。")
+            lines += ["", "这里的覆盖率只统计列出的目标类；单条用例的模块级 JaCoCo 记录不作为目标类覆盖率。", ""]
+        else:
+            lines += ["本轮未产出可核验的目标类 JaCoCo 覆盖率。", ""]
+        linked: dict[str, list[dict]] = {}
+        for item in unit_rows:
+            for case_id in item.get("linked_interface_case_ids") or []:
+                linked.setdefault(str(case_id), []).append(item)
+        if linked:
+            verified = sum(any(row.get("status") == "passed" for row in items)
+                           for items in linked.values())
+            lines += ["#### 单测补充的接口测试缺口", "",
+                      f"{verified}/{len(linked)} 个关联接口用例已有通过的补充单测；"
+                      "单测结论不替代 HTTP 执行结论。接口未执行的关联项优先展示。", ""]
+            result_by_case = {str(item.get("case_id")): item for item in results}
+            groups = [
+                ("not_executed", "接口测试未执行"),
+                ("observed_unjudged", "接口已请求，结果待判定"),
+                ("executed_failed", "接口已执行，未通过"),
+                ("reused_response", "接口复用历史响应"),
+                ("executed_passed", "接口已执行并通过"),
+                ("no_record", "本轮无接口结果"),
+            ]
+            def gap_category(case_id: str) -> str:
+                result = result_by_case.get(case_id)
+                if result is None:
+                    return "no_record"
+                state = result.get("execution_state")
+                if state in ("not_executed", "observed_unjudged", "reused_response"):
+                    return str(state)
+                return "executed_passed" if result.get("passed") else "executed_failed"
+            for category, title in groups:
+                items_in_group = [(case_id, items) for case_id, items in linked.items()
+                                  if gap_category(case_id) == category]
+                if not items_in_group:
+                    continue
+                items_in_group.sort(key=lambda entry: (
+                    not any(item.get("status") == "passed" for item in entry[1]), entry[0]
+                ))
+                group_passed = sum(any(item.get("status") == "passed" for item in items)
+                                   for _, items in items_in_group)
+                lines += [f"##### {title}（{len(items_in_group)} 条，{group_passed} 条已有通过单测）", "",
+                          "| 接口用例 | 补缺口状态 | 未执行原因 | 关联单测 |",
+                          "| --- | --- | --- | --- |"]
+                for case_id, items in items_in_group:
+                    passed = any(item.get("status") == "passed" for item in items)
+                    refs = "、".join(f"{item.get('case_id', '')}（{item.get('status', '')}）"
+                                   for item in items)
+                    result = result_by_case.get(case_id) or {}
+                    blocker = ("；".join(map(str, result.get("execution_blockers") or []))
+                               or str(result.get("skipped_reason") or "")) if category == "not_executed" else "—"
+                    lines.append(f"| {case_id} | {'已有通过单测' if passed else '尚未补齐'} | "
+                                 f"{blocker.replace('|', '｜')} | {refs} |")
+                lines.append("")
+        inconsistent = [item for item in unit_rows if item.get("consistency_warning")]
+        if inconsistent:
+            lines += ["#### 逐条与合跑结果不一致", "",
+                      "以下用例需要复跑核对；保留逐条结果，不因合跑通过而改写。", "",
+                      "| 用例 | 逐条结果 | 合跑结果 |",
+                      "| --- | --- | --- |"]
+            lines += [f"| {item.get('case_id', '')} | {item.get('status', '')} | {item.get('suite_status', '')} |"
+                      for item in inconsistent]
             lines.append("")
-        unit_rows = [item for repo in unit_coverage.get("repositories") or []
-                     for item in repo.get("cases") or []]
         if unit_rows:
-            lines += ["| 接口用例 | 单测结果 | 说明 |", "| --- | --- | --- |"]
+            lines += ["#### 单测明细", "",
+                      "| 用例 | 单测结果 | 说明 |", "| --- | --- | --- |"]
             for item in unit_rows:
                 lines.append(
                     f"| {item.get('case_id', '')} | {item.get('status', '')} | "

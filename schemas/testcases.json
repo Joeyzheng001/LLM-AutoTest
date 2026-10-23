@@ -388,7 +388,7 @@
           "request_params": { "type": "object" },
           "mock_conditions": { "type": "array" },
           "expected": {},
-          "status": { "enum": ["generated", "generation_failed", "unsupported"] },
+          "status": { "enum": ["generated", "generation_failed", "generation_deferred", "unsupported"] },
           "reason": { "type": "string" },
           "source_artifact": { "type": "string" },
           "source": { "type": "string" }
