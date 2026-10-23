@@ -99,9 +99,13 @@ async function load(): Promise<void> {
     cases.value = testcases.cases
     plans.value = testcases.unit_cases ?? null
     planError.value = testcases.unit_generation_error ?? ''
+    const plansById = new Map((testcases.unit_cases ?? []).map((plan) => [plan.case_id, plan]))
     outcomes.value = (execution?.unit_test_coverage?.repositories ?? []).flatMap(
       (repo) => repo.cases,
-    )
+    ).filter((outcome) => {
+      const plan = plansById.get(outcome.case_id)
+      return !plan?.plan_fingerprint || plan.plan_fingerprint === outcome.plan_fingerprint
+    })
   } catch (err) {
     if (version === loadVersion)
       error.value = err instanceof Error ? err.message : '单元测试用例加载失败'
@@ -189,6 +193,9 @@ watch(
           <p v-if="item.interfaceCase?.oracle_scenario" class="description">{{ item.interfaceCase.oracle_scenario }}</p>
           <p v-if="item.plan?.test_class" class="description">
             <strong>测试类：</strong>{{ item.plan.test_class }} · {{ item.plan.module }}
+          </p>
+          <p v-if="item.plan?.compile_verified" class="description">
+            <strong>生成校验：</strong>Java 编译通过<span v-if="item.plan.reused_verified_source"> · 复用同一场景已通过的单测</span>
           </p>
           <p v-if="item.plan?.target_source" class="description">
             <strong>目标组件：</strong>{{ item.plan.target_class || item.plan.target_source }}<span v-if="item.plan.target_method">#{{ item.plan.target_method }}</span>

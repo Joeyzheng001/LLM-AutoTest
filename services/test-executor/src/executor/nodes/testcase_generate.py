@@ -701,7 +701,7 @@ async def run_testcase_generate(
                 failed = sum(item.get("status") != "generated" for item in unit_cases)
                 if failed:
                     warnings.append(
-                        f"单元测试用例生成：{len(unit_cases) - failed}/{len(unit_cases)} 条已产生 Java 代码，"
+                        f"单元测试用例生成：{len(unit_cases) - failed}/{len(unit_cases)} 条已通过编译预检或复用既有通过版本，"
                         f"{failed} 条需查看单元测试用例页的原因"
                     )
             except Exception as exc:

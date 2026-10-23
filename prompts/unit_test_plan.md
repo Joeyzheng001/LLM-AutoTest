@@ -1,8 +1,9 @@
 ---
-version: 1.1
+version: 1.2
 spec: F-EXEC-UNIT-PLAN-01
 owner: QA
 changelog:
+  - 1.2 | 2026-10-23 | 利用上一轮失败反馈修正重复的错误预期
   - 1.1 | 2026-10-23 | 将公开入口的最终响应、异常包装和前置配置纳入场景预期
   - 1.0 | 2026-10-23 | 按接口调用链中的目标 Java 类规划独立单测场景
 sampling:
@@ -22,6 +23,11 @@ sampling:
 若 switch 的空值会先抛空指针，不能把 null 当成不支持的枚举值。精确错误消息必须逐字来自源码。
 下游返回对象的内层字段和异步超时参数若影响分支，也要写进 `mock_conditions`。
 `target.superclass_source` 有内容时，继承方法的实际调用也必须以父类源码为准。
+`previous_scenarios` 是同一源码提交上一轮的诊断数据。遇到旧用例期望异常却没有抛出、
+期望消息与最终包装消息不符等反馈，必须重新沿公开入口核对并修正预期；不要重复旧标题和旧预期。
+若旧场景不可由公开入口稳定触发，应删除该候选，不要设计依赖私有线程池时序或无效枚举的用例。
+`verified_scenarios` 已在相同源码提交上运行通过，程序会保留这些场景；本次只补充尚未覆盖或需要纠正的场景，
+不要换个标题重复输出，也不要把已通过场景的预期改写后当作新用例。
 
 只输出 JSON 对象，顶层仅有 `cases`：
 {"cases":[{"title":"场景名","target_method":"公开入口方法名","scenario_type":"normal|boundary|exception|interaction","request_params":{},"mock_conditions":["具体的依赖桩数据或配置"],"expected":"可验证的结果与关键交互","branch_ids":["输入中的分支 ID"],"evidence_refs":["输入中的证据 ID"],"unit_reason":"需要组件级单测的原因"}]}

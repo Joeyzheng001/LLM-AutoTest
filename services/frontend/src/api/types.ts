@@ -852,6 +852,7 @@ export interface UnitTestOutcome {
     | 'source_not_covered'
     | 'timed_out'
   test_class?: string
+  plan_fingerprint?: string
   source_artifact?: string
   log_artifact?: string
   source?: string
@@ -862,6 +863,9 @@ export interface UnitTestOutcome {
   errors?: number
   skipped?: number
   covered_evidence_lines?: number
+  covered_target_lines?: number
+  coverage_basis?: 'evidence_refs' | 'asserted_source_literal'
+  coverage_note?: string
   suite_status?: 'passed' | 'failed' | 'fixture_failed' | 'not_run'
   suite_reason?: string
   consistency_warning?: string
@@ -889,6 +893,7 @@ export interface UnitTestCasePlan {
   title?: string
   repo: string
   source_sha?: string
+  plan_fingerprint?: string
   module?: string
   test_framework?: string
   test_class?: string
@@ -908,6 +913,9 @@ export interface UnitTestCasePlan {
   status: 'generated' | 'generation_failed' | 'generation_deferred' | 'unsupported'
   reason?: string
   source_artifact?: string
+  compile_log_artifact?: string
+  compile_verified?: boolean
+  reused_verified_source?: boolean
   source?: string
 }
 

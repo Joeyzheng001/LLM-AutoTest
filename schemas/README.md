@@ -14,6 +14,9 @@
 - `testcases.json` 1.1（2026-10-23）：`unit_cases` 增加独立 `UT-xxx` 编号、目标组件、源码分支与关联 HTTP 用例，保留 1.0 历史产物读取。
 - `execution.json` 1.1（2026-10-23）：单测结果增加缺口映射和目标类的 JaCoCo 行／分支合跑覆盖率，保留 1.0 历史产物读取。
 - `execution.json` 1.1 可选扩展（2026-10-23）：单测可记录 `timed_out`、合跑结果及逐条／合跑差异；旧轮次不含这些字段时仍可读取。
+- `testcases.json` 1.1 可选扩展（2026-10-23）：生成单测通过 Maven `test-compile` 预检后才标记 `generated`；`compile_verified`、`compile_log_artifact` 和 `reused_verified_source` 记录编译与历史复用依据。
+- `execution.json` 1.1 可选扩展（2026-10-23）：证据行范围偏离目标时，只有断言中的源码字面量所在行被 JaCoCo 命中才记录 `coverage_basis=asserted_source_literal`，并保存覆盖说明。
+- `testcases.json` / `execution.json` 1.1 可选扩展（2026-10-23）：`plan_fingerprint` 按目标、请求、桩和预期生成；用例页面仅将同一计划的执行结果显示为当前结果，避免重生成后编号复用造成误报。
 - `testcases.json` / `execution.json` 1.1 可选扩展（2026-10-23）：模型连接中断时区分生成与修复暂缓；执行报告另列现有测试基线、文件来源和覆盖率，旧轮次仍可读取。
 
 ## 目录规划（11 个产物 Schema，与 docs/11 §5.3 主笔表同一事实源）

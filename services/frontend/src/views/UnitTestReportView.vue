@@ -454,7 +454,9 @@ watch(() => props.initialJobId, (value) => {
             </div>
           </div>
           <div v-if="expanded.has(row.case_id)" class="case-detail">
-            <p><strong>结果原因：</strong>{{ row.reason || '单测断言通过，且命中目标源码证据行。' }}</p>
+            <p><strong>结果原因：</strong>{{ row.reason || '单测断言通过。' }}</p>
+            <p v-if="row.coverage_note" class="detail-note"><strong>覆盖依据：</strong>{{ row.coverage_note }}</p>
+            <p v-else-if="row.coverage_basis === 'evidence_refs'"><strong>覆盖依据：</strong>JaCoCo 命中 {{ row.covered_evidence_lines }} 行源码证据。</p>
             <p v-if="row.suite_status"><strong>合跑结果：</strong>{{ statusLabel(row.suite_status) }}<span v-if="row.suite_reason">；{{ row.suite_reason }}</span></p>
             <p v-if="row.consistency_warning" class="detail-note"><strong>结果差异：</strong>{{ row.consistency_warning }}</p>
             <p v-if="row.test_class"><strong>测试类：</strong>{{ row.test_class }}</p>

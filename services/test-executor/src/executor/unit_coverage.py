@@ -268,9 +268,37 @@ def _source_context(snapshot: Path, oracle: dict[str, Any],
     return "\n\n".join(parts)
 
 
+def _fixture_contract(source_context: str, target_class: str = "") -> dict[str, Any]:
+    """Expose source-declared injection seams instead of inventing setters."""
+    if target_class:
+        chunks = re.split(r"(?=^文件\s+[^\n]+\.java)", source_context, flags=re.M)
+        for index, chunk in enumerate(chunks):
+            header = re.match(r"文件\s+([^\n:]+\.java)", chunk)
+            if header and Path(header.group(1)).stem == target_class:
+                source_context = chunk
+                if index + 1 < len(chunks) and "（父类）" in chunks[index + 1].split("\n", 1)[0]:
+                    source_context += "\n" + chunks[index + 1]
+                break
+    injected = [
+        {"type": match.group(1), "field": match.group(2)}
+        for match in re.finditer(
+            r"@(?:Autowired|Resource|Inject)\b(?:\s+@\w+(?:\([^)]*\))?)*\s+"
+            r"(?:(?:private|protected|public|final)\s+)*([\w.<>?,\[\]]+)\s+(\w+)\s*[;=]",
+            source_context,
+        )
+    ]
+    private_fields = sorted(set(re.findall(
+        r"\bprivate\s+(?:(?:static|final|volatile|transient)\s+)*"
+        r"[\w.<>?,\[\]]+\s+(\w+)\s*(?:[;=])", source_context,
+    )))
+    return {"injected_fields": injected, "private_fields": private_fields,
+            "injection_rule": "仅 @Autowired/@Resource/@Inject 字段可用 ReflectionTestUtils.setField；其他 private 字段不可修改"}
+
+
 def _valid_generated_source(raw: str, class_name: str,
                             test_framework: str | None = None,
-                            source_context: str = "") -> tuple[str, str]:
+                            source_context: str = "",
+                            target_class: str = "") -> tuple[str, str]:
     parsed = json.loads(strip_code_fence(raw))
     source = str(parsed.get("source", ""))
     package = str(parsed.get("package", ""))
@@ -309,7 +337,29 @@ def _valid_generated_source(raw: str, class_name: str,
     if "@InjectMocks" in source:
         raise ValueError("不能使用 @InjectMocks 隐式构造被测类；请显式传入 Mock 和同步 Executor")
     if re.search(r"\b(?:getDeclaredField|getDeclaredMethod|setAccessible)\s*\(", source):
-        raise ValueError("不能通过反射修改 private 成员；请从公开入口构造测试条件")
+        raise ValueError("不要自行反射修改 private 成员；仅可按源码字段用 ReflectionTestUtils 注入依赖")
+    fixture = _fixture_contract(source_context, target_class)
+    injected_types = {str(item["field"]): str(item["type"]).split("<", 1)[0].split(".")[-1]
+                      for item in fixture["injected_fields"]}
+    for match in re.finditer(
+        r'\bReflectionTestUtils\.setField\s*\(\s*[^,]+,\s*"(\w+)"', source,
+    ):
+        if match.group(1) not in injected_types:
+            raise ValueError(f"{match.group(1)} 不是源码声明的注入依赖，不能用反射修改")
+        value = re.match(r"\s*,\s*(\w+)\s*\)", source[match.end():])
+        if value is None:
+            continue
+        variable_types = re.findall(rf"\b([A-Z]\w*)\s+{re.escape(value.group(1))}\b", source)
+        if variable_types and injected_types[match.group(1)] not in variable_types:
+            raise ValueError(
+                f"{match.group(1)} 需要 {injected_types[match.group(1)]} 类型，"
+                f"不能注入 {value.group(1)} 的其他类型")
+    receivers = (set(re.findall(rf"\b{re.escape(target_class)}\s+(\w+)\s*=", source))
+                 if target_class else set())
+    for receiver in receivers:
+        for field in fixture["private_fields"]:
+            if re.search(rf"\b{re.escape(receiver)}\.{re.escape(field)}\b(?!\s*\()", source):
+                raise ValueError(f"{field} 是 private 字段，不能直接访问；注入依赖时用 ReflectionTestUtils")
     for match in re.finditer(r"\bverifyNoInteractions\s*\(\s*(\w+)\s*\)", source):
         dependency = re.escape(match.group(1))
         if re.search(rf"\bwhen\s*\(\s*{dependency}\s*\.", source):
@@ -318,14 +368,19 @@ def _valid_generated_source(raw: str, class_name: str,
             and "RestTemplate" in source_context and ".exchange(" in source_context
             and ".postForObject(" not in source_context):
         raise ValueError("被测调用链使用 RestTemplate.exchange；请按实际签名设置桩和响应对象")
+    mock_config = bool(re.search(
+        r"@Mock(?:\s*\([^)]*\))?\s+(?:(?:private|public|protected)\s+)*"
+        r"IcmGatewayExecutorProperties\s+\w+|\bmock\s*\(\s*IcmGatewayExecutorProperties\.class",
+        source,
+    ))
     if ("class StandardRiskTrialServiceImpl" in source_context
             and "new StandardRiskTrialServiceImpl(" in source
-            and "IcmGatewayExecutorProperties" in source
+            and mock_config
             and "getComplexExecutors()" not in source):
         raise ValueError("被测构造函数读取 getComplexExecutors；必须给配置 Mock 设置非空列表")
     if ("class StandardRiskTrialServiceImpl" in source_context
             and "new StandardRiskTrialServiceImpl(" in source
-            and "IcmGatewayExecutorProperties" in source
+            and mock_config
             and re.search(r"\bwhen\s*\([^;]*?\.execute\s*\(", source, re.S)
             and "getComplexTimeout()" not in source):
         raise ValueError("并发试算路径须给 getComplexTimeout 设置稳定的正值，不能使用 Mock 默认 0")
@@ -424,41 +479,154 @@ def _maven_error_summary(output: str) -> str:
     return "；".join(errors)[:500] or "Maven 未产生测试执行记录，请查看构建日志"
 
 
-def _previous_passing_source(job_dir: Path, repo_name: str, source_sha: str,
-                             case_id: str, class_name: str,
-                             test_framework: str) -> tuple[str, str] | None:
-    """Reuse a proven test only while upstream review and cases remain unchanged."""
-    upstream = [job_dir / "testcases.json", job_dir / "review_mapping.json"]
-    if not all(path.is_file() for path in upstream):
-        return None
-    latest_upstream = max(path.stat().st_mtime for path in upstream)
-    archive = job_dir / "archive" / "auto_execute"
-    for path in sorted(archive.glob("*_execution.json"), reverse=True):
-        if path.stat().st_mtime < latest_upstream:
-            break
+def _compiler_feedback(output: str) -> str:
+    """Keep the useful javac diagnostics, including indented symbol/type details."""
+    marker = "COMPILATION ERROR"
+    start = output.find(marker)
+    if start < 0:
+        return _maven_error_summary(output)
+    end = output.find("BUILD FAILURE", start)
+    section = output[start:end if end >= 0 else None]
+    section = re.sub(r"/[^\s:]+/src/test/java/", "src/test/java/", section)
+    return section[:4_000]
+
+
+def _unit_semantic_key(plan: dict[str, Any]) -> str:
+    """Stable across regenerated TC/UT numbering, but sensitive to the test goal."""
+    fields = ("interface_id", "oracle_id", "title", "target_source", "target_method",
+              "source_kind", "request_params", "mock_conditions", "expected")
+    return hashlib.sha256(json.dumps(
+        {field: plan.get(field) for field in fields}, ensure_ascii=False,
+        sort_keys=True, default=str,
+    ).encode("utf-8")).hexdigest()
+
+
+def _historical_unit_index(job_dir: Path, repo_name: str,
+                           source_sha: str) -> dict[str, dict[str, Any]]:
+    """Read each historical run once; prefer a proven pass over a newer failure."""
+    current_cases = job_dir / "testcases.json"
+    current_execution = job_dir / "execution.json"
+    # A regenerated testcase file may coexist with the previous execution.
+    # In that state identical UT numbers refer to different scenarios.
+    current = ([(current_cases, current_execution)]
+               if current_cases.is_file() and current_execution.is_file()
+               and current_cases.stat().st_mtime <= current_execution.stat().st_mtime
+               else [])
+    archived = [
+        (job_dir / "archive" / "testcase_generate" /
+         path.name.replace("_execution.json", "_testcases.json"), path)
+        for path in sorted((job_dir / "archive" / "auto_execute").glob("*_execution.json"),
+                           reverse=True)
+    ]
+    index: dict[str, dict[str, Any]] = {}
+    recent_pair_seen = False
+    for cases_path, execution_path in [*current, *archived]:
+        if not cases_path.is_file() or not execution_path.is_file():
+            continue
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            testcase_payload = json.loads(cases_path.read_text(encoding="utf-8"))
+            execution_payload = json.loads(execution_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        for repo in (payload.get("unit_test_coverage") or {}).get("repositories") or []:
+        matching_ids = {
+            str(item.get("case_id")): item for item in testcase_payload.get("unit_cases") or []
+            if item.get("repo") == repo_name and item.get("source_sha") == source_sha
+        }
+        if not matching_ids:
+            continue
+        for repo in (execution_payload.get("unit_test_coverage") or {}).get("repositories") or []:
             if repo.get("repo") != repo_name or repo.get("source_sha") != source_sha:
                 continue
-            for item in repo.get("cases") or []:
-                if item.get("case_id") != case_id or item.get("status") != "passed":
-                    continue
-                source = item.get("source")
-                if not isinstance(source, str):
-                    continue
-                declaration = re.search(r"(?m)^\s*package\s+([\w.]+)\s*;", source)
-                if declaration is None:
-                    continue
-                try:
-                    return _valid_generated_source(json.dumps({
-                        "package": declaration.group(1), "source": source,
-                    }), class_name, test_framework)
-                except ValueError:
-                    continue
-    return None
+            is_recent_pair = not recent_pair_seen
+            recent_pair_seen = True
+            for outcome in repo.get("cases") or []:
+                prior = matching_ids.get(str(outcome.get("case_id")))
+                if prior:
+                    key = _unit_semantic_key(prior)
+                    attempt = {"status": outcome.get("status"),
+                               "reason": outcome.get("reason", ""),
+                               "source": outcome.get("source") or prior.get("source"),
+                               "test_class": outcome.get("test_class") or prior.get("test_class"),
+                               "plan": prior}
+                    stable_pass = (attempt["status"] == "passed"
+                                   and not outcome.get("consistency_warning")
+                                   and outcome.get("suite_status") in (None, "passed"))
+                    attempt["recent_pass"] = bool(is_recent_pair and stable_pass)
+                    attempt["status"] = "passed" if stable_pass else (
+                        "inconsistent" if attempt["status"] == "passed" else attempt["status"])
+                    if key not in index or (index[key]["status"] != "passed" and stable_pass):
+                        index[key] = attempt
+    return index
+
+
+def _previous_unit_attempt(history: dict[str, dict[str, Any]],
+                           plan: dict[str, Any]) -> dict[str, Any] | None:
+    return history.get(_unit_semantic_key(plan))
+
+
+def _previous_passing_source(attempt: dict[str, Any] | None, class_name: str,
+                             test_framework: str, source_context: str,
+                             target_class: str = "") -> tuple[str, str] | None:
+    if not attempt or attempt.get("status") != "passed":
+        return None
+    source = attempt.get("source")
+    old_class = str(attempt.get("test_class") or "")
+    if not isinstance(source, str) or not re.fullmatch(r"AutoUnit\w+Test", old_class):
+        return None
+    source = re.sub(rf"\b{re.escape(old_class)}\b", class_name, source)
+    declaration = re.search(r"(?m)^\s*package\s+([\w.]+)\s*;", source)
+    if declaration is None:
+        return None
+    try:
+        return _valid_generated_source(json.dumps({
+            "package": declaration.group(1), "source": source,
+        }), class_name, test_framework, source_context, target_class)
+    except ValueError:
+        return None
+
+
+def _previous_target_failures(job_dir: Path, repo_name: str, source_sha: str,
+                              target_source: str) -> list[dict[str, str]]:
+    """Tell the planner which expectations or fixtures failed on this source."""
+    current_cases = job_dir / "testcases.json"
+    current_execution = job_dir / "execution.json"
+    pairs = ([(current_cases, current_execution)]
+             if current_cases.is_file() and current_execution.is_file()
+             and current_cases.stat().st_mtime <= current_execution.stat().st_mtime
+             else [])
+    pairs.extend(
+        (job_dir / "archive" / "testcase_generate" /
+         path.name.replace("_execution.json", "_testcases.json"), path)
+        for path in sorted((job_dir / "archive" / "auto_execute").glob("*_execution.json"),
+                           reverse=True)
+    )
+    for cases_path, execution_path in pairs:
+        if not cases_path.is_file() or not execution_path.is_file():
+            continue
+        try:
+            plans = json.loads(cases_path.read_text(encoding="utf-8")).get("unit_cases") or []
+            execution = json.loads(execution_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        candidates = {str(item.get("case_id")): item for item in plans
+                      if item.get("repo") == repo_name and item.get("source_sha") == source_sha
+                      and item.get("target_source") == target_source}
+        if not candidates:
+            continue
+        feedback: list[dict[str, str]] = []
+        for repo in (execution.get("unit_test_coverage") or {}).get("repositories") or []:
+            if repo.get("repo") != repo_name or repo.get("source_sha") != source_sha:
+                continue
+            for outcome in repo.get("cases") or []:
+                plan = candidates.get(str(outcome.get("case_id")))
+                if plan and outcome.get("status") != "passed":
+                    feedback.append({"title": str(plan.get("title", "")),
+                                     "expected": str(plan.get("expected", ""))[:300],
+                                     "status": str(outcome.get("status", "")),
+                                     "reason": str(outcome.get("reason", ""))[:400]})
+        if feedback:
+            return feedback[:25]
+    return []
 
 
 def _imported_source_context(snapshot: Path, generated_source: str) -> str:
@@ -529,6 +697,48 @@ def _covered_evidence_lines(coverage: dict[str, Any], oracle: dict[str, Any],
     )
 
 
+def _covered_expected_literal_lines(coverage: dict[str, Any], plan: dict[str, Any] | None,
+                                    generated_source: str, module: Path, snapshot: Path) -> int:
+    """Recover a mismapped evidence span only for an asserted source error literal."""
+    if not plan or plan.get("source_kind") != "source_branch":
+        return 0
+    target = str(plan.get("target_source", ""))
+    module_prefix = module.relative_to(snapshot).as_posix() + "/src/main/java/"
+    if (not target.startswith(module_prefix) or PurePosixPath(target).is_absolute()
+            or ".." in PurePosixPath(target).parts):
+        return 0
+    source_path = snapshot / target
+    if not source_path.is_file():
+        return 0
+    relative = target.removeprefix(module_prefix)
+    covered = {
+        int(number) for item in coverage.get("files") or []
+        if item.get("path") == relative
+        for number in item.get("covered_lines") or []
+    }
+    expected = str(plan.get("expected", ""))
+    source_text = source_path.read_text(encoding="utf-8")
+    asserted_literals = {
+        match.group(1)
+        for match in re.finditer(
+            r'\bassertEquals\s*\(\s*"([^"\n]{8,})"\s*,\s*[^;]*?\.getMessage\s*\(',
+            generated_source, re.S,
+        )
+    }
+    asserted_literals.update(
+        match.group(1) for match in re.finditer(
+            r'\bassertTrue\s*\([^;]*?\.getMessage\s*\(\s*\)'
+            r'[^;]*?\.contains\s*\(\s*"([^"\n]{8,})"',
+            generated_source, re.S,
+        )
+    )
+    return sum(
+        source_text.count("\n", 0, match.start()) + 1 in covered
+        for match in re.finditer(r'"([^"\n]{8,})"', source_text)
+        if match.group(1) in expected and match.group(1) in asserted_literals
+    )
+
+
 def _unit_target_files(
     repo_name: str, interfaces: list[dict[str, Any]], review: dict[str, Any],
     evidence: dict[str, dict[str, Any]],
@@ -575,12 +785,11 @@ async def _plan_source_unit_cases(
     snapshot: Path, repo_name: str, interfaces: list[dict[str, Any]],
     review: dict[str, Any], evidence: dict[str, dict[str, Any]],
     cases: list[dict[str, Any]], llm: SupportsComplete | None,
-    prompts_dir: Path | None, start_index: int,
+    prompts_dir: Path | None, start_index: int, job_dir: Path,
+    history: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Plan unit scenarios from component source, independently of HTTP cases."""
-    if llm is None or prompts_dir is None:
-        return []
-    prompt = load_prompt(prompts_dir, "unit_test_plan")
+    prompt = load_prompt(prompts_dir, "unit_test_plan") if llm and prompts_dir else None
     planned: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for interface, file, target_refs in _unit_target_files(repo_name, interfaces, review, evidence):
@@ -601,6 +810,21 @@ async def _plan_source_unit_cases(
                            if item.get("interface_id") == interface_id
                            and set(map(str, item.get("evidence_refs") or []))
                            .intersection(target_refs)]
+        verified_scenarios = [
+            {"title": plan.get("title"), "target_method": plan.get("target_method"),
+             "scenario_type": plan.get("scenario_type"),
+             "request_params": plan.get("request_params"),
+             "mock_conditions": plan.get("mock_conditions"),
+             "expected": plan.get("expected"), "branch_ids": plan.get("branch_ids"),
+             "evidence_refs": plan.get("evidence_refs"),
+             "unit_reason": plan.get("gap_reason")}
+            for attempt in history.values()
+            for plan in [attempt.get("plan") or {}]
+            if attempt.get("recent_pass")
+            and plan.get("source_kind") == "source_branch"
+            and plan.get("target_source") == file
+            and plan.get("interface_id") == interface_id
+        ][:40]
         request = {
             "interface": {"id": interface_id,
                           "method": (interface.get("signature") or {}).get("method"),
@@ -619,15 +843,25 @@ async def _plan_source_unit_cases(
                                  "branch_id": item.get("branch_id"),
                                  "scenario": item.get("scenario")}
                                 for item in related_oracles],
+            "previous_scenarios": _previous_target_failures(
+                job_dir, repo_name,
+                (snapshot / ".target-sha").read_text(encoding="ascii")
+                if (snapshot / ".target-sha").is_file() else "", file),
+            "verified_scenarios": verified_scenarios,
         }
+        planner_connection_failed = False
         try:
-            response = await llm.complete("unit_test_plan", prompt,
-                                          json.dumps(request, ensure_ascii=False))
-            raw = json.loads(strip_code_fence(response.text))
-            candidates = raw.get("cases") if isinstance(raw, dict) else None
-            if not isinstance(candidates, list):
-                raise ValueError("单测规划缺少 cases 数组")
+            if llm is None or prompt is None:
+                candidates = []
+            else:
+                response = await llm.complete("unit_test_plan", prompt,
+                                              json.dumps(request, ensure_ascii=False))
+                raw = json.loads(strip_code_fence(response.text))
+                candidates = raw.get("cases") if isinstance(raw, dict) else None
+                if not isinstance(candidates, list):
+                    raise ValueError("单测规划缺少 cases 数组")
         except Exception as exc:
+            planner_connection_failed = _model_connection_failed(exc)
             logger.warning("单测场景规划未完成：%s %s (%s)", interface_id, file, exc)
             planned.append({"case_id": f"UT-{start_index + len(planned):03d}",
                             "interface_id": interface_id, "repo": repo_name,
@@ -635,14 +869,12 @@ async def _plan_source_unit_cases(
                             "target_source": file, "target_class": source_path.stem,
                             "source_kind": "source_branch",
                             "linked_interface_case_ids": [],
-                            "status": "generation_deferred" if _model_connection_failed(exc) else "unsupported",
-                            "reason": "模型连接失败，后续源码场景规划已暂停" if _model_connection_failed(exc)
+                            "status": "generation_deferred" if planner_connection_failed else "unsupported",
+                            "reason": "模型连接失败，后续源码场景规划已暂停" if planner_connection_failed
                             else f"单测场景规划未完成（{type(exc).__name__}）"})
-            if _model_connection_failed(exc):
-                break
-            continue
+            candidates = []
         before_count = len(planned)
-        for candidate in candidates[:40]:
+        for candidate in [*verified_scenarios, *candidates[:max(0, 40 - len(verified_scenarios))]]:
             if not isinstance(candidate, dict):
                 continue
             method = str(candidate.get("target_method", "")).strip()
@@ -704,7 +936,7 @@ async def _plan_source_unit_cases(
                 "gap_reason": str(candidate.get("unit_reason", "")).strip(),
                 "source_kind": "source_branch",
             })
-        if len(planned) == before_count:
+        if len(planned) == before_count and not planner_connection_failed:
             planned.append({"case_id": f"UT-{start_index + len(planned):03d}",
                             "interface_id": interface_id, "repo": repo_name,
                             "title": f"{source_path.stem} 单测场景规划",
@@ -712,6 +944,8 @@ async def _plan_source_unit_cases(
                             "source_kind": "source_branch",
                             "linked_interface_case_ids": [], "status": "unsupported",
                             "reason": "目标源码未形成可验证的单测场景"})
+        if planner_connection_failed:
+            break
     return planned
 
 
@@ -939,9 +1173,11 @@ async def generate_controlled_unit_cases(
                             "reason": f"隔离源码快照不可用（{type(exc).__name__}）"}
                            for case, _ in entries)
             continue
+        history = _historical_unit_index(
+            store.job_dir(job_id), repo_name, str(repo.get("target_sha", "")))
         repo_source_plans = await _plan_source_unit_cases(
             snapshot, repo_name, interfaces, review, evidence, cases, llm,
-            prompts_dir, next_unit_index,
+            prompts_dir, next_unit_index, store.job_dir(job_id), history,
         )
         if any(item.get("status") == "generation_deferred" for item in repo_source_plans):
             model_unavailable = True
@@ -949,7 +1185,8 @@ async def generate_controlled_unit_cases(
         for source_plan in repo_source_plans:
             case_id = str(source_plan["case_id"])
             if source_plan.get("status") in ("unsupported", "generation_deferred"):
-                planned.append({**source_plan, "source_sha": str(repo.get("target_sha", ""))})
+                planned.append({**source_plan, "source_sha": str(repo.get("target_sha", "")),
+                                "plan_fingerprint": _unit_semantic_key(source_plan)})
                 continue
             source_plans[case_id] = source_plan
             entries.append((
@@ -992,6 +1229,7 @@ async def generate_controlled_unit_cases(
             if first_ref:
                 item["target_source"] = str(first_ref.get("file", ""))
                 item.setdefault("target_class", Path(str(first_ref.get("file", ""))).stem)
+            item["plan_fingerprint"] = _unit_semantic_key(item)
             module = _module_root(snapshot, str((first_ref or {}).get("file", "")))
             if module is None:
                 item["reason"] = "未找到对应的 Maven 模块"
@@ -1006,38 +1244,113 @@ async def generate_controlled_unit_cases(
             if not context:
                 item["reason"] = "缺少可引用的 Java 源码证据"
                 continue
-            if prompt is None or llm is None:
-                item.update(status="generation_failed", reason="未配置单元测试生成模型")
-                continue
             request = {"case_id": case_id, "class_name": class_name,
                        "test_framework": framework, "case": redact_secrets(case),
                        "oracle": oracle, "source": context,
+                       "fixture_contract": _fixture_contract(context, str(item.get("target_class", ""))),
+                       "related_types": _imported_source_context(snapshot, context),
                        "pom": (module / "pom.xml").read_text(encoding="utf-8")[:12_000]}
             reference = _existing_test_reference(repo, str((first_ref or {}).get("file", "")))
             if reference:
                 request["existing_test_reference"] = reference
             if case_id in source_plans:
                 request["unit_plan"] = redact_secrets(source_plans[case_id])
+            previous_attempt = _previous_unit_attempt(history, item)
+            previous = _previous_passing_source(
+                previous_attempt, class_name, framework, context,
+                str(item.get("target_class", "")))
+            if previous is not None:
+                package, source = previous
+                artifact = f"scripts/unit_{case_id}.java"
+                store.write_raw(job_id, artifact, source)
+                item.update(status="generated", source_artifact=artifact, source=source,
+                            reused_verified_source=True, compile_verified=True)
+                continue
+            if previous_attempt:
+                request["previous_attempt"] = redact_secrets({
+                    "status": previous_attempt.get("status"),
+                    "reason": previous_attempt.get("reason"),
+                    "source": str(previous_attempt.get("source") or "")[:25_000],
+                })
+            if prompt is None or llm is None:
+                item.update(status="generation_failed", reason="未配置单元测试生成模型")
+                continue
             if model_unavailable:
                 item.update(status="generation_deferred", reason="模型连接失败，本轮暂停后续单测生成")
                 continue
+            source: str | None = None
+            target: Path | None = None
+            compile_logs: list[str] = []
+            artifact = f"scripts/unit_{case_id}.java"
             try:
                 answer = await llm.complete("unit_test_generate", prompt,
                                             json.dumps(request, ensure_ascii=False))
-                try:
-                    package, source = _valid_generated_source(answer.text, class_name, framework, context)
-                except ValueError as validation_error:
-                    repaired = await llm.complete("unit_test_generate", prompt,
-                                                  json.dumps({**request,
-                                                              "validation_error": str(validation_error),
-                                                              "previous_output": answer.text}, ensure_ascii=False))
-                    package, source = _valid_generated_source(repaired.text, class_name, framework, context)
-                target = module / "src/test/java" / Path(*package.split(".")) / f"{class_name}.java"
-                if target.exists():
+                for validation_round in range(3):
+                    try:
+                        package, source = _valid_generated_source(
+                            answer.text, class_name, framework, context,
+                            str(item.get("target_class", "")))
+                        break
+                    except ValueError as validation_error:
+                        if validation_round == 2:
+                            raise
+                        answer = await llm.complete("unit_test_generate", prompt,
+                                                    json.dumps({**request,
+                                                                "validation_error": str(validation_error),
+                                                                "previous_output": answer.text}, ensure_ascii=False))
+                proposed_target = module / "src/test/java" / Path(*package.split(".")) / f"{class_name}.java"
+                if proposed_target.exists():
                     raise ValueError("目标提交已有同名测试类")
-                artifact = f"scripts/unit_{case_id}.java"
+                target = proposed_target
+                target.parent.mkdir(parents=True, exist_ok=True)
+                for attempt in range(3):
+                    target.write_text(source, encoding="utf-8")
+                    output, exit_code, timed_out = await _run_maven(
+                        ["mvn", "-B", "-o", "test-compile"], module, snapshot,
+                        _CASE_MAVEN_TIMEOUT_SECONDS,
+                    )
+                    compiler_text = redact_secrets(output.decode("utf-8", errors="replace"))
+                    compile_logs.append(f"=== 编译尝试 {attempt + 1} ===\n{compiler_text[-10_000:]}")
+                    if timed_out:
+                        raise ValueError("生成单测编译超时，已停止 Maven 子进程")
+                    if exit_code == 0:
+                        compiled_class = (module / "target/test-classes" /
+                                          Path(*package.split(".")) / f"{class_name}.class")
+                        if not compiled_class.is_file():
+                            raise ValueError("Maven 返回成功，但未找到生成测试类的 class 文件")
+                        break
+                    detail = _compiler_feedback(compiler_text)
+                    if attempt == 2:
+                        raise ValueError(f"生成单测编译仍失败：{_maven_error_summary(compiler_text)}")
+                    repair_request = {**request, "compilation_error": detail,
+                                      "related_types": "\n\n".join(filter(None, (
+                                          request["related_types"],
+                                          _imported_source_context(snapshot, source),
+                                      )))[:45_000],
+                                      "previous_output": json.dumps(
+                                          {"package": package, "source": source}, ensure_ascii=False)}
+                    repaired = await llm.complete("unit_test_generate", prompt,
+                                                  json.dumps(repair_request, ensure_ascii=False))
+                    try:
+                        new_package, new_source = _valid_generated_source(
+                            repaired.text, class_name, framework, context,
+                            str(item.get("target_class", "")))
+                    except ValueError as validation_error:
+                        repaired = await llm.complete("unit_test_generate", prompt,
+                                                     json.dumps({**repair_request,
+                                                                 "validation_error": str(validation_error),
+                                                                 "previous_output": repaired.text}, ensure_ascii=False))
+                        new_package, new_source = _valid_generated_source(
+                            repaired.text, class_name, framework, context,
+                            str(item.get("target_class", "")))
+                    if new_package != package:
+                        raise ValueError("编译修复后的 package 与测试文件路径不一致")
+                    if new_source == source:
+                        raise ValueError(f"编译修复未改变源码：{_maven_error_summary(compiler_text)}")
+                    source = new_source
                 store.write_raw(job_id, artifact, source)
-                item.update(status="generated", source_artifact=artifact, source=source)
+                item.update(status="generated", source_artifact=artifact, source=source,
+                            compile_verified=True)
             except Exception as exc:
                 if _model_connection_failed(exc):
                     model_unavailable = True
@@ -1045,6 +1358,16 @@ async def generate_controlled_unit_cases(
                 else:
                     item.update(status="generation_failed",
                                 reason=str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+                if source:
+                    store.write_raw(job_id, artifact, source)
+                    item.update(source_artifact=artifact, source=source)
+            finally:
+                if target is not None:
+                    target.unlink(missing_ok=True)
+                if compile_logs:
+                    compile_artifact = f"scripts/unit_{case_id}.compile.log"
+                    store.write_raw(job_id, compile_artifact, "\n\n".join(compile_logs)[-30_000:])
+                    item["compile_log_artifact"] = compile_artifact
     return planned
 
 
@@ -1138,6 +1461,9 @@ async def run_controlled_unit_coverage(
                 repo_result["existing_suite"] = {"status": "unavailable",
                     "reason": f"现有单测基线不可用（{type(baseline_error).__name__}）"}
             snapshot = await asyncio.to_thread(_snapshot, repo, store.job_dir(job_id))
+            history = (_historical_unit_index(
+                store.job_dir(job_id), repo_name, str(repo.get("target_sha", "")))
+                if planned_cases is None else {})
             generated_count = 0
             suite_tests: dict[str, list[dict[str, str]]] = {}
             for case, oracle in entries:
@@ -1182,6 +1508,10 @@ async def run_controlled_unit_coverage(
                 request = {"case_id": case_id, "class_name": class_name,
                            "test_framework": test_framework,
                            "case": redact_secrets(case), "oracle": oracle, "source": context,
+                           "fixture_contract": _fixture_contract(
+                               context, str(planned.get("target_class", "")) if planned else
+                               Path(str((first_ref or {}).get("file", ""))).stem),
+                           "related_types": _imported_source_context(snapshot, context),
                            "pom": (module / "pom.xml").read_text(encoding="utf-8")[:12_000]}
                 reference = _existing_test_reference(repo, str((first_ref or {}).get("file", "")))
                 if reference:
@@ -1197,29 +1527,45 @@ async def run_controlled_unit_coverage(
                             raise ValueError("用例生成产物缺少 Java package 声明")
                         package, source = _valid_generated_source(json.dumps({
                             "package": declaration.group(1), "source": planned_source,
-                        }), class_name, test_framework, context)
+                        }), class_name, test_framework, context,
+                            str(planned.get("target_class", "")))
                     else:
-                        previous = _previous_passing_source(
-                            store.job_dir(job_id), repo_name, str(repo.get("target_sha")),
-                            case_id, class_name, test_framework,
+                        previous_attempt = _previous_unit_attempt(
+                            history, {"interface_id": case.get("interface_id"),
+                             "oracle_id": case.get("oracle_id"), "title": case.get("title"),
+                             "target_source": str((first_ref or {}).get("file", "")),
+                             "source_kind": "interface_control", "request_params": case.get("params"),
+                             "mock_conditions": case.get("state_conditions"),
+                             "expected": case.get("expected")},
                         )
+                        previous = _previous_passing_source(
+                            previous_attempt, class_name, test_framework, context,
+                            Path(str((first_ref or {}).get("file", ""))).stem)
                         if previous is not None:
                             package, source = previous
                         else:
+                            if previous_attempt:
+                                request["previous_attempt"] = redact_secrets({
+                                    "status": previous_attempt.get("status"),
+                                    "reason": previous_attempt.get("reason"),
+                                    "source": str(previous_attempt.get("source") or "")[:25_000],
+                                })
                             if model_unavailable:
                                 raise PipelineError(X_LLM_01, "模型连接失败，本轮暂停后续单测生成")
                             answer = await llm.complete("unit_test_generate", prompt,
                                                     json.dumps(request, ensure_ascii=False))
                             try:
                                 package, source = _valid_generated_source(answer.text, class_name,
-                                                                          test_framework, context)
+                                                                          test_framework, context,
+                                                                          Path(str((first_ref or {}).get("file", ""))).stem)
                             except ValueError as validation_error:
                                 repair_request = {**request, "validation_error": str(validation_error),
                                                   "previous_output": answer.text}
                                 answer = await llm.complete("unit_test_generate", prompt,
                                                             json.dumps(repair_request, ensure_ascii=False))
                                 package, source = _valid_generated_source(answer.text, class_name,
-                                                                          test_framework, context)
+                                                                          test_framework, context,
+                                                                          Path(str((first_ref or {}).get("file", ""))).stem)
                     relative = Path(*package.split(".")) / f"{class_name}.java"
                     target = module / "src" / "test" / "java" / relative
                     if target.exists():
@@ -1305,7 +1651,8 @@ async def run_controlled_unit_coverage(
                         repaired = await llm.complete("unit_test_generate", prompt,
                                                       json.dumps(repair_request, ensure_ascii=False))
                         package, source = _valid_generated_source(repaired.text, class_name,
-                                                                  test_framework, context)
+                                                                  test_framework, context,
+                                                                  Path(str((first_ref or {}).get("file", ""))).stem)
                         if package != ".".join(relative.parts[:-1]):
                             raise ValueError("修复后的 package 与测试文件路径不一致")
                         target.write_text(source, encoding="utf-8")
@@ -1338,15 +1685,26 @@ async def run_controlled_unit_coverage(
                     hit_lines = _covered_evidence_lines(coverage or {}, oracle, evidence,
                                                         repo_name, module, snapshot)
                     if not hit_lines:
-                        outcome = {**outcome, "status": "source_not_covered",
-                                   "reason": "单测通过，但 JaCoCo 未记录目标源码证据行被执行"}
+                        literal_hits = _covered_expected_literal_lines(
+                            coverage or {}, planned, source, module, snapshot)
+                        if literal_hits:
+                            outcome["covered_target_lines"] = literal_hits
+                            outcome["coverage_basis"] = "asserted_source_literal"
+                            outcome["coverage_note"] = (
+                                "原证据行范围未命中；已核对断言中的源码消息所在行由 JaCoCo 命中"
+                            )
+                        else:
+                            outcome = {**outcome, "status": "source_not_covered",
+                                       "reason": "单测通过，但 JaCoCo 未记录目标源码证据行或断言源码行被执行"}
                     else:
                         outcome["covered_evidence_lines"] = hit_lines
+                        outcome["coverage_basis"] = "evidence_refs"
                 repo_result["cases"].append({
                     "case_id": case_id, "test_class": class_name,
                     "source_artifact": run_source_artifact,
                     "log_artifact": log_artifact,
-                    "reused_verified_source": previous is not None,
+                    "reused_verified_source": previous is not None or bool(
+                        planned and planned.get("reused_verified_source")),
                     "source": source, **outcome,
                 })
                 if outcome["status"] in ("passed", "failed", "source_not_covered"):
@@ -1395,7 +1753,8 @@ async def run_controlled_unit_coverage(
                 for key in ("interface_id", "title", "target_source", "target_class",
                             "target_method", "source_kind", "scenario_type", "branch_ids",
                             "evidence_refs", "linked_interface_case_ids", "gap_kind",
-                            "gap_reason", "request_params", "mock_conditions", "expected"):
+                            "gap_reason", "request_params", "mock_conditions", "expected",
+                            "plan_fingerprint"):
                     if key in plan:
                         item[key] = plan[key]
     case_results = {item["case_id"]: item for repo in output["repositories"]

@@ -372,6 +372,7 @@
           "title": { "type": "string" },
           "repo": { "type": "string" },
           "source_sha": { "type": "string" },
+          "plan_fingerprint": { "type": "string" },
           "module": { "type": "string" },
           "test_framework": { "type": "string" },
           "test_class": { "type": "string" },
@@ -391,6 +392,9 @@
           "status": { "enum": ["generated", "generation_failed", "generation_deferred", "unsupported"] },
           "reason": { "type": "string" },
           "source_artifact": { "type": "string" },
+          "compile_log_artifact": { "type": "string" },
+          "compile_verified": { "type": "boolean" },
+          "reused_verified_source": { "type": "boolean" },
           "source": { "type": "string" }
         }
       }
