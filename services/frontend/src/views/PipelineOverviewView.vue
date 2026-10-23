@@ -458,6 +458,13 @@ function runtimeErrorMessage(value: JobStatus['runtime_error']): string {
             {{ rerunning ? '重跑中…' : '重跑' }}
           </button>
           <button
+            class="rerun-btn secondary"
+            type="button"
+            @click="navigateTo('report', selectedId)"
+          >
+            查看历次报告
+          </button>
+          <button
             v-if="status.running"
             class="rerun-btn danger"
             type="button"

@@ -249,12 +249,24 @@ export interface JobSubmitPayload {
   rest_insecure_tls?: boolean
   resume?: boolean
   auth?: AuthConfig // C-15：鉴权配置（可选）
+  db_readonly?: ReadOnlyDatabaseConfig
   auth_session_id?: string
   llm?: LlmConfig // 运行时模型配置；密钥不在任务产物中保存
   e2e?: E2eConfig
   fixtures?: FixtureStep[]
   auto_record_fixtures?: boolean
+  generate_unit_tests?: boolean
   observe_runtime_contracts?: boolean
+}
+
+export interface ReadOnlyDatabaseConfig {
+  database_type: 'mysql' | 'postgresql' | 'oracle' | 'sqlserver'
+  host: string
+  port: number
+  database: string
+  schema_name?: string
+  username: string
+  password: string
 }
 
 /** 完整任务配置读取结果；密码和 API Key 永不返回，只说明能否复用。 */
@@ -267,6 +279,7 @@ export interface JobConfiguration {
   rest_insecure_tls: boolean
   resume: boolean
   auth: (Omit<AuthConfig, 'password'> & { password_configured: boolean }) | null
+  db_readonly: (Omit<ReadOnlyDatabaseConfig, 'password'> & { password_configured: boolean }) | null
   llm:
     | (Omit<LlmConfig, 'api_key'> & {
         api_key_configured: boolean
@@ -276,6 +289,7 @@ export interface JobConfiguration {
   e2e: E2eConfig | null
   fixtures: FixtureStep[]
   auto_record_fixtures: boolean
+  generate_unit_tests: boolean
   observe_runtime_contracts: boolean
 }
 
@@ -291,12 +305,15 @@ export interface JobConfigurationUpdatePayload {
   /** false 明确切换为服务级 LLM 配置并清除任务级覆盖。 */
   llm_enabled?: boolean
   auth?: Omit<AuthConfig, 'password'> & { password?: string }
+  db_readonly?: Omit<ReadOnlyDatabaseConfig, 'password'> & { password?: string }
+  db_readonly_enabled?: boolean
   auth_session_id?: string
   llm?: Omit<LlmConfig, 'api_key'> & { api_key?: string }
   e2e?: E2eConfig
   fixtures?: FixtureStep[]
   replace_fixtures?: boolean
   auto_record_fixtures?: boolean
+  generate_unit_tests?: boolean
   observe_runtime_contracts?: boolean
 }
 
@@ -392,6 +409,7 @@ export interface InterfaceDef {
     summary?: string
   }
   params?: InterfaceParam[]
+  returns?: { type?: string; description?: string }
   parameter_evidence?: Array<Record<string, unknown>>
   method_body_truncated?: boolean
   method_body_char_count?: number
@@ -559,6 +577,21 @@ export interface ReviewTestOracle {
   }
 }
 
+export interface ReviewBranchCandidate {
+  interface_id: string
+  branch_id: string
+  branch_ids?: string[]
+  node_kind: 'if' | 'catch' | 'return'
+  evidence_ref: string
+  quote: string
+  control_kind:
+    'request' | 'downstream_response' | 'application_config' | 'service_registry' | 'unresolved'
+  required_controls: Array<'downstream_response' | 'application_config' | 'service_registry'>
+  source_refs?: string[]
+  oracle_ids: string[]
+  oracle_outcomes: boolean[]
+}
+
 export interface ReviewCallChain {
   interface_id: string
   entry: {
@@ -716,6 +749,7 @@ export interface OracleDiagnostic {
     | 'resolved'
     | 'replaced'
     | 'execution_pending'
+    | 'environment_pending'
   interface_id: string
   scenario: string
   message: string
@@ -801,7 +835,50 @@ export interface E2eTestCaseEntry {
   expected: string
 }
 
+export interface UnitTestOutcome {
+  case_id: string
+  status: 'passed' | 'failed' | 'not_run' | 'build_failed' | 'generation_failed' | 'fixture_failed' | 'unsupported' | 'source_not_covered'
+  test_class?: string
+  source_artifact?: string
+  log_artifact?: string
+  source?: string
+  reused_verified_source?: boolean
+  reason?: string
+  tests?: number
+  failures?: number
+  errors?: number
+  skipped?: number
+  covered_evidence_lines?: number
+}
+
+export interface UnitCoverageModule {
+  module: string
+  case_id: string
+  line_coverage: {
+    covered: number
+    missed: number
+    rate: number | null
+  }
+}
+
+export interface UnitTestCoverage {
+  status: string
+  reason?: string
+  cases_total: number
+  cases_passed: number
+  cases_failed: number
+  repositories: Array<{
+    repo: string
+    source_sha?: string
+    status: string
+    reason?: string
+    modules?: UnitCoverageModule[]
+    cases: UnitTestOutcome[]
+  }>
+}
+
 export interface ExecResult {
+  unit_test?: UnitTestOutcome
   run_id?: string
   scenario_type?: string
   outcome?: string
@@ -867,6 +944,7 @@ export interface ExecResult {
   actual_body?: unknown
   skipped_reason?: string
   execution_state?: 'executed' | 'not_executed' | 'observed_unjudged' | 'reused_response'
+  expectation_source?: 'user_confirmed_environment' | 'local_dependency_bytecode'
   execution_blockers?: string[]
   missing_control_kinds?: string[]
   source_case_id?: string
@@ -889,6 +967,23 @@ export interface ExecSummary {
   not_executed?: number
   reused_response?: number
   by_type?: Record<'api' | 'e2e', Omit<ExecSummary, 'by_type'>>
+}
+
+export interface JobRun {
+  id: string
+  is_current: boolean
+  executed_at: string | null
+  archived_at: string | null
+  has_report: boolean
+  summary: Pick<
+    ExecSummary,
+    | 'total'
+    | 'passed'
+    | 'failed_assertion'
+    | 'failed_environment'
+    | 'observed_unjudged'
+    | 'not_executed'
+  >
 }
 
 export interface DefectEntry {

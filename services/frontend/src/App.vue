@@ -12,6 +12,7 @@ import RequirementsView from './views/RequirementsView.vue'
 import TaskConfigView from './views/TaskConfigView.vue'
 import TestCasesView from './views/TestCasesView.vue'
 import TestReportView from './views/TestReportView.vue'
+import UnitTestReportView from './views/UnitTestReportView.vue'
 import E2eWorkspace from './views/E2eWorkspace.vue'
 import { clearAccessContext, getAccessContext, getAccessMode, setAccessContext } from './api/client'
 import { navigation } from './api/navigation'
@@ -61,6 +62,13 @@ const views = computed<NavView[]>(() => {
       key: 'interface-report',
       label: '接口测试报告',
       component: TestReportView,
+      section: '验证与交付' as const,
+      child: true,
+    },
+    {
+      key: 'unit-report',
+      label: '单元测试报告',
+      component: UnitTestReportView,
       section: '验证与交付' as const,
       child: true,
     },
@@ -259,6 +267,7 @@ watch(views, (next) => {
         <component
           :is="active?.component"
           :initial-job-id="navigation.jobId"
+          :initial-run-id="navigation.runId"
           :view-key="active?.key"
         />
       </main>

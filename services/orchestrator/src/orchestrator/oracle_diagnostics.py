@@ -8,6 +8,32 @@ from typing import Any
 from common.oracle_conditions import required_control_kinds
 
 
+def _is_o32_missing_design(oracle: dict[str, Any]) -> bool:
+    """Match the proven branch and assertion, independent of scenario wording."""
+    if oracle.get("design_status") == "pending_expectation":
+        return False
+    return (
+        any(
+            re.search(r"\bo32Result\s*==\s*null\b", str(condition.get("quote", "")))
+            for condition in oracle.get("state_conditions") or []
+            if isinstance(condition, dict)
+        )
+        and any(
+            assertion.get("path") == "o32TrialObj"
+            and assertion.get("op") == "null_or_missing"
+            for assertion in oracle.get("assertions") or []
+            if isinstance(assertion, dict)
+        )
+        and any(
+            condition.get("path") == "param.riskChannel"
+            and condition.get("op") == "equals"
+            and condition.get("value") == 1
+            for condition in oracle.get("preconditions") or []
+            if isinstance(condition, dict)
+        )
+    )
+
+
 def build_oracle_diagnostics(
     warnings: list[str], oracles: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -37,6 +63,17 @@ def build_oracle_diagnostics(
             matched = normal
             summary = f"{interface_id} 正常请求设计已保留"
             action = f"已按最终产物核对：保留 {len(normal)} 条正常设计。历史补查告警已归入处理记录；执行结果另行统计。"
+        elif "依据本地 Maven 依赖 JAR" in message:
+            status = "resolved"
+            matched = [item for item in related if item.get("dependency_contract")]
+            summary = f"{interface_id} 通用异常映射已由依赖字节码补证"
+            action = "本地依赖与自动配置链已核对；部署版本摘要待确认，响应不符时先核对运行环境。"
+        elif any(token in message for token in ("异常响应映射缺口", "异常处理器", "HTTP 响应映射尚未确认")) \
+                and any(item.get("dependency_contract") for item in related):
+            status = "resolved"
+            matched = [item for item in related if item.get("dependency_contract")]
+            summary = f"{interface_id} 通用异常响应已补证"
+            action = "最终预期已引用本地依赖字节码；部署版本尚待核对，原告警保留为过程记录。"
         elif "DTO 参数校验预期由源码规则生成" in message and dto:
             status = "replaced"
             matched = dto
@@ -46,10 +83,23 @@ def build_oracle_diagnostics(
             status = "response_evidence_missing"
             summary = f"{interface_id} {scenario}已保留可证断言，部分字段未验证"
             action = message.split("”", 1)[-1] if "”" in message else message
-        elif exact and all(item.get("design_status") != "pending_expectation" for item in exact) and any(token in message for token in ("校验失败", "无可证断言", "已自动修复")):
+        elif "O32 空结果分支已由通道选择和结果组装源码证明" in message:
+            matched = [item for item in related if _is_o32_missing_design(item)]
+            status = "environment_pending" if matched else "candidate_invalid"
+            summary = (f"{interface_id} O32 空结果设计已保留，STD 配置待验证"
+                       if matched else f"{interface_id} O32 空结果设计尚未保留")
+            action = (
+                "源码分支和最终预期已关联；单元测试可验证提前返回逻辑。"
+                "接口执行还需确认部署环境已配置 STD 通道，并核对实际 HTTP 响应。"
+                if matched else "源码已证明该请求路径，但最终产物未找到对应的已校验设计；需先补齐设计。"
+            )
+        elif exact and all(item.get("design_status") != "pending_expectation" for item in exact) and any(token in message for token in ("校验失败", "无可证断言", "已自动修复", "已形成修复候选")):
             status = "resolved"
             summary = f"{interface_id} {scenario}已保留"
             action = "已在最终产物找到对应的已校验设计；候选失败作为过程记录保存，未覆盖实际执行结论。"
+        elif any(token in message for token in ("已自动修复", "已形成修复候选")):
+            status = "candidate_invalid"
+            action = "该条仅通过候选阶段；最终产物没有对应设计，请以最终准入记录和源码分支为准。"
         elif "框架拦截" in message or "HTTP 框架边界" in message:
             status = "framework_boundary"
             matched = [item for item in related if item.get("oracle_basis") == "spring_required_body"]

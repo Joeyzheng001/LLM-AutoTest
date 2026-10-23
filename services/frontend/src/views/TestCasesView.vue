@@ -7,6 +7,7 @@ import JobPicker from '../components/JobPicker.vue'
 import { getTestcases, getReviewDiagnostics } from '../api/client'
 import type { E2eTestCaseEntry, TestCaseEntry, OracleDiagnostic } from '../api/types'
 import { CASE_CATEGORY_LABELS } from '../api/labels'
+import { navigation, navigateTo } from '../api/navigation'
 
 const _jobId = ref('')
 
@@ -19,20 +20,28 @@ const warnings = ref<string[]>([])
 const processedWarnings = ref<OracleDiagnostic[]>([])
 const loading = ref(false)
 const error = ref('')
+const interfaceFilter = ref(navigation.interfaceId)
+const interfaceIds = computed(() => [...new Set(cases.value.map((item) => item.interface_id))])
+const filteredApiCases = computed(() =>
+  interfaceFilter.value
+    ? cases.value.filter((item) => item.interface_id === interfaceFilter.value)
+    : cases.value,
+)
 
 // 三类分列（F-GEN-01：每接口三类各 ≥1 为生成侧口径，此处仅展示分列）
 const byCategory = computed(() => ({
-  normal: cases.value.filter((c) => c.category === 'normal'),
-  boundary: cases.value.filter((c) => c.category === 'boundary'),
-  exception: cases.value.filter((c) => c.category === 'exception'),
+  normal: filteredApiCases.value.filter((c) => c.category === 'normal'),
+  boundary: filteredApiCases.value.filter((c) => c.category === 'boundary'),
+  exception: filteredApiCases.value.filter((c) => c.category === 'exception'),
 }))
 const caseType = computed<'api' | 'e2e' | null>(() => {
   if (props.viewKey === 'e2e-cases') return 'e2e'
   if (props.viewKey === 'interface-cases') return 'api'
   return null
 })
-const visibleCases = computed(() => (caseType.value === 'e2e' ? [] : cases.value))
+const visibleCases = computed(() => (caseType.value === 'e2e' ? [] : filteredApiCases.value))
 const visibleE2eCases = computed(() => (caseType.value === 'api' ? [] : e2eCases.value))
+const hasCaseArtifact = computed(() => cases.value.length > 0 || e2eCases.value.length > 0)
 
 async function load(): Promise<void> {
   if (!_jobId.value) return
@@ -45,6 +54,13 @@ async function load(): Promise<void> {
     ])
     cases.value = payload.cases
     e2eCases.value = payload.e2e_cases ?? []
+    if (
+      interfaceFilter.value &&
+      !cases.value.some((item) => item.interface_id === interfaceFilter.value)
+    ) {
+      interfaceFilter.value = ''
+      navigation.interfaceId = ''
+    }
     const byMessage = new Map((diagnostics?.items ?? []).map((item) => [item.message, item]))
     processedWarnings.value = (diagnostics?.items ?? []).filter((item) =>
       ['resolved', 'replaced'].includes(item.status),
@@ -97,7 +113,7 @@ function paramsText(params: Record<string, unknown> | undefined): string {
     <p v-else-if="error" class="state-line state-error" role="alert">{{ error }}</p>
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
 
-    <template v-else-if="visibleCases.length || visibleE2eCases.length">
+    <template v-else-if="hasCaseArtifact">
       <div class="view-head">
         <span class="tag tag-accent"
           >{{
@@ -115,6 +131,26 @@ function paramsText(params: Record<string, unknown> | undefined): string {
         </span>
       </div>
 
+      <div v-if="caseType !== 'e2e' && interfaceIds.length" class="interface-filter">
+        <label>
+          <span>按接口查看</span>
+          <select v-model="interfaceFilter" @change="navigation.interfaceId = interfaceFilter">
+            <option value="">全部接口</option>
+            <option v-for="id in interfaceIds" :key="id" :value="id">{{ id }}</option>
+          </select>
+        </label>
+        <button
+          v-if="interfaceFilter"
+          type="button"
+          @click="navigateTo('review', _jobId, interfaceFilter)"
+        >
+          返回此接口逻辑 →
+        </button>
+      </div>
+      <p v-if="!visibleCases.length && !visibleE2eCases.length" class="state-line">
+        当前筛选下没有用例。
+      </p>
+
       <!-- 生成质量告警（X-GEN-01/02 如实标注） -->
       <details v-if="processedWarnings.length" class="hint">
         <summary>系统已处理 {{ processedWarnings.length }} 条历史候选记录</summary>
@@ -128,7 +164,7 @@ function paramsText(params: Record<string, unknown> | undefined): string {
         {{ warning }}
       </div>
 
-      <div class="card">
+      <div v-if="visibleCases.length" class="card">
         <table class="case-table">
           <thead>
             <tr>
@@ -276,6 +312,44 @@ function paramsText(params: Record<string, unknown> | undefined): string {
   flex-wrap: wrap;
   gap: var(--space-3);
   margin-bottom: var(--space-3);
+}
+
+.interface-filter {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.interface-filter label {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.interface-filter select {
+  max-width: min(28rem, 85vw);
+  padding: var(--space-2);
+  color: var(--text-1);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.interface-filter button {
+  padding: var(--space-2);
+  color: var(--accent-strong);
+  background: transparent;
+  border: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  cursor: pointer;
 }
 
 .coverage-note {

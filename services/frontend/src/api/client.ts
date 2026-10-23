@@ -9,6 +9,7 @@ import type {
   InterfaceCandidate,
   InterfaceDef,
   JobListItem,
+  JobRun,
   JobStatus,
   JobConfiguration,
   JobConfigurationUpdatePayload,
@@ -318,6 +319,7 @@ export function getReviewDiagnostics(
 export function getReviewMapping(jobId: string): Promise<{
   mappings: ReviewMapping[]
   test_oracles?: import('./types').ReviewTestOracle[]
+  branch_inventory?: import('./types').ReviewBranchCandidate[]
   test_oracle_warnings?: string[]
   test_oracle_diagnostics?: import('./types').OracleDiagnostic[]
   field_value_contracts?: import('./types').FieldValueContract[]
@@ -338,8 +340,50 @@ export function getExecution(jobId: string): Promise<{
   results: ExecResult[]
   summary: ExecSummary
   degraded_protocols?: Array<{ protocol: string; mode: string; reason?: string }>
+  unit_test_coverage?: import('./types').UnitTestCoverage
 }> {
   return request(`/api/v1/jobs/${jobId}/artifacts/execution.json`)
+}
+
+export function getJobRuns(jobId: string): Promise<{ runs: JobRun[] }> {
+  return request(`/api/v1/jobs/${jobId}/runs`)
+}
+
+export async function exportJobRun(jobId: string, runId: string): Promise<void> {
+  const response = await fetch(
+    `/api/v1/jobs/${encodeURIComponent(jobId)}/runs/${encodeURIComponent(runId)}/export`,
+    { headers: accessHeaders() },
+  )
+  if (!response.ok) throw new Error(`轮次下载失败：${response.status}`)
+  const objectUrl = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = `${jobId}-${runId}-report.zip`
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+}
+
+export function getRunExecution(jobId: string, runId: string): ReturnType<typeof getExecution> {
+  return request(`/api/v1/jobs/${jobId}/runs/${encodeURIComponent(runId)}/execution.json`)
+}
+
+export function getRunInterfaces(jobId: string, runId: string): ReturnType<typeof getInterfaces> {
+  return request(`/api/v1/jobs/${jobId}/runs/${encodeURIComponent(runId)}/interfaces.json`)
+}
+
+export function getRunTestcases(jobId: string, runId: string): ReturnType<typeof getTestcases> {
+  return request(`/api/v1/jobs/${jobId}/runs/${encodeURIComponent(runId)}/testcases.json`)
+}
+
+export async function getRunReportMd(jobId: string, runId: string): Promise<string> {
+  const response = await fetch(
+    `/api/v1/jobs/${jobId}/runs/${encodeURIComponent(runId)}/test_report.md`,
+    { headers: accessHeaders() },
+  )
+  if (!response.ok) throw new Error('该轮次的报告尚未生成')
+  return response.text()
 }
 
 export async function getEvidenceBlob(jobId: string, evidencePath: string): Promise<Blob> {

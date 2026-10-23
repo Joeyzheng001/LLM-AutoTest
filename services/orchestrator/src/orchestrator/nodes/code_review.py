@@ -72,12 +72,15 @@ from common.response_assertions import (
     normalize_response_assertions,
     response_assertion_scope,
 )
+from orchestrator.review_source_snapshot import pinned_review_source
+from orchestrator.maven_exception_contract import inspect_common_exception_contract
 
 from orchestrator.oracle_diagnostics import build_oracle_diagnostics
+from orchestrator.executor_code_support import supported_executor_codes
 from orchestrator.oracle_normalization import (
     blank_request_guards, framework_body_design, normalize_oracle_bookkeeping,
 )
-from orchestrator.oracle_paths import controller_exits
+from orchestrator.oracle_paths import controller_exits, returned_service_catches
 from orchestrator.oracle_runtime import (
     _derive_runtime_observed_exception_oracles,
     _observe_safe_runtime_exception_contracts,
@@ -391,6 +394,31 @@ async def run_code_review(
         _annotate_evidence_quality(mappings, deterministic_checks, call_chains)
 
         oracle_extra_evidence = _collect_oracle_controller_headers(inventory, interfaces)
+        executor_code_scopes: dict[str, dict[str, Any]] = {}
+        repositories = {str(repo.get("name", "")): repo for repo in inventory.get("repositories") or []
+                        if isinstance(repo, dict)}
+        for interface in interfaces:
+            interface_id = str(interface.get("id", ""))
+            repo_name = str((interface.get("code_location") or {}).get("repo", ""))
+            repo = repositories.get(repo_name)
+            if not repo:
+                continue
+            root = _oracle_repo_root(repo)
+            if not root.is_dir():
+                continue
+            scope = supported_executor_codes(root, repo.get("files") or [], interface)
+            if scope is None:
+                continue
+            values, spans = scope
+            executor_code_scopes[interface_id] = {"values": values, "evidence": []}
+            for relative, first, last, excerpt in spans:
+                oracle_extra_evidence.append({
+                    "category": "call_chain_implementation", "repo": repo_name,
+                    "file": relative, "start_line": first, "end_line": last,
+                    "excerpt": excerpt, "excerpt_truncated": False,
+                    "interface_ids": [interface_id], "role": "executor_supported_codes",
+                })
+                executor_code_scopes[interface_id]["evidence"].append(oracle_extra_evidence[-1])
         oracle_extra_evidence.extend(_collect_oracle_service_evidence(inventory, interfaces))
         oracle_extra_evidence.extend(_collect_oracle_auxiliary_evidence(inventory, interfaces))
         oracle_extra_evidence.extend(_collect_oracle_enum_evidence(inventory, interfaces))
@@ -401,6 +429,27 @@ async def run_code_review(
         oracle_extra_evidence.extend(_collect_oracle_response_evidence(
             inventory, interfaces, code_evidence + oracle_extra_evidence
         ))
+        dependency_contracts: dict[str, dict[str, Any]] = {}
+        repos_by_name = {
+            str(repo.get("name", "")): repo
+            for repo in inventory.get("repositories") or [] if isinstance(repo, dict)
+        }
+        for repo_name, repo in repos_by_name.items():
+            interface_ids = [
+                str(interface.get("id", "")) for interface in interfaces
+                if interface.get("protocol") == "rest"
+                and str((interface.get("code_location") or {}).get("repo", "")) == repo_name
+            ]
+            if not interface_ids:
+                continue
+            repo_root = _oracle_repo_root(repo)
+            contract = inspect_common_exception_contract(
+                repo_root, repo_name, interface_ids
+            )
+            if contract is not None:
+                contract["repo_root"] = repo_root
+                dependency_contracts[repo_name] = contract
+                oracle_extra_evidence.extend(contract["evidence"])
         for evidence_index, evidence in enumerate(
             oracle_extra_evidence, start=len(code_evidence) + 1
         ):
@@ -439,7 +488,164 @@ async def run_code_review(
             claims=all_claims,
             max_concurrency=max_concurrency,
         )
+        _promote_dependency_exception_oracles(
+            test_oracles, interfaces, code_evidence, dependency_contracts,
+            test_oracle_warnings,
+        )
+        evidence_by_interface: dict[str, list[dict[str, Any]]] = {}
+        for evidence in code_evidence:
+            for interface_id in evidence.get("interface_ids") or []:
+                evidence_by_interface.setdefault(str(interface_id), []).append(evidence)
+        for oracle in test_oracles:
+            states = oracle.get("state_conditions") or []
+            assertions_changed = False
+            o32_error = next((condition for condition in states if
+                              "o32Result.getErrorCode()" in str(condition.get("quote", ""))
+                              and '"0".equals' in str(condition.get("quote", ""))), None)
+            if o32_error and not any(assertion.get("path") == "o32TrialObj.ErrorCode"
+                                     for assertion in oracle.get("assertions") or []):
+                index = len(oracle.get("assertions") or [])
+                oracle.setdefault("assertions", []).append({
+                    "path": "o32TrialObj.ErrorCode", "op": "not_equals", "value": "0",
+                })
+                assertions_changed = True
+                oracle.setdefault("evidence_quotes", []).append({
+                    "target": f"assertions[{index}]",
+                    "evidence_ref": o32_error["evidence_ref"],
+                    "quote": o32_error["quote"],
+                })
+            if not any(condition.get("kind") == "downstream_response"
+                       and condition.get("mode") == "controlled"
+                       and "o32Result == null" in str(condition.get("quote", ""))
+                       for condition in states):
+                if assertions_changed:
+                    oracle["assertion_scope"] = response_assertion_scope(oracle["assertions"])
+                continue
+            candidates = evidence_by_interface.get(str(oracle.get("interface_id", "")), [])
+            source = "\n".join(str(item.get("excerpt", "")) for item in candidates)
+            channel_key = re.search(r'\bRISK_CHANNEL\s*=\s*"([^"\n]+)"', source)
+            std_value = re.search(r"\bRISK_CHANNEL_STD\s*=\s*(\d+)\s*;", source)
+            routing = next((item for item in candidates if
+                            "if (RISK_CHANNEL_STD == riskChannel)" in str(item.get("excerpt", ""))
+                            and "targetExecutor = ExecutorTypeEnum.STD" in str(item.get("excerpt", ""))), None)
+            assembly = next((item for item in candidates if
+                             "if (executors.contains(ExecutorTypeEnum.O32))" in str(item.get("excerpt", ""))
+                             and "response.setO32TrialObj" in str(item.get("excerpt", ""))), None)
+            transfer = next((item for item in candidates if
+                             "target.setO32TrialObj(source.getO32TrialObj())" in str(item.get("excerpt", ""))), None)
+            channel_declaration = next((item for item in candidates if
+                                        f'RISK_CHANNEL = "{channel_key.group(1)}"' in str(item.get("excerpt", ""))), None) if channel_key else None
+            std_declaration = next((item for item in candidates if
+                                    f"RISK_CHANNEL_STD = {std_value.group(1)}" in str(item.get("excerpt", ""))), None) if std_value else None
+            if not (channel_key and std_value and channel_declaration and std_declaration
+                    and routing and assembly and transfer):
+                if assertions_changed:
+                    oracle["assertion_scope"] = response_assertion_scope(oracle["assertions"])
+                continue
+            condition_index = len(oracle.get("preconditions") or [])
+            oracle.setdefault("preconditions", []).append({
+                "path": f"param.{channel_key.group(1)}", "op": "equals",
+                "value": int(std_value.group(1)),
+            })
+            for evidence, quote in ((channel_declaration, f'RISK_CHANNEL = "{channel_key.group(1)}"'),
+                                    (std_declaration, f"RISK_CHANNEL_STD = {std_value.group(1)}"),
+                                    (routing, "if (RISK_CHANNEL_STD == riskChannel)"),
+                                    (assembly, "if (executors.contains(ExecutorTypeEnum.O32))")):
+                ref = str(evidence["evidence_id"])
+                if ref not in oracle.get("evidence_refs", []):
+                    oracle.setdefault("evidence_refs", []).append(ref)
+                oracle.setdefault("evidence_quotes", []).append({
+                    "target": f"preconditions[{condition_index}]", "evidence_ref": ref,
+                    "quote": quote,
+                })
+            if not any(assertion.get("path") == "o32TrialObj" for assertion in oracle.get("assertions") or []):
+                assertion_index = len(oracle.get("assertions") or [])
+                oracle.setdefault("assertions", []).append({
+                    "path": "o32TrialObj", "op": "null_or_missing",
+                })
+                assertions_changed = True
+                ref = str(transfer["evidence_id"])
+                if ref not in oracle["evidence_refs"]:
+                    oracle["evidence_refs"].append(ref)
+                oracle["evidence_quotes"].append({
+                    "target": f"assertions[{assertion_index}]", "evidence_ref": ref,
+                    "quote": "target.setO32TrialObj(source.getO32TrialObj())",
+                })
+            for condition in states:
+                if (condition.get("kind") == "downstream_response"
+                        and "o32Result == null" in str(condition.get("quote", ""))):
+                    condition["mode"] = "integration"
+                    condition["description"] = "STD 通道已配置时，riskChannel 只选择 STD，O32 结果保持为空"
+            oracle["control_kinds"] = sorted(required_control_kinds(oracle))
+            oracle["execution_readiness"] = "conditional"
+            if assertions_changed:
+                oracle["assertion_scope"] = response_assertion_scope(oracle["assertions"])
+            test_oracle_warnings.append(
+                f"接口 {oracle['interface_id']} 的 O32 空结果分支已由通道选择和结果组装源码证明可由请求触发；执行前仍需确认 STD 通道已配置"
+            )
+        for oracle in test_oracles:
+            if oracle.get("oracle_basis") == "integration_entry":
+                # This contract only checks ingress and a response shape. A
+                # business error can still satisfy it, so keep the scenario
+                # name aligned with what the oracle actually proves.
+                oracle["scenario"] = "入口可达检查（业务结果待确认）"
+            if (oracle.get("category") == "normal"
+                    and oracle.get("assertion_scope") == "status_only"
+                    and re.search(r"有效|成功|正常返回", str(oracle.get("scenario", "")))):
+                if oracle.get("state_conditions"):
+                    oracle["execution_blockers"] = list(oracle.get("execution_blockers") or []) + [
+                        "集成成功条件缺少可判定的业务响应断言"
+                    ]
+                    oracle["execution_readiness"] = "blocked"
+                    oracle["design_status"] = "pending_expectation"
+                else:
+                    oracle["scenario"] = "入口可达检查（业务结果待确认）"
+            scope = executor_code_scopes.get(str(oracle.get("interface_id", "")))
+            if scope is None or oracle.get("category") != "normal":
+                continue
+            supported = set(scope["values"])
+            code_conditions = [(index, condition) for index, condition in
+                               enumerate(oracle.get("preconditions") or [])
+                               if condition.get("path") == "code"]
+            if not code_conditions:
+                index = len(oracle.get("preconditions") or [])
+                condition = {"path": "code", "op": "in", "value": list(scope["values"])}
+                oracle.setdefault("preconditions", []).append(condition)
+                code_conditions = [(index, condition)]
+            for index, condition in code_conditions:
+                if condition.get("path") != "code":
+                    continue
+                if condition.get("op") == "in" and isinstance(condition.get("value"), list):
+                    narrowed = [value for value in condition["value"] if value in supported]
+                    if narrowed:
+                        condition["value"] = narrowed
+                    else:
+                        oracle["execution_blockers"] = list(oracle.get("execution_blockers") or []) + [
+                            "正常场景的 code 不在所选执行器支持的分支内"
+                        ]
+                elif condition.get("op") == "equals" and condition.get("value") not in supported:
+                    oracle["execution_blockers"] = list(oracle.get("execution_blockers") or []) + [
+                        "正常场景的 code 不在所选执行器支持的分支内"
+                    ]
+                elif condition.get("op") not in {"in", "equals"}:
+                    oracle["execution_blockers"] = list(oracle.get("execution_blockers") or []) + [
+                        "正常场景的 code 未限定到所选执行器支持的分支内"
+                    ]
+                for evidence in scope["evidence"][1:]:
+                    ref = str(evidence["evidence_id"])
+                    oracle.setdefault("evidence_quotes", []).append({
+                        "target": f"preconditions[{index}]", "evidence_ref": ref,
+                        "quote": str(evidence["excerpt"]),
+                    })
+            oracle["execution_readiness"] = (
+                "blocked" if oracle.get("execution_blockers") else oracle.get("execution_readiness", "ready")
+            )
+            for evidence in scope["evidence"]:
+                ref = str(evidence["evidence_id"])
+                if ref not in oracle.get("evidence_refs", []):
+                    oracle.setdefault("evidence_refs", []).append(ref)
         test_oracle_warnings.extend(runtime_observation_warnings)
+        branch_inventory = _derive_branch_inventory(interfaces, code_evidence, test_oracles)
 
         change_scope, removed_files, unmatched = _derive_change_scope(
             inventory, interfaces, mappings
@@ -476,6 +682,7 @@ async def run_code_review(
             "mappings": mappings,
             "field_value_contracts": _derive_field_value_contracts(interfaces),
             "test_oracles": test_oracles,
+            "branch_inventory": branch_inventory,
             "test_oracle_warnings": test_oracle_warnings,
             "test_oracle_diagnostics": build_oracle_diagnostics(test_oracle_warnings, test_oracles),
             "evidence_catalog": code_evidence,
@@ -514,6 +721,8 @@ async def run_code_review(
                 (
                     warning for warning in test_oracle_warnings
                     if "异常响应映射缺口" in warning
+                    or "没有接口实现源码证据" in warning
+                    or "源码证据范围不完整" in warning
                 ),
                 "",
             )
@@ -583,7 +792,7 @@ def _derive_field_value_contracts(interfaces: list[dict[str, Any]]) -> list[dict
 def _oracle_repo_root(repo: dict[str, Any]) -> Path:
     """预期证据必须来自扫描锁定的 target 快照。"""
     return Path(str(
-        repo.get("snapshot_path") or repo.get("source_path") or repo.get("path", "")
+        repo.get("source_path") or repo.get("snapshot_path") or repo.get("path", "")
     ))
 
 
@@ -1282,7 +1491,52 @@ def _collect_oracle_called_method_evidence(
                 service_text = service_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            seeds.append((service_file, service_text, str(evidence.get("excerpt", ""))))
+            seed_method = str(evidence.get("excerpt", ""))
+            seeds.append((service_file, service_text, seed_method))
+            # A controller service may delegate to another injected interface.
+            # Resolve the declared field type and a unique implementation before
+            # following it; a name-only repository search would misbind methods.
+            field_types = {
+                match.group("field"): match.group("type")
+                for match in re.finditer(
+                    r"\bprivate\s+(?:final\s+)?(?P<type>I[A-Z][A-Za-z0-9_$]*)\s+"
+                    r"(?P<field>[A-Za-z_$][\w$]*)\s*;", service_text
+                )
+            }
+            masked_seed = _java_source_mask(seed_method)
+            if masked_seed is None:
+                continue
+            for invocation in re.finditer(
+                r"\b(?P<field>[A-Za-z_$][\w$]*)\s*\.\s*"
+                r"(?P<method>[A-Za-z_$][\w$]*)\s*\(", masked_seed
+            ):
+                interface_type = field_types.get(invocation.group("field"))
+                if not interface_type:
+                    continue
+                opening = masked_seed.find("(", invocation.start("method"), invocation.end())
+                closing = _java_matching_delimiter(masked_seed, opening, "(", ")")
+                if closing is None:
+                    continue
+                arity = _java_parameter_count(masked_seed[opening + 1:closing])
+                implementations = []
+                for candidate in repo_files:
+                    candidate_path = (root / candidate).resolve()
+                    if root not in candidate_path.parents:
+                        continue
+                    try:
+                        candidate_source = candidate_path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    if not _java_type_implements(candidate_source, interface_type):
+                        continue
+                    excerpt = _java_method_excerpt(candidate_source, invocation.group("method"), arity)
+                    if excerpt is not None:
+                        implementations.append((candidate, candidate_source, excerpt))
+                if len(implementations) == 1:
+                    implementation_file, implementation_source, implementation = implementations[0]
+                    add(implementation_file, implementation, "transitive_service_impl")
+                    add_constants(implementation_file, implementation_source, implementation[2])
+                    seeds.append((implementation_file, implementation_source, implementation[2]))
         for owner_file, owner_source, seed_text in seeds:
             queue = [(seed_text, 0)]
             visited: set[tuple[int, int]] = set()
@@ -1902,6 +2156,8 @@ async def _derive_test_oracles_with_llm(
         branch = next((branch for branch in _oracle_source_branches(
             interface, {str(item.get("evidence_id", "")): str(item.get("excerpt", ""))
                         for item in interface_evidence if item.get("evidence_id")},
+            {str(item.get("evidence_id", "")): str(item.get("file", ""))
+             for item in interface_evidence if item.get("evidence_id")},
         ) if branch["branch_id"] == candidate["branch_id"]), None)
         if branch is None or branch["control_kind"] != "request":
             return False
@@ -2059,7 +2315,9 @@ async def _derive_test_oracles_with_llm(
                 }
             }
             item["branches"] = _oracle_source_branches(
-                item["interface"], evidence_text_by_interface[interface_id]
+                item["interface"], evidence_text_by_interface[interface_id],
+                {str(entry["evidence_id"]): str(entry.get("file", ""))
+                 for entry in item["evidence"] if entry.get("evidence_id")},
             )
             content = json.dumps({"interfaces": [item]}, ensure_ascii=False)
             rejected_oracles: list[tuple[Any, str]] = []
@@ -2165,7 +2423,8 @@ async def _derive_test_oracles_with_llm(
                     candidates.extend(repaired)
                     for repaired_oracle in repaired:
                         warnings.append(
-                            f"接口 {interface_id} 的“{repaired_oracle['scenario']}”已自动修复并通过源码校验"
+                            f"接口 {interface_id} 的“{repaired_oracle['scenario']}”已形成修复候选；"
+                            "是否进入最终预期以准入结果为准"
                         )
                     if not repaired:
                         retain_pending_design = True
@@ -2245,7 +2504,11 @@ async def _derive_test_oracles_with_llm(
             # Weak models tend to repeat a request-id echo when asked to cover
             # a whole interface. Revisit observable request-selected paths one
             # at a time, retaining the complete source input in every call.
-            branches_by_id = {branch["branch_id"]: branch for branch in _oracle_source_branches(item["interface"], evidence_text_by_interface[interface_id])}
+            branches_by_id = {branch["branch_id"]: branch for branch in _oracle_source_branches(
+                item["interface"], evidence_text_by_interface[interface_id],
+                {str(entry["evidence_id"]): str(entry.get("file", ""))
+                 for entry in item["evidence"] if entry.get("evidence_id")},
+            )}
             refinement_targets: dict[tuple[str, bool], dict[str, Any]] = {}
             for candidate in candidates:
                 branch = branches_by_id.get(str(candidate.get("branch_id", "")))
@@ -2410,15 +2673,26 @@ async def _derive_test_oracles_with_llm(
     for item in eligible:
         texts = {str(e["evidence_id"]): str(e.get("excerpt", "")) for e in item["evidence"]}
         boundary = framework_body_design(item["interface"], texts)
-        if boundary is not None and not any(o.get("interface_id") == boundary["interface_id"] and o.get("oracle_basis") == "spring_required_body" for o in parsed):
-            parsed.extend(_parse_test_oracle_response(json.dumps({"oracles": [boundary]}, ensure_ascii=False), [item["interface"]], {str(item["interface"]["id"]): texts}))
+        if boundary is not None:
+            parsed = [oracle for oracle in parsed if not (
+                oracle.get("interface_id") == boundary["interface_id"]
+                and oracle.get("oracle_basis") == "spring_required_body"
+            )]
+            parsed.extend(_parse_test_oracle_response(
+                json.dumps({"oracles": [boundary]}, ensure_ascii=False),
+                [item["interface"]], {str(item["interface"]["id"]): texts},
+            ))
     # Required-body failures and a blank field inside a valid JSON body are
     # separate HTTP inputs. Recover the latter from an exact unconditional guard.
     for item in eligible:
         interface = item["interface"]
         interface_id = str(interface["id"])
         texts = {str(e["evidence_id"]): str(e.get("excerpt", "")) for e in item["evidence"]}
-        branches = _oracle_source_branches(interface, texts)
+        branches = _oracle_source_branches(
+            interface, texts,
+            {str(e["evidence_id"]): str(e.get("file", ""))
+             for e in item["evidence"] if e.get("evidence_id")},
+        )
         for guard in blank_request_guards(interface, texts):
             if any(o.get("interface_id") == interface_id and o.get("category") != "normal"
                    and any(c.get("path") == guard["path"] and c.get("op") == "equals" and c.get("value") == ""
@@ -2574,6 +2848,132 @@ async def _derive_test_oracles_with_llm(
             + (f" 等 {len(missing)} 个" if len(missing) > 40 else "")
         )
     return parsed, list(dict.fromkeys(warnings))
+
+
+def _promote_dependency_exception_oracles(
+    oracles: list[dict[str, Any]], interfaces: list[dict[str, Any]],
+    evidence: list[dict[str, Any]], contracts: dict[str, dict[str, Any]],
+    warnings: list[str],
+) -> None:
+    """Complete only previously unresolved exception mappings from verified bytecode.
+
+    A local Maven artifact proves the intended dependency behavior, while the
+    deployed digest remains unknown. Execution therefore treats a mismatch as
+    an environment/version question rather than a product defect.
+    """
+    interface_by_id = {str(item.get("id", "")): item for item in interfaces}
+    controller_by_interface: dict[str, list[str]] = {}
+    source_advice_interfaces: set[str] = set()
+    for item in evidence:
+        if (item.get("role") == "exception_advice"
+                and item.get("category") != "dependency_bytecode"):
+            source_advice_interfaces.update(str(value) for value in item.get("interface_ids") or [])
+        if item.get("role") != "controller":
+            continue
+        for interface_id in item.get("interface_ids") or []:
+            controller_by_interface.setdefault(str(interface_id), []).append(str(item.get("excerpt", "")))
+    counts: dict[str, int] = {}
+    for oracle in oracles:
+        if oracle.get("expected_status") != "unresolved" or oracle.get("category") not in {"exception", "boundary"}:
+            continue
+        interface_id = str(oracle.get("interface_id", ""))
+        interface = interface_by_id.get(interface_id, {})
+        repo_name = str((interface.get("code_location") or {}).get("repo", ""))
+        contract = contracts.get(repo_name)
+        if contract is None or interface_id in source_advice_interfaces:
+            continue
+        framework = oracle.get("oracle_basis") == "spring_required_body"
+        behavior = oracle.get("expected_behavior") or {}
+        if not framework:
+            thrown = re.search(r"\bthrow\s+new\s+([A-Za-z_$][\w$]*)\s*\(", str(behavior.get("quote", "")))
+            if thrown is None:
+                continue
+            exception_type = thrown.group(1)
+            if exception_type != "RuntimeException":
+                root = contract["repo_root"]
+                matching_files = list(root.rglob(exception_type + ".java"))[:2]
+                if len(matching_files) != 1:
+                    continue
+                try:
+                    declaration = matching_files[0].read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                if not re.search(r"\bclass\s+" + re.escape(exception_type)
+                                 + r"\s+extends\s+RuntimeException\b", declaration):
+                    continue
+        if not framework and any(re.search(r"\bcatch\s*\(", body)
+                                 for body in controller_by_interface.get(interface_id, [])):
+            continue
+        by_role = {str(item["role"]): item for item in contract["evidence"]}
+        advice = by_role["exception_advice"]
+        enum = by_role["dependency_enum"]
+        return_type = by_role["dependency_return_type"]
+        response = by_role["dependency_response"]
+        activation = by_role["dependency_activation"]
+        refs = oracle.setdefault("evidence_refs", [])
+        for item in (advice, enum, return_type, response, activation):
+            if item["evidence_id"] not in refs:
+                refs.append(item["evidence_id"])
+        quotes = oracle.setdefault("evidence_quotes", [])
+        quotes.extend([
+            {"target": "expected_status", "evidence_ref": advice["evidence_id"],
+             "quote": "HttpStatus.OK"},
+            {"target": "expected_status", "evidence_ref": advice["evidence_id"],
+             "quote": "value=[class Ljava/lang/Throwable;]"},
+        ])
+        additions = [
+            ({"path": "returnCode", "op": "equals", "value": contract["return_code"]},
+             enum, "sipush        9999"),
+            ({"path": "returnMsg", "op": "equals", "value": contract["return_msg"]},
+             enum, f"String {contract['return_msg']}"),
+            ({"path": "returnType", "op": "equals", "value": contract["return_type"]},
+             return_type, "String T"),
+            ({"path": "body", "op": "equals", "value": None},
+             response, "private T body;"),
+        ]
+        assertions = oracle.setdefault("assertions", [])
+        existing_paths = {str(item.get("path", "")) for item in assertions}
+        for assertion, source, quote in additions:
+            if assertion["path"] in existing_paths:
+                continue
+            index = len(assertions)
+            assertions.append(assertion)
+            quotes.append({"target": f"assertions[{index}]",
+                           "evidence_ref": source["evidence_id"], "quote": quote})
+        oracle["expected_status"] = f"status={contract['http_status']}"
+        if framework:
+            oracle["scenario"] = "必填请求体缺失时返回通用错误响应（部署依赖版本待核对）"
+            oracle.pop("expected_behavior", None)
+            oracle["evidence_quotes"] = [
+                quote for quote in oracle.get("evidence_quotes") or []
+                if quote.get("target") != "expected_behavior"
+            ]
+        oracle["dependency_contract"] = {
+            "coordinate": contract["coordinate"], "sha256": contract["sha256"],
+            "deployment_verified": False,
+        }
+        oracle["assertion_scope"] = (
+            "framework_boundary" if framework else response_assertion_scope(assertions)
+        )
+        oracle["execution_blockers"] = [
+            reason for reason in oracle.get("execution_blockers") or []
+            if reason not in {
+                "本接口处理行为已有源码依据，HTTP 响应映射尚未确认",
+                "本接口业务异常的 HTTP 映射待确认",
+            }
+        ]
+        oracle["execution_blockers"] = execution_blockers(oracle)
+        oracle["execution_readiness"] = (
+            "blocked" if oracle["execution_blockers"] or required_control_kinds(oracle) else
+            "conditional" if oracle.get("state_conditions") else "ready"
+        )
+        counts[interface_id] = counts.get(interface_id, 0) + 1
+    for interface_id, count in sorted(counts.items()):
+        contract = contracts[str((interface_by_id[interface_id].get("code_location") or {}).get("repo", ""))]
+        warnings.append(
+            f"接口 {interface_id} 已依据本地 Maven 依赖 JAR {contract['coordinate']} 的字节码和自动配置链"
+            f"补齐 {count} 条通用异常响应预期；部署版本摘要尚未核对，执行不符时按版本/环境待确认"
+        )
 
 
 def _derive_record_fixture_plans(
@@ -3109,14 +3509,305 @@ def _canonicalize_request_condition_paths(
     return normalized
 
 
+def _derive_branch_inventory(
+    interfaces: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+    oracles: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Preserve the source branch candidates supplied to oracle generation.
+
+    A candidate without an oracle is a review gap, not proof that a distinct
+    HTTP response or executable test exists.  Keep that distinction in the
+    artifact so the UI can show what still needs human/source analysis.
+    """
+    source_by_interface: dict[str, dict[str, str]] = {}
+    evidence_by_ref: dict[str, dict[str, Any]] = {}
+    for item in evidence:
+        if item.get("category") not in {"interface_implementation", "call_chain_implementation"}:
+            continue
+        if item.get("excerpt_truncated") or not item.get("evidence_id"):
+            continue
+        evidence_by_ref[str(item["evidence_id"])] = item
+        for interface_id in item.get("interface_ids") or []:
+            source_by_interface.setdefault(str(interface_id), {})[str(item["evidence_id"])] = str(
+                item.get("excerpt", "")
+            )
+
+    oracle_by_branch: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for oracle in oracles:
+        interface_id = str(oracle.get("interface_id", ""))
+        branch_id = str(oracle.get("branch_id", ""))
+        if branch_id:
+            oracle_by_branch.setdefault((interface_id, branch_id), []).append(oracle)
+
+    inventory: list[dict[str, Any]] = []
+    by_source_location: dict[tuple[str, str, int, str, str], dict[str, Any]] = {}
+    for interface in interfaces:
+        interface_id = str(interface.get("id", ""))
+        if not interface_id:
+            continue
+        branches = _oracle_source_branches(
+            interface, source_by_interface.get(interface_id, {}),
+            {ref: str(evidence_by_ref[ref].get("file", ""))
+             for ref in source_by_interface.get(interface_id, {})},
+        )
+        for branch in branches:
+            source = evidence_by_ref.get(branch["evidence_ref"], {})
+            excerpt = str(source.get("excerpt", ""))
+            node_kind = branch.get("node_kind", "if")
+            branch_number = branch["branch_id"].rsplit(":", 1)[-1]
+            pattern = {
+                "if": r"\bif\s*\(",
+                "catch": r"\bcatch\s*\(",
+                "return": r"\breturn\b[^;{}]*;",
+            }[node_kind]
+            matches = list(re.finditer(pattern, _java_source_mask(excerpt) or excerpt))
+            ordinal = int(branch_number) if branch_number.isdigit() else 0
+            offset = matches[ordinal - 1].start() if 0 < ordinal <= len(matches) else excerpt.find(branch["quote"])
+            line = (
+                int(source.get("start_line") or 0) + excerpt.count("\n", 0, offset)
+                if offset >= 0 else 0
+            )
+            source_key = (
+                interface_id,
+                str(source.get("file", "")),
+                line,
+                node_kind,
+                re.sub(r"\s+", "", branch["quote"]),
+            )
+            linked = oracle_by_branch.get((interface_id, branch["branch_id"]), [])
+            existing = by_source_location.get(source_key) if line and source.get("file") else None
+            if existing is not None:
+                existing["branch_ids"].append(branch["branch_id"])
+                existing["source_refs"] = sorted(set(existing.get("source_refs") or [])
+                                                 | set(branch.get("source_refs") or []))
+                existing["required_controls"] = sorted(set(existing["required_controls"]) | set(filter(
+                    None, branch.get("required_controls", "").split(",")
+                )))
+                if existing["control_kind"] == "unresolved" and branch["control_kind"] != "unresolved":
+                    existing["control_kind"] = branch["control_kind"]
+                for oracle in linked:
+                    oracle_id = str(oracle["oracle_id"])
+                    if oracle_id not in existing["oracle_ids"]:
+                        existing["oracle_ids"].append(oracle_id)
+                        existing["oracle_outcomes"].append(bool(oracle.get("branch_outcome", True)))
+                if linked and existing["branch_id"] not in [str(oracle.get("branch_id")) for oracle in linked]:
+                    existing["branch_id"] = branch["branch_id"]
+                    existing["evidence_ref"] = branch["evidence_ref"]
+                continue
+            candidate = {
+                "interface_id": interface_id,
+                "branch_id": branch["branch_id"],
+                "branch_ids": [branch["branch_id"]],
+                "node_kind": node_kind,
+                "evidence_ref": branch["evidence_ref"],
+                "quote": branch["quote"],
+                "control_kind": branch["control_kind"],
+                "required_controls": list(filter(None, branch.get("required_controls", "").split(","))),
+                "source_refs": sorted(set(branch.get("source_refs") or [branch["evidence_ref"]])),
+                "oracle_ids": [str(oracle["oracle_id"]) for oracle in linked],
+                "oracle_outcomes": [bool(oracle.get("branch_outcome", True)) for oracle in linked],
+            }
+            inventory.append(candidate)
+            if line and source.get("file"):
+                by_source_location[source_key] = candidate
+    return inventory
+
+
+def _oracle_split_arguments(source: str) -> list[str]:
+    """Split Java arguments only at top-level commas."""
+    if not source.strip():
+        return []
+    parts: list[str] = []
+    start = 0
+    parens = brackets = braces = angles = 0
+    for index, char in enumerate(source):
+        if char == "(": parens += 1
+        elif char == ")": parens -= 1
+        elif char == "[": brackets += 1
+        elif char == "]": brackets -= 1
+        elif char == "{": braces += 1
+        elif char == "}": braces -= 1
+        elif char == "<": angles += 1
+        elif char == ">" and angles: angles -= 1
+        elif char == "," and not (parens or brackets or braces or angles):
+            parts.append(source[start:index].strip())
+            start = index + 1
+    parts.append(source[start:].strip())
+    return parts
+
+
+class _OracleMethodTracer:
+    """Bounded, same-file parameter and return provenance over cited methods."""
+
+    def __init__(self, texts: dict[str, str], files: dict[str, str], request_names: set[str]):
+        self.request_names = request_names
+        self.nodes: dict[str, dict[str, Any]] = {}
+        by_signature: dict[tuple[str, str, int], set[str]] = {}
+        for ref, source in texts.items():
+            file = files.get(ref, "")
+            code = _java_source_mask(source)
+            if not file or code is None:
+                continue
+            declaration = re.search(
+                r"\b(?:public|private|protected)\s+(?:(?:static|final|synchronized)\s+)*"
+                r"(?:<[^{}]+?>\s+)?[\w.<>,?\[\]\s]+?\s+(\w+)\s*\(", code,
+            )
+            if declaration is None:
+                continue
+            opening = code.find("(", declaration.start(), declaration.end())
+            closing = _java_matching_delimiter(code, opening, "(", ")")
+            if closing is None:
+                continue
+            params = []
+            for part in _oracle_split_arguments(source[opening + 1:closing]):
+                names = re.findall(r"[A-Za-z_$][\w$]*", part)
+                if not names:
+                    params = []
+                    break
+                params.append(names[-1])
+            brace = code.find("{", closing + 1)
+            if brace < 0:
+                continue
+            name = declaration.group(1)
+            self.nodes[ref] = {"file": file, "name": name, "params": params,
+                               "source": source, "code": code, "brace": brace}
+            by_signature.setdefault((file, name, len(params)), set()).add(source)
+        self.unique = {
+            key for key, sources in by_signature.items() if len(sources) == 1
+        }
+        self.by_signature = {
+            key: next((ref for ref, node in self.nodes.items()
+                       if (node["file"], node["name"], len(node["params"])) == key), "")
+            for key in self.unique
+        }
+
+    def _direct(self, expression: str) -> set[str]:
+        code = _java_source_mask(expression) or expression
+        tags: set[str] = set()
+        if re.search(r"getComplexExecutors|complexExecutors|configuredExecutors|executorProperties", code):
+            tags.add("application_config")
+        if re.search(r"executor_?service_?cache|executorServiceCache|serviceRegistry|detailProcessorCache", code, re.I):
+            tags.add("service_registry")
+        if re.search(r"\b\w*(?:Service|Client)\w*\s*\.\s*\w+\s*\(|\.\s*(?:exchange|execute)\s*\(", code):
+            tags.add("downstream_response")
+        if self.request_names.intersection(re.findall(r"\b[A-Za-z_$][\w$]*\b", code)):
+            tags.add("request")
+        return tags
+
+    def _calls(self, ref: str, name: str, arity: int) -> list[list[str]]:
+        node = self.nodes[ref]
+        return self._calls_in(node["source"][node["brace"] + 1:], name, arity)
+
+    @staticmethod
+    def _calls_in(source: str, name: str, arity: int) -> list[list[str]]:
+        code = _java_source_mask(source)
+        if code is None:
+            return []
+        calls: list[list[str]] = []
+        for match in re.finditer(r"(?<![.\w$])" + re.escape(name) + r"\s*\(", code):
+            opening = code.find("(", match.start(), match.end())
+            closing = _java_matching_delimiter(code, opening, "(", ")")
+            if closing is None:
+                continue
+            args = _oracle_split_arguments(source[opening + 1:closing])
+            if len(args) == arity:
+                calls.append(args)
+        return calls
+
+    def trace(self, ref: str, expression: str, depth: int = 0,
+              seen: set[tuple[str, str]] | None = None) -> tuple[set[str], set[str]]:
+        tags = self._direct(expression)
+        refs = {ref}
+        if ref not in self.nodes or depth >= 6:
+            return tags, refs
+        seen = set(seen or ())
+        key = (ref, expression.strip())
+        if key in seen:
+            return tags, refs
+        seen.add(key)
+        node = self.nodes[ref]
+        tokens = set(re.findall(r"\b[A-Za-z_$][\w$]*\b", _java_source_mask(expression) or expression))
+        for token in tokens.intersection(node["params"]):
+            position = node["params"].index(token)
+            callers = [caller_ref for caller_ref, caller in self.nodes.items()
+                       if caller["file"] == node["file"] and caller_ref != ref]
+            for caller_ref in callers:
+                for args in self._calls(caller_ref, node["name"], len(node["params"])):
+                    child_tags, child_refs = self.trace(caller_ref, args[position], depth + 1, seen)
+                    tags.update(child_tags)
+                    refs.update(child_refs)
+        code = node["code"]
+        for token in tokens:
+            for assigned in re.finditer(r"\b" + re.escape(token) + r"\s*=(?!=)([^;]+);", code[node["brace"] + 1:]):
+                child_tags, child_refs = self.trace(ref, node["source"][node["brace"] + 1 + assigned.start(1):node["brace"] + 1 + assigned.end(1)], depth + 1, seen)
+                tags.update(child_tags)
+                refs.update(child_refs)
+            for loop in re.finditer(r"\bfor\s*\(\s*[\w.<>?]+\s+" + re.escape(token) + r"\s*:\s*(\w+)\s*\)", code):
+                child_tags, child_refs = self.trace(ref, loop.group(1), depth + 1, seen)
+                tags.update(child_tags)
+                refs.update(child_refs)
+            for mutation in re.finditer(r"\b" + re.escape(token) + r"\s*\.\s*(?:put|putAll|add|addAll)\s*\(", code):
+                opening = code.find("(", mutation.start(), mutation.end())
+                closing = _java_matching_delimiter(code, opening, "(", ")")
+                if closing is not None:
+                    child_tags, child_refs = self.trace(ref, node["source"][opening + 1:closing], depth + 1, seen)
+                    tags.update(child_tags)
+                    refs.update(child_refs)
+        for name in tokens:
+            # Match a unique same-file method only when the actual call arity agrees.
+            candidates = [candidate for (file, method, arity), candidate in self.by_signature.items()
+                          if file == node["file"] and method == name
+                          and self._calls_in(expression, name, arity)]
+            callee_ref = candidates[0] if len(candidates) == 1 else None
+            if not callee_ref or callee_ref == ref:
+                continue
+            callee = self.nodes[callee_ref]
+            for returned in re.finditer(r"\breturn\s+([^;]+);", callee["code"][callee["brace"] + 1:]):
+                child_tags, child_refs = self.trace(callee_ref, callee["source"][callee["brace"] + 1 + returned.start(1):callee["brace"] + 1 + returned.end(1)], depth + 1, seen)
+                tags.update(child_tags)
+                refs.update(child_refs)
+        return tags, refs
+
+    def catch_sources(self, ref: str, catch_offset: int) -> tuple[set[str], set[str]]:
+        node = self.nodes.get(ref)
+        if node is None:
+            return set(), {ref}
+        code = node["code"]
+        calls = code[node["brace"] + 1:catch_offset]
+        # The catch can only receive exceptions from its immediately preceding try.
+        try_matches = list(re.finditer(r"\btry\s*\{", calls))
+        if not try_matches:
+            return set(), {ref}
+        opening = node["brace"] + 1 + try_matches[-1].end() - 1
+        closing = _java_matching_delimiter(code, opening, "{", "}")
+        if closing is None or closing > catch_offset:
+            return set(), {ref}
+        try_body = node["source"][opening + 1:closing]
+        tags = self._direct(try_body)
+        refs = {ref}
+        for (file, name, arity), callee_ref in self.by_signature.items():
+            if file != node["file"] or callee_ref == ref:
+                continue
+            if not self._calls_in(try_body, name, arity):
+                continue
+            callee = self.nodes[callee_ref]
+            effects = self._direct(callee["source"][callee["brace"] + 1:])
+            tags.update(effects)
+            refs.add(callee_ref)
+        return tags, refs
+
+
 def _oracle_source_branches(
-    interface: dict[str, Any], evidence_texts: dict[str, str]
-) -> list[dict[str, str]]:
-    """从完整源码提取平衡的 if 条件，并沿局部赋值追踪控制来源。"""
+    interface: dict[str, Any], evidence_texts: dict[str, str],
+    evidence_files: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """从完整源码提取平衡的 if 条件，并跨已证实调用追踪控制来源。"""
     request_names = {
         str(param["name"]) for param in interface.get("params", [])
         if isinstance(param, dict) and param.get("name")
     }
+    tracer = _OracleMethodTracer(evidence_texts, evidence_files or {}, request_names)
     def direct_origins(expression: str) -> set[str]:
         result: set[str] = set()
         code = _java_source_mask(expression) or expression
@@ -3130,7 +3821,7 @@ def _oracle_source_branches(
             result.add("request")
         return result
 
-    branches: list[dict[str, str]] = []
+    branches: list[dict[str, Any]] = []
     for ref, text in evidence_texts.items():
         masked = _java_source_mask(text)
         if masked is None:
@@ -3178,18 +3869,46 @@ def _oracle_source_branches(
             if closing is None:
                 continue
             expression = text[opening + 1:closing]
-            dependencies = origins(expression)
+            local_dependencies = origins(expression)
+            dependencies = set(local_dependencies)
+            source_refs = {ref}
+            traced, traced_refs = tracer.trace(ref, expression)
+            dependencies.update(traced)
+            source_refs.update(traced_refs)
             control = next((kind for kind in (
                 "downstream_response", "service_registry", "application_config", "request"
             ) if kind in dependencies), "unresolved")
+            local_controls = local_dependencies.intersection({
+                "application_config", "service_registry", "downstream_response",
+            })
+            required = local_controls or ({control} if control != "request" and control != "unresolved" else set())
             branches.append({
                 "branch_id": f"{ref}:if:{index}", "evidence_ref": ref,
                 "quote": text[match.start():closing + 1], "control_kind": control,
-                "required_controls": ",".join(sorted(dependencies.intersection({
-                    "application_config", "service_registry", "downstream_response",
-                }))),
+                "required_controls": ",".join(sorted(required)),
+                "source_refs": sorted(source_refs),
             })
     branches.extend(controller_exits(evidence_texts))
+    branches.extend(returned_service_catches(evidence_texts))
+    for branch in branches:
+        if branch.get("node_kind") != "catch" or branch.get("control_kind") != "unresolved":
+            continue
+        ref = branch["evidence_ref"]
+        source = evidence_texts.get(ref, "")
+        catch_matches = list(re.finditer(r"\bcatch\s*\(", _java_source_mask(source) or ""))
+        index_text = branch["branch_id"].rsplit(":", 1)[-1]
+        index = int(index_text) - 1 if index_text.isdigit() else -1
+        if not 0 <= index < len(catch_matches):
+            continue
+        dependencies, source_refs = tracer.catch_sources(ref, catch_matches[index].start())
+        if dependencies:
+            branch["control_kind"] = next((kind for kind in (
+                "downstream_response", "service_registry", "application_config", "request"
+            ) if kind in dependencies), "unresolved")
+            branch["required_controls"] = (
+                branch["control_kind"] if branch["control_kind"] != "request" else ""
+            )
+            branch["source_refs"] = sorted(source_refs)
     return branches
 
 
@@ -3203,6 +3922,8 @@ def _oracle_branch_control_reason(
     branch = next((item for item in _oracle_source_branches(
         interface, {str(item.get("evidence_id", "")): str(item.get("excerpt", ""))
                     for item in evidence if item.get("evidence_id")},
+        {str(item.get("evidence_id", "")): str(item.get("file", ""))
+         for item in evidence if item.get("evidence_id")},
     ) if item["branch_id"] == branch_id), None)
     if branch is None:
         return "源码分支定位已失效，需重新提取本接口的 branch_id"
@@ -3660,6 +4381,18 @@ def _oracle_uncontrolled_state_reason(
         quote for quote in oracle.get("evidence_quotes") or []
         if str(quote.get("target", "")).startswith("preconditions[")
     ]
+    locally_caught_response = (
+        str(oracle.get("branch_id", "")) in {
+            branch["branch_id"] for branch in returned_service_catches({
+                str(item.get("evidence_id", "")): str(item.get("excerpt", ""))
+                for item in evidence if item.get("evidence_id")
+            })
+        }
+        and any("@RestController" in str(quote.get("quote", ""))
+                for quote in oracle.get("evidence_quotes") or []
+                if quote.get("target") == "expected_status")
+        and any(re.search(r"\breturn\s+response\s*;", body) for body in controller_bodies)
+    )
     if (
         oracle.get("category") == "exception"
         and oracle.get("expected_status") == "status=200"
@@ -3667,6 +4400,7 @@ def _oracle_uncontrolled_state_reason(
                 for quote in oracle.get("evidence_quotes") or [])
         and not any(item.get("role") == "exception_advice" for item in evidence)
         and not any(re.search(r"\bcatch\s*\(", body) for body in controller_bodies)
+        and not locally_caught_response
     ):
         return "源码只证明会抛出异常，未找到将该异常映射为 HTTP 200 的处理分支"
     if (
@@ -4495,17 +5229,17 @@ def _load_code_inventory(store: ArtifactStore, job_id: str) -> dict[str, Any]:
 def _attach_scan_source_paths(
     inventory: dict[str, Any], store: ArtifactStore, job_id: str
 ) -> None:
-    """把接口还原阶段实际解析的 target 快照路径回填到评审内存清单。
+    """把扫描所用 target 提交固定在任务目录，供整个评审读取。
 
-    Java 候选是在 target_sha worktree 上解析的；评审若重新从可变工作区读源码，
-    行号和片段可能再次错位。快照路径只在当前评审内使用，不改写 code_inventory 原件。
+    Java 解析器会清理同仓库的旧 worktree；这里从 Git 对象重建同一提交的
+    源码副本，避免评审读到已删除快照或可变工作区。只改内存清单。
     """
     try:
         change_set = store.read_json(job_id, "change_set.json")
     except FileNotFoundError:
-        return
+        change_set = {}
     if not isinstance(change_set, dict):
-        return
+        change_set = {}
     source_by_repo = {
         str(item.get("name", "")): item.get("source_path")
         for item in change_set.get("repositories") or []
@@ -4513,6 +5247,9 @@ def _attach_scan_source_paths(
     }
     for repo in inventory.get("repositories") or []:
         if not isinstance(repo, dict):
+            continue
+        if repo.get("target_sha"):
+            repo["source_path"] = str(pinned_review_source(store.job_dir(job_id), repo))
             continue
         source_path = source_by_repo.get(str(repo.get("name", "")))
         if source_path:

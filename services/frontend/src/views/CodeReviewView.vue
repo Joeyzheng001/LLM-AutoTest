@@ -7,7 +7,10 @@
 // 人工审核不在 9 节点口径内（D6/D7）：approved 仅记录；rejected 回流 testcase_generate。
 import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
+import InterfaceLogicPanel from '../components/InterfaceLogicPanel.vue'
+import { navigation, navigateTo } from '../api/navigation'
 import {
+  getInterfaces,
   getRequirementItems,
   getReviewMapping,
   getReviewDiagnostics,
@@ -27,7 +30,9 @@ import type {
   ReviewCallChain,
   FieldValueContract,
   ReviewTestOracle,
+  ReviewBranchCandidate,
   OracleDiagnostic,
+  InterfaceDef,
 } from '../api/types'
 import {
   CONFIDENCE_TIER_LABELS,
@@ -41,9 +46,12 @@ const _jobId = ref('')
 const props = defineProps<{ initialJobId?: string }>()
 
 const items = ref<RequirementItem[]>([])
+const interfaces = ref<InterfaceDef[]>([])
+const selectedInterfaceId = ref(navigation.interfaceId)
 const mappings = ref<ReviewMapping[]>([])
 const fieldContracts = ref<FieldValueContract[]>([])
 const testOracles = ref<ReviewTestOracle[]>([])
+const branchInventory = ref<ReviewBranchCandidate[]>([])
 const testOracleWarnings = ref<string[]>([])
 const oracleDiagnostics = ref<OracleDiagnostic[]>([])
 const diagnosticGroups = computed(() =>
@@ -51,6 +59,7 @@ const diagnosticGroups = computed(() =>
     { status: 'candidate_invalid', title: '本轮仍未形成有效预期' },
     { status: 'control_required', title: '运行控制条件未满足' },
     { status: 'execution_pending', title: '异常触发或数据条件未满足' },
+    { status: 'environment_pending', title: '设计已保留 · 部署配置待验证' },
     { status: 'response_evidence_missing', title: '响应预期尚未确认' },
     { status: 'framework_boundary', title: 'HTTP 框架边界处理结果' },
     { status: 'resolved', title: '系统已处理 · 正常设计或候选已保留' },
@@ -117,6 +126,18 @@ const evidenceById = computed(
 const callChainByInterface = computed(
   () => new Map(callChains.value.map((item) => [item.interface_id, item])),
 )
+const selectedInterface = computed(() =>
+  interfaces.value.find((item) => item.id === selectedInterfaceId.value),
+)
+const selectedOracles = computed(() =>
+  testOracles.value.filter((item) => item.interface_id === selectedInterfaceId.value),
+)
+const selectedBranches = computed(() =>
+  branchInventory.value.filter((item) => item.interface_id === selectedInterfaceId.value),
+)
+const selectedFieldContracts = computed(() =>
+  fieldContracts.value.filter((item) => item.interface_id === selectedInterfaceId.value),
+)
 
 const evidenceText = computed(() => {
   return (mapping: ReviewMapping) => {
@@ -139,15 +160,22 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const [req, review, diagnostics] = await Promise.all([
+    const [req, review, diagnostics, reconstructed] = await Promise.all([
       getRequirementItems(_jobId.value),
       getReviewMapping(_jobId.value),
       getReviewDiagnostics(_jobId.value).catch(() => null),
+      getInterfaces(_jobId.value).catch(() => ({ interfaces: [] })),
     ])
     items.value = req.items
+    interfaces.value = reconstructed.interfaces
+    const requestedInterface = navigation.interfaceId || selectedInterfaceId.value
+    selectedInterfaceId.value = interfaces.value.some((item) => item.id === requestedInterface)
+      ? requestedInterface
+      : (interfaces.value[0]?.id ?? '')
     mappings.value = review.mappings
     fieldContracts.value = review.field_value_contracts ?? []
     testOracles.value = review.test_oracles ?? []
+    branchInventory.value = review.branch_inventory ?? []
     testOracleWarnings.value = review.test_oracle_warnings ?? []
     oracleDiagnostics.value = diagnostics?.items ?? review.test_oracle_diagnostics ?? []
     evidenceCatalog.value = review.evidence_catalog ?? []
@@ -162,9 +190,11 @@ async function load(): Promise<void> {
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Review 产物加载失败'
     items.value = []
+    interfaces.value = []
     mappings.value = []
     fieldContracts.value = []
     testOracles.value = []
+    branchInventory.value = []
     testOracleWarnings.value = []
     oracleDiagnostics.value = []
     evidenceCatalog.value = []
@@ -492,13 +522,38 @@ const claimTotals = computed(() =>
     <p v-else-if="error" class="state-line state-error" role="alert">{{ error }}</p>
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
 
-    <template v-else-if="mappings.length">
+    <template v-else-if="mappings.length || interfaces.length">
       <div class="view-head">
         <span class="tag tag-accent">Code Review · 源码测试设计</span>
         <span class="coverage-note"
           >已确认 {{ testOracles.length }} 条条件化预期；执行准备单独检查</span
         >
       </div>
+      <div v-if="interfaces.length" class="logic-selector">
+        <label>
+          <span>查看接口逻辑</span>
+          <select
+            v-model="selectedInterfaceId"
+            @change="navigation.interfaceId = selectedInterfaceId"
+          >
+            <option v-for="iface in interfaces" :key="iface.id" :value="iface.id">
+              {{ iface.id }} · {{ iface.signature.method || iface.protocol }}
+              {{ iface.signature.path || iface.signature.service_method }}
+            </option>
+          </select>
+        </label>
+        <span class="dim">先理解接口行为，再查看源码预期和用例。</span>
+      </div>
+      <InterfaceLogicPanel
+        v-if="selectedInterface"
+        :interface-def="selectedInterface"
+        :chain="callChainByInterface.get(selectedInterface.id)"
+        :oracles="selectedOracles"
+        :branches="selectedBranches"
+        :field-contracts="selectedFieldContracts"
+        :evidence="evidenceCatalog"
+        @show-cases="navigateTo('interface-cases', _jobId, selectedInterface.id)"
+      />
       <details
         v-for="group in diagnosticGroups"
         :key="`${_jobId}-${group.status}`"
@@ -1225,6 +1280,33 @@ const claimTotals = computed(() =>
   flex-wrap: wrap;
   gap: var(--space-3);
   margin-bottom: var(--space-3);
+}
+
+.logic-selector {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.logic-selector label {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.logic-selector select {
+  max-width: min(36rem, 85vw);
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-1);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.6;
 }
 
 .coverage-note {

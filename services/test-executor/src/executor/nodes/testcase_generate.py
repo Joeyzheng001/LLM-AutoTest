@@ -588,6 +588,32 @@ async def run_testcase_generate(
                     "execution_blockers": execution_blockers(oracle) + ["有效 HTTP 请求尚未补齐，禁止发送占位请求"],
                 })
         valid = _merge_rounds([], valid)
+        controlled_seen: set[tuple[str, str]] = set()
+        distinct_controlled: list[dict[str, Any]] = []
+        for case in valid:
+            key = (str(case.get("interface_id", "")), str(case.get("oracle_id", "")))
+            has_separate_claim = bool(case.get("claim_id") or case.get("testpoint_id"))
+            if (case.get("oracle_control_kinds") and key[1] and not has_separate_claim):
+                if key in controlled_seen:
+                    warnings.append(
+                        f"接口 {key[0]} 的 oracle {key[1]} 重复生成受控分支用例；"
+                        "未提供独立需求或输入覆盖目的，保留首条"
+                    )
+                    continue
+                controlled_seen.add(key)
+            distinct_controlled.append(case)
+        valid = distinct_controlled
+        # A zero-byte body and the literal JSON token `null` are different wire
+        # requests. Keep distinct case IDs and response records for both.
+        body_variants: list[dict[str, Any]] = []
+        for case in valid:
+            if case.get("oracle_basis") != "spring_required_body":
+                body_variants.append(case)
+                continue
+            for encoding, suffix in (("empty", "零字节空请求体"), ("json_null", "JSON null 请求体")):
+                body_variants.append({**case, "title": f"{case['title']}（{suffix}）",
+                                      "body_encoding": encoding})
+        valid = body_variants
         expansion_gaps = []
         # 明细落盘放在 raise 之前：失败路径反而最需要它，而检查点会被成功路径清除，
         # 只在检查点里留明细等于「成功时被删、失败时才可能看到」。
@@ -2996,7 +3022,7 @@ def _filter_oracle_violations(
             case.pop("oracle_evidence_refs", None)
             case.pop("oracle_scenario", None)
             case.pop("oracle_control_kinds", None)
-            for metadata_key in ("state_conditions", "execution_blockers", "execution_readiness", "request_conditions", "expected_behavior", "oracle_basis", "assertion_scope", "design_status"):
+            for metadata_key in ("state_conditions", "execution_blockers", "execution_readiness", "request_conditions", "expected_behavior", "oracle_basis", "assertion_scope", "design_status", "dependency_contract"):
                 case.pop(metadata_key, None)
             case["oracle_status"] = "unverified"
             valid.append(case)
@@ -3042,6 +3068,27 @@ def _filter_oracle_violations(
             continue
 
         params = case.get("params") if isinstance(case.get("params"), dict) else {}
+        code_repaired = False
+        channel_repaired = False
+        if case.get("category") == "normal":
+            supported_code = next((condition for condition in preconditions
+                                   if condition.get("path") == "code"
+                                   and condition.get("op") == "in"
+                                   and isinstance(condition.get("value"), list)
+                                   and condition["value"]), None)
+            if supported_code and params.get("code") not in supported_code["value"]:
+                params = {**params, "code": supported_code["value"][0]}
+                case["params"] = params
+                code_repaired = True
+        channel_condition = next((condition for condition in preconditions
+                                  if condition.get("path") == "param.riskChannel"
+                                  and condition.get("op") == "equals"
+                                  and condition.get("value") == 1), None)
+        if channel_condition and isinstance(params.get("param"), dict):
+            if params["param"].get("riskChannel") != 1:
+                params = {**params, "param": {**params["param"], "riskChannel": 1}}
+                case["params"] = params
+                channel_repaired = True
         if "observed_params" in oracle:
             if params != oracle["observed_params"]:
                 mark_unverified("运行观测契约仅支持已观测的精确请求；参数变体需另行证明")
@@ -3055,6 +3102,10 @@ def _filter_oracle_violations(
             continue
 
         repair_reasons: list[str] = []
+        if code_repaired:
+            repair_reasons.append("code 已按执行器源码支持范围修正")
+        if channel_repaired:
+            repair_reasons.append("riskChannel 已按源码可控分支修正为 STD 通道")
         if assertion_error:
             repair_reasons.append(f"模型断言格式不合法：{assertion_error}")
         elif _canonical_assertions(assertions) != _canonical_assertions(expected_assertions):
@@ -3086,7 +3137,7 @@ def _filter_oracle_violations(
             case["fixture_plan"] = oracle["fixture_plan"]
         case["execution_blockers"] = execution_blockers(oracle)
         case["execution_readiness"] = str(oracle.get("execution_readiness", "ready"))
-        for key in ("oracle_basis", "assertion_scope", "design_status"):
+        for key in ("oracle_basis", "assertion_scope", "design_status", "dependency_contract"):
             if key in oracle:
                 case[key] = oracle[key]
         valid.append(case)
@@ -3192,7 +3243,7 @@ def _finalize_cases(
         if case.get("oracle_control_kinds") and oracle_status == "verified":
             entry["oracle_control_kinds"] = [str(value) for value in case["oracle_control_kinds"]]
         if oracle_status == "verified":
-            for metadata_key in ("state_conditions", "execution_blockers", "execution_readiness", "request_conditions", "expected_behavior", "oracle_basis", "assertion_scope", "design_status"):
+            for metadata_key in ("state_conditions", "execution_blockers", "execution_readiness", "request_conditions", "expected_behavior", "oracle_basis", "assertion_scope", "design_status", "dependency_contract"):
                 if metadata_key in case:
                     entry[metadata_key] = case[metadata_key]
         if isinstance(case.get("fixture_plan"), dict) and oracle_status == "verified":
@@ -3209,6 +3260,8 @@ def _finalize_cases(
             entry["params"] = params
         if str(case.get("auth_mode", "")) in {"inherit", "missing", "invalid"}:
             entry["auth_mode"] = str(case["auth_mode"])
+        if case.get("body_encoding") in {"empty", "json_null"}:
+            entry["body_encoding"] = case["body_encoding"]
 
         # low_confidence：接口定义含 unknown 参数（X-GEN-03，代码判定），
         # 或程序确定性兜底用例（synthesized，非 LLM 设计的业务场景）

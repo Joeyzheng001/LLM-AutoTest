@@ -68,6 +68,7 @@ from orchestrator.oracle_diagnostics import build_oracle_diagnostics
 from orchestrator.persistence import Database
 from orchestrator.repository_resolver import preview_branch_diff, resolve_repository_inputs
 from orchestrator.runner import PipelineOutcome, PipelineRunner
+from orchestrator.run_history import list_report_runs, resolve_report_artifact
 from orchestrator.runtime_revision import RuntimeRevision
 
 logger = logging.getLogger(__name__)
@@ -390,6 +391,32 @@ def _validate_fixture_pairs(fixtures: list[FixtureStep]) -> list[FixtureStep]:
     return fixtures
 
 
+class RequiredBodyEnvironmentContract(BaseModel):
+    """User-confirmed response mapping for a job's selected REST interfaces."""
+
+    interface_ids: list[str] = Field(min_length=1)
+    http_status: int = Field(ge=100, le=599)
+    return_code: int | str
+    body_is_null: bool = True
+    source: Literal["user_confirmed_environment"] = "user_confirmed_environment"
+
+
+class ReadOnlyDatabaseConfig(BaseModel):
+    """被测系统的数据查询连接；密码只能写入加密 SecretStore。"""
+
+    database_type: Literal["mysql", "postgresql", "oracle", "sqlserver"]
+    host: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.:-]+$")
+    port: int = Field(ge=1, le=65535)
+    database: str = Field(min_length=1, max_length=128)
+    schema_name: str | None = Field(default=None, max_length=128)
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=512)
+
+
+class EditableReadOnlyDatabaseConfig(ReadOnlyDatabaseConfig):
+    password: str | None = Field(default=None, max_length=512)
+
+
 class JobSubmitRequest(BaseModel):
     """job 提交请求（文档以 base64 传递，免 python-multipart 依赖）。
 
@@ -409,13 +436,17 @@ class JobSubmitRequest(BaseModel):
     resume: bool = True
     # C-15：鉴权配置（可选；填写则执行前登录被测服务注入凭据头）
     auth: AuthConfig | None = None
+    db_readonly: ReadOnlyDatabaseConfig | None = None
     auth_session_id: str | None = Field(default=None, max_length=64)
     llm: LlmConfig | None = None
     e2e: E2eConfig | None = None
     fixtures: list[FixtureStep] = Field(default_factory=list)
     auto_record_fixtures: bool = False
+    # 在目标提交的隔离副本中生成并运行需要控制条件的 Java 单测。
+    generate_unit_tests: bool = False
     # 明确开启时，Code Review 对源码确认无副作用的异常入口做运行时响应观测。
     observe_runtime_contracts: bool = False
+    required_body_contract: RequiredBodyEnvironmentContract | None = None
 
     @model_validator(mode="after")
     def validate_fixture_pairs(self) -> "JobSubmitRequest":
@@ -425,6 +456,8 @@ class JobSubmitRequest(BaseModel):
 
 class PreflightRequest(JobSubmitRequest):
     """配置预检请求：复用提交字段，但不创建 job、不写业务产物。"""
+
+    db_readonly: EditableReadOnlyDatabaseConfig | None = None
 
 
 class EditableAuthConfig(BaseModel):
@@ -486,11 +519,16 @@ class JobConfigurationUpdateRequest(BaseModel):
     auth: EditableAuthConfig | None = None
     auth_session_id: str | None = Field(default=None, max_length=64)
     llm: EditableLlmConfig | None = None
+    db_readonly: EditableReadOnlyDatabaseConfig | None = None
+    # None 保持旧客户端语义；False 明确清除已有数据库查询配置。
+    db_readonly_enabled: bool | None = None
     e2e: E2eConfig | None = None
     fixtures: list[FixtureStep] = Field(default_factory=list)
     replace_fixtures: bool = False
     auto_record_fixtures: bool | None = None
+    generate_unit_tests: bool | None = None
     observe_runtime_contracts: bool | None = None
+    required_body_contract: RequiredBodyEnvironmentContract | None = None
 
     @model_validator(mode="after")
     def validate_fixture_pairs(self) -> "JobConfigurationUpdateRequest":
@@ -520,6 +558,7 @@ class RerunRequest(BaseModel):
     rest_url: str | None = None
     e2e: E2eConfig | None = None
     observe_runtime_contracts: bool | None = None
+    generate_unit_tests: bool | None = None
 
 
 def _resolve_local_repo_path(path: str, repositories_root: str | None = None) -> Path:
@@ -1139,6 +1178,19 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             checks.append({"name": "rest", "status": "ok", "message": "REST 地址格式正确"})
         else:
             checks.append({"name": "rest", "status": "error", "message": "REST 地址须为 http(s)"})
+        for repo in request.repos:
+            route_base = (repo.service_base_url or request.rest_url).rstrip("/")
+            parsed_route = urlsplit(route_base)
+            route_base = f"{parsed_route.scheme}://{parsed_route.netloc.rsplit('@', 1)[-1]}{parsed_route.path}"
+            checks.append({
+                "name": f"route:{repo.name}",
+                "status": "ok" if repo.service_base_url else "skipped",
+                "message": (
+                    f"仓库 {repo.name} 的 REST 接口使用 {route_base}"
+                    if repo.service_base_url else
+                    f"仓库 {repo.name} 未设服务地址，将回退任务级 {route_base}；请核对服务前缀"
+                ),
+            })
 
         if request.auth is not None:
             try:
@@ -1148,6 +1200,26 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 checks.append({"name": "auth", "status": "error", "message": exc.message})
         else:
             checks.append({"name": "auth", "status": "skipped", "message": "未配置鉴权"})
+
+        if request.db_readonly is None:
+            checks.append({"name": "db_readonly", "status": "skipped", "message": "未配置数据库只读连接"})
+        elif not app.state.secret_store.enabled:
+            checks.append({"name": "db_readonly", "status": "error", "message": "须先启用加密密钥存储"})
+        elif not request.db_readonly.password:
+            saved_password = None
+            if request.job_id:
+                _require_job_access(app, request.job_id, http_request)
+                saved_password = _load_job_secrets(app, request.job_id).get("db_readonly_password")
+            checks.append({
+                "name": "db_readonly",
+                "status": "ok" if saved_password else "error",
+                "message": (
+                    "已保存密码；连接配置格式正确，尚未执行数据库连通性检查"
+                    if saved_password else "请填写数据库只读账号密码"
+                ),
+            })
+        else:
+            checks.append({"name": "db_readonly", "status": "ok", "message": "连接配置格式正确；尚未执行数据库连通性检查"})
 
         if request.llm is not None and request.llm.base_url.startswith(("http://", "https://")):
             checks.append({"name": "llm", "status": "ok", "message": "LLM 中转站配置格式正确"})
@@ -1273,6 +1345,9 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             if headers:
                 app.state.job_auth_headers[job_id] = headers
 
+        if request.db_readonly is not None and not app.state.secret_store.enabled:
+            raise HTTPException(status_code=400, detail="配置数据库查询连接前须启用加密密钥存储")
+
         job_input: dict[str, Any] = {
             "job_id": job_id,
             "doc_paths": [normalize_path(path) for path in doc_paths],
@@ -1280,7 +1355,10 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "rest_url": request.rest_url,
             "rest_insecure_tls": request.rest_insecure_tls,
             "auto_record_fixtures": request.auto_record_fixtures,
+            "generate_unit_tests": request.generate_unit_tests,
             "observe_runtime_contracts": request.observe_runtime_contracts,
+            "required_body_contract": request.required_body_contract.model_dump() if request.required_body_contract else None,
+            "db_readonly": _public_db_config(request.db_readonly),
             "owner_id": owner_id,
             "project_id": project_id,
             "submitted_at": _now_iso(),
@@ -1324,6 +1402,7 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             auth=auth_payload,
             llm_api_key=llm_payload.get("api_key") if llm_payload else None,
             git_tokens=_repo_git_tokens(request.repos),
+            db_readonly_password=request.db_readonly.password if request.db_readonly else None,
         )
         repo_tokens = _repo_git_tokens(request.repos)
         if repo_tokens:
@@ -1541,7 +1620,10 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             "rest_url": job_input.get("rest_url", ""),
             "rest_insecure_tls": bool(job_input.get("rest_insecure_tls", True)),
             "auto_record_fixtures": bool(job_input.get("auto_record_fixtures", False)),
+            "generate_unit_tests": bool(job_input.get("generate_unit_tests", False)),
             "observe_runtime_contracts": bool(job_input.get("observe_runtime_contracts", False)),
+            "required_body_contract": job_input.get("required_body_contract"),
+            "db_readonly": _visible_db_config(job_input.get("db_readonly"), secrets),
             "resume": bool(job_input.get("resume", True)),
             "auth": (
                 {
@@ -1604,6 +1686,15 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             raise HTTPException(status_code=400, detail="rest_url 须为 http(s) 地址")
         if request.e2e is not None and not request.e2e.base_url.startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="e2e.base_url 须为 http(s) 地址")
+
+        db_config = request.db_readonly
+        if request.db_readonly_enabled is True and db_config is None and not previous.get("db_readonly"):
+            raise HTTPException(status_code=400, detail="请填写数据库只读连接信息")
+        if db_config is not None:
+            if not app.state.secret_store.enabled:
+                raise HTTPException(status_code=400, detail="配置数据库查询连接前须启用加密密钥存储")
+            if not (db_config.password or previous_secrets.get("db_readonly_password")):
+                raise HTTPException(status_code=400, detail="请填写数据库只读账号密码")
 
         auth_payload: dict[str, Any] | None = None
         if request.auth is not None:
@@ -1679,9 +1770,22 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
                 bool(previous.get("auto_record_fixtures", False))
                 if request.auto_record_fixtures is None else request.auto_record_fixtures
             ),
+            "generate_unit_tests": (
+                bool(previous.get("generate_unit_tests", False))
+                if request.generate_unit_tests is None else request.generate_unit_tests
+            ),
             "observe_runtime_contracts": (
                 bool(previous.get("observe_runtime_contracts", False))
                 if request.observe_runtime_contracts is None else request.observe_runtime_contracts
+            ),
+            "required_body_contract": (
+                request.required_body_contract.model_dump() if request.required_body_contract
+                else previous.get("required_body_contract")
+            ),
+            "db_readonly": (
+                _public_db_config(db_config) if db_config is not None
+                else None if request.db_readonly_enabled is False
+                else previous.get("db_readonly")
             ),
             "owner_id": owner_id,
             "project_id": project_id,
@@ -1755,6 +1859,8 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             auth=auth_payload if auth_payload is not None else preserved_auth,
             llm_api_key=(llm_payload or {}).get("api_key") or preserved_llm_key,
             git_tokens=git_tokens,
+            db_readonly_password=db_config.password if db_config is not None else None,
+            clear_db_readonly=request.db_readonly_enabled is False,
         )
         if git_tokens:
             app.state.job_repo_tokens[job_id] = git_tokens
@@ -1978,6 +2084,72 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             review.get("test_oracle_warnings") or [], review.get("test_oracles") or [],
         )}
 
+    @app.get("/api/v1/jobs/{job_id}/runs")
+    async def job_runs(job_id: str, http_request: Request) -> dict[str, Any]:
+        """Current and archived execution rounds for the report selector."""
+        _require_job_access(app, job_id, http_request)
+        for name in ("execution.json", "test_report.md"):
+            try:
+                orch_store.ensure_local(job_id, name)
+            except (FileNotFoundError, OSError, ObjectStorageError, PipelineError):
+                pass
+        return {"runs": list_report_runs(orch_store.job_dir(job_id))}
+
+    @app.get("/api/v1/jobs/{job_id}/runs/{run_id}/export")
+    async def export_job_run(job_id: str, run_id: str, http_request: Request) -> StreamingResponse:
+        """Export the selected round's execution, report and design context."""
+        _require_job_access(app, job_id, http_request)
+        if run_id == "current":
+            for name in ("execution.json", "test_report.md", "testcases.json", "interfaces.json"):
+                try:
+                    orch_store.ensure_local(job_id, name)
+                except (FileNotFoundError, OSError, ObjectStorageError, PipelineError):
+                    pass
+        root = orch_store.job_dir(job_id)
+        execution = resolve_report_artifact(root, run_id, "execution.json")
+        if execution is None:
+            raise HTTPException(status_code=404, detail="该轮次的执行记录不存在")
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name in ("execution.json", "test_report.md", "testcases.json", "interfaces.json"):
+                path = resolve_report_artifact(root, run_id, name)
+                if path is None:
+                    continue
+                try:
+                    archive.writestr(name, path.read_bytes())
+                except OSError:
+                    continue
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{job_id}-{run_id}-report.zip"'},
+        )
+
+    @app.get("/api/v1/jobs/{job_id}/runs/{run_id}/{name}")
+    async def job_run_artifact(
+        job_id: str, run_id: str, name: str, http_request: Request
+    ) -> Any:
+        """Read a selected round; archive file names never come from the client."""
+        _require_job_access(app, job_id, http_request)
+        if name not in {"execution.json", "test_report.md", "testcases.json", "interfaces.json"}:
+            raise HTTPException(status_code=404, detail="该轮次的产物不在白名单")
+        if run_id == "current":
+            try:
+                orch_store.ensure_local(job_id, name)
+            except (FileNotFoundError, OSError, ObjectStorageError, PipelineError):
+                pass
+        path = resolve_report_artifact(orch_store.job_dir(job_id), run_id, name)
+        if path is None:
+            raise HTTPException(status_code=404, detail="该轮次的产物不存在")
+        try:
+            content = path.read_text(encoding="utf-8")
+            if name.endswith(".json"):
+                return JSONResponse(content=json.loads(content))
+            return PlainTextResponse(content=content, media_type="text/markdown")
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="该轮次的产物不可读") from exc
+
     @app.get("/api/v1/jobs/{job_id}/artifacts/{name:path}")
     async def read_artifact(job_id: str, name: str, http_request: Request) -> Any:
         """读白名单产物与单条 E2E 截图证据。"""
@@ -2110,6 +2282,8 @@ def create_app(settings: Settings, runner: PipelineRunner | None = None) -> Fast
             job_input["rest_url"] = request.rest_url.rstrip("/")
         if request.observe_runtime_contracts is not None:
             job_input["observe_runtime_contracts"] = request.observe_runtime_contracts
+        if request.generate_unit_tests is not None:
+            job_input["generate_unit_tests"] = request.generate_unit_tests
         if request.e2e is not None:
             if not request.e2e.base_url.startswith(("http://", "https://")):
                 raise HTTPException(status_code=400, detail="e2e.base_url 须为 http(s) 地址")
@@ -2821,18 +2995,27 @@ def _persist_job_secrets(
     auth: dict[str, Any] | None,
     llm_api_key: str | None,
     git_tokens: dict[str, str] | None = None,
+    db_readonly_password: str | None = None,
+    clear_db_readonly: bool = False,
 ) -> None:
     """保存/清理任务密钥；未启用加密时由兼容路径继续使用旧 job_input。"""
     store: SecretStore = app.state.secret_store
     if not store.enabled:
         return
-    secrets: dict[str, Any] = {k: v for k, v in _load_job_secrets(app, job_id).items() if k == "e2e_roles"}
+    secrets: dict[str, Any] = {
+        k: v for k, v in _load_job_secrets(app, job_id).items()
+        if k in {"e2e_roles", "db_readonly_password"}
+    }
     if auth is not None:
         secrets["auth"] = auth
     if llm_api_key:
         secrets["llm_api_key"] = llm_api_key
     if git_tokens:
         secrets["git_tokens"] = git_tokens
+    if clear_db_readonly:
+        secrets.pop("db_readonly_password", None)
+    elif db_readonly_password:
+        secrets["db_readonly_password"] = db_readonly_password
     try:
         if secrets:
             store.save(job_id, secrets)
@@ -2840,6 +3023,21 @@ def _persist_job_secrets(
             store.clear(job_id)
     except SecretStoreError as exc:
         raise HTTPException(status_code=500, detail="任务密钥无法安全保存，请联系管理员") from exc
+
+
+def _public_db_config(config: ReadOnlyDatabaseConfig | None) -> dict[str, Any] | None:
+    if config is None:
+        return None
+    return config.model_dump(exclude={"password"}, exclude_none=True)
+
+
+def _visible_db_config(config: Any, secrets: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(config, dict):
+        return None
+    return {
+        **{key: value for key, value in config.items() if key != "password"},
+        "password_configured": bool(secrets.get("db_readonly_password")),
+    }
 
 
 def _store_e2e_configuration(app: FastAPI, job_id: str, config: E2eConfig) -> dict[str, Any]:

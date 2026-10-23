@@ -67,6 +67,13 @@ def required_control_kinds(oracle: dict[str, Any]) -> set[str]:
 
 def execution_blockers(oracle: dict[str, Any]) -> list[str]:
     blockers = list(oracle.get("execution_blockers") or [])
+    if oracle.get("fixture_plan"):
+        covered_data_conditions = {
+            str(condition.get("description", ""))
+            for condition in oracle.get("state_conditions", [])
+            if condition.get("kind") == "test_data" and condition.get("mode") == "controlled"
+        }
+        blockers = [reason for reason in blockers if reason not in covered_data_conditions]
     # A documented HTTP/structure check can run without pretending to verify
     # business behavior. Reachability, unknown HTTP mappings and state controls
     # remain execution blockers.

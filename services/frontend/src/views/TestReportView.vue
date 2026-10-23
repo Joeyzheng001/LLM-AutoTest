@@ -4,18 +4,27 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
 import ExecutionResultDetail from '../components/ExecutionResultDetail.vue'
 import {
+  exportJobRun,
   getEvidenceBlob,
-  getExecution,
-  getReportMd,
-  getInterfaces,
-  getTestcases,
+  getJobRuns,
+  getRunExecution,
+  getRunReportMd,
+  getRunInterfaces,
+  getRunTestcases,
 } from '../api/client'
-import type { ExecResult, ExecSummary, InterfaceDef, TestCaseEntry } from '../api/types'
+import type { ExecResult, ExecSummary, InterfaceDef, JobRun, TestCaseEntry } from '../api/types'
+import { navigateTo } from '../api/navigation'
 
-const props = defineProps<{ initialJobId?: string; viewKey?: string }>()
+const props = defineProps<{ initialJobId?: string; initialRunId?: string; viewKey?: string }>()
 type ResultFilter =
   'all' | 'passed' | 'assertion' | 'environment' | 'pending' | 'skipped' | 'reused'
 const _jobId = ref('')
+const runs = ref<JobRun[]>([])
+const selectedRunId = ref('')
+const runRefreshError = ref('')
+const downloadPending = ref(false)
+const selectedRun = computed(() => runs.value.find((run) => run.id === selectedRunId.value))
+const historyCount = computed(() => runs.value.filter((run) => !run.is_current).length)
 const summary = ref<ExecSummary | null>(null)
 const results = ref<ExecResult[]>([])
 const interfaceDefinitions = ref<InterfaceDef[]>([])
@@ -23,6 +32,7 @@ const caseDefinitions = ref<TestCaseEntry[]>([])
 type FlowFilter = 'all' | 'normal' | 'boundary' | 'exception' | 'other'
 const flowFilter = ref<FlowFilter>('all')
 const degradedProtocols = ref<Array<{ protocol: string; mode: string; reason?: string }>>([])
+const unitCoverage = ref<Awaited<ReturnType<typeof getRunExecution>>['unit_test_coverage']>()
 const reportMd = ref('')
 const evidenceUrls = ref<Record<string, string>>({})
 const loading = ref(false)
@@ -32,6 +42,91 @@ const search = ref('')
 const interfaceFilter = ref('')
 const expandedCases = ref(new Set<string>())
 let loadSequence = 0
+let runListSequence = 0
+
+function runLabel(run: JobRun, index: number): string {
+  const time = (value: string | null) =>
+    value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '时间未记录'
+  if (run.is_current) return `当前轮次 · 执行于 ${time(run.executed_at)}`
+  const number = historyCount.value - index + (runs.value[0]?.is_current ? 1 : 0)
+  return `历史轮次 ${number} · 执行于 ${time(run.executed_at)} · 归档于 ${time(run.archived_at)}`
+}
+
+async function loadRuns(): Promise<void> {
+  const sequence = ++runListSequence
+  ++loadSequence
+  runs.value = []
+  selectedRunId.value = ''
+  summary.value = null
+  results.value = []
+  interfaceDefinitions.value = []
+  caseDefinitions.value = []
+  degradedProtocols.value = []
+  unitCoverage.value = undefined
+  reportMd.value = ''
+  for (const url of Object.values(evidenceUrls.value)) URL.revokeObjectURL(url)
+  evidenceUrls.value = {}
+  error.value = ''
+  runRefreshError.value = ''
+  if (!_jobId.value) {
+    loading.value = false
+    return
+  }
+  loading.value = true
+  try {
+    const response = await getJobRuns(_jobId.value)
+    if (sequence !== runListSequence) return
+    runs.value = response.runs
+    selectedRunId.value = response.runs.some((run) => run.id === props.initialRunId)
+      ? props.initialRunId! : response.runs[0]?.id ?? ''
+    if (!selectedRunId.value) {
+      error.value = '这个任务尚无执行记录；重跑生成报告后可在这里查看。'
+      loading.value = false
+    }
+  } catch (err) {
+    if (sequence !== runListSequence) return
+    error.value = err instanceof Error ? err.message : '运行轮次加载失败'
+    loading.value = false
+  }
+}
+
+async function refreshRuns(): Promise<void> {
+  if (!_jobId.value) return
+  const jobId = _jobId.value
+  const sequence = ++runListSequence
+  const previous = selectedRunId.value
+  runRefreshError.value = ''
+  try {
+    const response = await getJobRuns(jobId)
+    if (sequence !== runListSequence || jobId !== _jobId.value) return
+    runs.value = response.runs
+    const next = response.runs.some((run) => run.id === previous)
+      ? previous
+      : (response.runs[0]?.id ?? '')
+    selectedRunId.value = next
+    if (next === previous && next) await load()
+    if (!next) error.value = '这个任务尚无执行记录。'
+  } catch (err) {
+    if (sequence !== runListSequence || jobId !== _jobId.value) return
+    runRefreshError.value = err instanceof Error ? err.message : '刷新轮次失败'
+  }
+}
+
+async function downloadSelectedRun(): Promise<void> {
+  if (!_jobId.value || !selectedRunId.value || downloadPending.value) return
+  const jobId = _jobId.value
+  const runId = selectedRunId.value
+  downloadPending.value = true
+  runRefreshError.value = ''
+  try {
+    await exportJobRun(jobId, runId)
+  } catch (err) {
+    if (jobId === _jobId.value && runId === selectedRunId.value)
+      runRefreshError.value = err instanceof Error ? err.message : '轮次下载失败'
+  } finally {
+    downloadPending.value = false
+  }
+}
 
 const reportType = computed<'api' | 'e2e' | null>(() => {
   if (props.viewKey === 'e2e-execution') return 'e2e'
@@ -128,7 +223,7 @@ const summaryCards = computed<
   Array<{ key: ResultFilter; label: string; value: number; tone: string }>
 >(() => [
   { key: 'all', label: '用例总数', value: displaySummary.value?.total ?? 0, tone: 'all' },
-  { key: 'passed', label: '断言通过', value: displaySummary.value?.passed ?? 0, tone: 'pass' },
+  { key: 'passed', label: '断言符合', value: displaySummary.value?.passed ?? 0, tone: 'pass' },
   {
     key: 'assertion',
     label: '断言失败',
@@ -270,8 +365,17 @@ function verdict(result: ExecResult): string {
   if (isSkipped(result)) return '未执行'
   if (isPending(result)) return '待判定'
   if (result.execution_state === 'reused_response')
-    return result.passed ? '复用 · 通过' : '复用 · 未通过'
-  if (result.passed) return '通过'
+    return result.passed ? '复用 · 字段符合' : '复用 · 字段不符'
+  if (result.passed && result.expectation_source === 'local_dependency_bytecode')
+    return '依赖契约符合'
+  if (result.passed) {
+    const labels: Record<string, string> = {
+      status_only: 'HTTP 符合',
+      response_structure: '结构符合',
+      business: '业务断言符合',
+    }
+    return labels[result.assertion_scope ?? ''] ?? '断言符合'
+  }
   return result.failure_kind === 'environment'
     ? '环境失败'
     : result.failure_kind === 'assertion'
@@ -293,6 +397,30 @@ function scopeText(result: ExecResult): string {
     ui_steps: '页面步骤',
     unverified: '预期待确认',
   }[result.assertion_scope ?? 'unverified']
+}
+function businessErrorText(result: ExecResult): string {
+  if (!result.passed || result.execution_state === 'reused_response' ||
+      !['status_only', 'response_structure'].includes(result.assertion_scope ?? '')) return ''
+  let body: unknown = result.actual_body
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body) } catch { return '' }
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return ''
+  const payload = body as Record<string, unknown>
+  const errors: string[] = []
+  for (const field of ['returnCode', 'resultCode']) {
+    const value = payload[field]
+    if (value != null && !['0', '0000', '200'].includes(String(value)))
+      errors.push(`${field}=${value}`)
+  }
+  for (const [name, field] of [['icmTrialObj', 'errCode'], ['o32TrialObj', 'ErrorCode']]) {
+    const nested = payload[name]
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) continue
+    const value = (nested as Record<string, unknown>)[field]
+    if (value != null && !['0', '0000'].includes(String(value)))
+      errors.push(`${name}.${field}=${value}`)
+  }
+  return errors.join('、')
 }
 function traceText(result: ExecResult): string {
   return (
@@ -323,9 +451,10 @@ function clearFilters(): void {
   search.value = ''
 }
 async function load(): Promise<void> {
-  if (!_jobId.value) return
+  if (!_jobId.value || !selectedRunId.value) return
   const sequence = ++loadSequence
   const jobId = _jobId.value
+  const runId = selectedRunId.value
   loading.value = true
   error.value = ''
   clearFilters()
@@ -334,10 +463,10 @@ async function load(): Promise<void> {
   evidenceUrls.value = {}
   try {
     const [execution, markdown, definitions, cases] = await Promise.all([
-      getExecution(jobId),
-      getReportMd(jobId),
-      getInterfaces(jobId).catch(() => null),
-      getTestcases(jobId).catch(() => null),
+      getRunExecution(jobId, runId),
+      getRunReportMd(jobId, runId).catch(() => ''),
+      getRunInterfaces(jobId, runId).catch(() => null),
+      getRunTestcases(jobId, runId).catch(() => null),
     ])
     if (sequence !== loadSequence) return
     summary.value = execution.summary
@@ -345,9 +474,10 @@ async function load(): Promise<void> {
     interfaceDefinitions.value = definitions?.interfaces ?? []
     caseDefinitions.value = cases?.cases ?? []
     degradedProtocols.value = execution.degraded_protocols ?? []
+    unitCoverage.value = execution.unit_test_coverage
     reportMd.value = markdown
     const entries = await Promise.all(
-      execution.results
+      (runId === 'current' ? execution.results : [])
         .filter((result) => result.evidence?.screenshot_ref)
         .map(async (result) => {
           try {
@@ -369,6 +499,7 @@ async function load(): Promise<void> {
     interfaceDefinitions.value = []
     caseDefinitions.value = []
     degradedProtocols.value = []
+    unitCoverage.value = undefined
     reportMd.value = ''
   } finally {
     if (sequence === loadSequence) loading.value = false
@@ -376,9 +507,11 @@ async function load(): Promise<void> {
 }
 onBeforeUnmount(() => {
   loadSequence++
+  runListSequence++
   for (const url of Object.values(evidenceUrls.value)) URL.revokeObjectURL(url)
 })
-watch(_jobId, () => void load())
+watch(_jobId, () => void loadRuns())
+watch(selectedRunId, () => void load())
 watch(
   () => props.initialJobId,
   (value) => {
@@ -391,6 +524,39 @@ watch(
 <template>
   <div class="report">
     <JobPicker v-model="_jobId" />
+    <section v-if="runs.length" class="run-history" aria-label="运行轮次">
+      <div>
+        <strong>运行轮次</strong>
+        <span>保留 {{ historyCount }} 轮历史记录；重跑期间仍可查看旧报告。</span>
+      </div>
+      <label>
+        <span>查看</span>
+        <select v-model="selectedRunId" aria-label="选择运行轮次">
+          <option v-for="(run, index) in runs" :key="run.id" :value="run.id">
+            {{ runLabel(run, index) }}
+          </option>
+        </select>
+      </label>
+      <button type="button" @click="refreshRuns">刷新轮次</button>
+      <button type="button" :disabled="downloadPending" @click="downloadSelectedRun">
+        {{ downloadPending ? '下载中…' : '下载此轮' }}
+      </button>
+      <button
+        v-if="runs[0]?.id !== selectedRunId"
+        type="button"
+        @click="selectedRunId = runs[0].id"
+      >
+        查看最新
+      </button>
+      <p v-if="selectedRun" class="run-summary">
+        {{ selectedRun.is_current ? '当前结果' : '历史快照' }} ·
+        {{ selectedRun.summary.total }} 条用例 ·
+        {{ selectedRun.summary.passed }} 条断言符合 ·
+        {{ selectedRun.summary.failed_assertion }} 条断言失败
+        <template v-if="!selectedRun.has_report"> · 完整报告尚未生成</template>
+      </p>
+      <p v-if="runRefreshError" class="run-refresh-error" role="alert">{{ runRefreshError }}</p>
+    </section>
     <p v-if="loading" class="state-line" role="status">加载执行记录中…</p>
     <p v-else-if="error" class="state-line state-error" role="alert">{{ error }}</p>
     <p v-else-if="!_jobId" class="state-line">请先选择任务。</p>
@@ -423,7 +589,7 @@ watch(
         </button>
       </div>
       <p class="total-equation">
-        总数 {{ displaySummary?.total ?? 0 }} = 通过 {{ displaySummary?.passed ?? 0 }} + 断言失败
+        总数 {{ displaySummary?.total ?? 0 }} = 断言符合 {{ displaySummary?.passed ?? 0 }} + 断言失败
         {{ displaySummary?.failed_assertion ?? 0 }} + 环境失败
         {{ displaySummary?.failed_environment ?? 0 }} + 待判定
         {{ displaySummary?.observed_unjudged ?? 0 }} + 未执行
@@ -442,8 +608,19 @@ watch(
           <strong class="mono">{{ displaySummary?.reused_response ?? 0 }}</strong
           ><span>复用真实响应核对 · 查看</span>
         </button>
-        <p>复用结果已计入对应的通过或失败，不再重复加入总数；实际请求次数单独统计。</p>
+        <p>断言符合数包含复用响应的字段核对；复用场景没有另发请求。</p>
       </div>
+      <section v-if="reportType !== 'e2e' && unitCoverage" class="hint hint-notice">
+        <strong>隔离单元测试与 JaCoCo 行覆盖率</strong>
+        <p>
+          {{ unitCoverage.cases_passed }}/{{ unitCoverage.cases_total }} 条候选单测通过。
+          单测结果单独统计，不改变接口用例的执行结论。
+        </p>
+        <p v-if="unitCoverage.reason">{{ unitCoverage.reason }}</p>
+        <button type="button" @click="navigateTo('unit-report', _jobId, '', selectedRunId)">
+          查看单元测试报告 →
+        </button>
+      </section>
       <div v-for="item in degradedProtocols" :key="item.protocol" class="hint hint-warning">
         降级 · {{ item.protocol }}：{{ item.mode
         }}<template v-if="item.reason"> · {{ item.reason }}</template>
@@ -572,7 +749,13 @@ watch(
                     }}</span>
                     · {{ result.interface_id }} ·
                     {{ result.case_type === 'e2e' ? '前端 E2E' : '接口' }} ·
-                    {{ scopeText(result) }}</span
+                    {{ scopeText(result) }}
+                    <span v-if="result.expectation_source === 'local_dependency_bytecode'">
+                      · 本地依赖字节码，部署版本待核对
+                    </span>
+                    <span v-if="businessErrorText(result)" class="case-business-error">
+                      · 业务返回错误：{{ businessErrorText(result) }}
+                    </span></span
                   ></span
                 >
                 <span class="case-http mono"
@@ -596,7 +779,7 @@ watch(
               <template v-if="expandedCases.has(result.case_id)">
                 <div class="trace-line">{{ traceText(result) }}</div>
                 <ExecutionResultDetail
-                  :job-id="_jobId"
+                  :job-id="selectedRunId === 'current' ? _jobId : undefined"
                   :result="result"
                   :source-result="
                     result.source_case_id ? resultById.get(result.source_case_id) : undefined
@@ -608,7 +791,7 @@ watch(
           </section>
         </section>
       </section>
-      <details class="raw-report">
+      <details v-if="reportMd" class="raw-report">
         <summary>测试报告原文 · test_report.md</summary>
         <pre class="report-md mono">{{ reportMd }}</pre>
       </details>
@@ -621,6 +804,45 @@ watch(
 .report {
   max-width: 1200px;
   margin: 0 auto;
+}
+.run-history {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.run-history > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 15rem;
+}
+.run-history > div span,
+.run-summary {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+.run-history label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.run-history select {
+  max-width: min(34rem, 70vw);
+}
+.run-summary {
+  flex-basis: 100%;
+  margin: 0;
+}
+.run-refresh-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--warning);
 }
 .state-line {
   padding: var(--space-3);
@@ -766,6 +988,15 @@ summary:focus-visible {
 .hint-notice {
   background: var(--accent-dim);
   color: var(--text-2);
+}
+.hint-notice button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--accent-strong);
+  font: inherit;
+  cursor: pointer;
 }
 .flow-tabs {
   display: flex;
@@ -961,6 +1192,9 @@ summary:focus-visible {
 .case-http {
   font-size: var(--text-xs);
   color: var(--text-3);
+}
+.case-business-error {
+  color: var(--warning);
 }
 .case-http {
   display: flex;

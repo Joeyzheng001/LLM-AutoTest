@@ -66,6 +66,54 @@ def controller_exits(texts: dict[str, str]) -> list[dict[str, str]]:
     return exits
 
 
+def returned_service_catches(texts: dict[str, str]) -> list[dict[str, str]]:
+    """Keep a called method's catch when it returns its response normally."""
+    exits: list[dict[str, str]] = []
+    for ref, source in texts.items():
+        if re.search(r"@(?:Get|Post|Put|Patch|Delete|Request)Mapping\b", source):
+            continue
+        method = _method(source)
+        if method is None:
+            continue
+        code = _mask(source)
+        method_end = _close(code, method[2], "{", "}")
+        if method_end is None:
+            continue
+        for index, catch in enumerate(re.finditer(r"\bcatch\s*\(", code), 1):
+            if not method[2] < catch.start() < method_end:
+                continue
+            opening = code.find("(", catch.start(), catch.end())
+            closing = _close(code, opening, "(", ")")
+            if closing is None:
+                continue
+            brace = closing + 1
+            while brace < len(code) and code[brace].isspace():
+                brace += 1
+            end = _close(code, brace, "{", "}") if brace < len(code) and code[brace] == "{" else None
+            if end is None or end >= method_end:
+                continue
+            if re.search(r"\b(?:throw|return)\b", code[brace + 1:end]):
+                continue
+            # A later throw or conditional return does not prove the catch is
+            # converted into the value sent by the controller.
+            suffix = code[end + 1:method_end]
+            returned = re.search(r"\breturn\s+([A-Za-z_$][\w$]*)\s*;", suffix)
+            if returned is None or suffix[:returned.start()].count("{") != suffix[:returned.start()].count("}"):
+                continue
+            if re.search(r"\b(?:throw|finally)\b", suffix[:returned.start()]):
+                continue
+            variable = returned.group(1)
+            if not re.search(r"\b" + re.escape(variable) + r"\s*=|\b" + re.escape(variable) + r"\s*\.\s*set\w+\s*\(", code[method[2]:end]):
+                continue
+            exits.append({
+                "branch_id": f"{ref}:catch:{index}", "node_kind": "catch",
+                "evidence_ref": ref, "quote": source[catch.start():closing + 1],
+                "body_quote": source[brace:end + 1],
+                "control_kind": "unresolved", "required_controls": "",
+            })
+    return exits
+
+
 def bind_exception_exit(raw: dict[str, Any], texts: dict[str, str]) -> dict[str, Any]:
     """Bind a missing catch ID only through a cited catch body, never a title."""
     if raw.get("category") != "exception" or raw.get("branch_id"):

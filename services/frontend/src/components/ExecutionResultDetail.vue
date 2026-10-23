@@ -180,6 +180,25 @@ async function copy(value: unknown, label: string): Promise<void> {
           需准备：{{ result.missing_control_kinds.join('、') }}
         </p>
       </section>
+      <section v-if="result.unit_test" class="assertion-panel">
+        <h4>隔离单元测试</h4>
+        <p>
+          {{ result.unit_test.status === 'passed' ? '通过' : '未通过或未运行' }}
+          <template v-if="result.unit_test.test_class"> · {{ result.unit_test.test_class }}</template>
+        </p>
+        <p v-if="result.unit_test.reason">{{ result.unit_test.reason }}</p>
+        <p v-if="result.unit_test.covered_evidence_lines" class="empty-note">
+          JaCoCo 记录命中 {{ result.unit_test.covered_evidence_lines }} 行源码证据。
+        </p>
+        <p v-if="result.unit_test.log_artifact" class="empty-note">
+          运行日志：{{ result.unit_test.log_artifact }}
+        </p>
+        <p class="empty-note">单测结果不代表部署接口的 HTTP 响应已通过。</p>
+        <details v-if="result.unit_test.source" class="headers-detail">
+          <summary>查看生成的 Java 单测</summary>
+          <pre>{{ result.unit_test.source }}</pre>
+        </details>
+      </section>
       <details v-if="result.branch_observation" class="headers-detail">
         <summary>源码路径观察</summary>
         <pre>{{ json(result.branch_observation) }}</pre>

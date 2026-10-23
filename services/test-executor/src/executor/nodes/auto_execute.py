@@ -56,6 +56,7 @@ from common.response_assertions import (
 )
 from common.oracle_conditions import execution_blockers, required_control_kinds as required_control_kinds_for_oracle
 from common.security import redact_secrets
+from executor.unit_coverage import run_controlled_unit_coverage
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
@@ -221,6 +222,7 @@ class InvokeRequest:
     params: dict[str, Any]
     # inherit：使用任务登录会话；missing：不带认证；invalid：明确伪造认证。
     auth_mode: str = "inherit"
+    body_encoding: str | None = None
     timeout_s: float = _DEFAULT_TIMEOUT_S
 
 
@@ -302,11 +304,17 @@ class RestRunner:
                         or "autotest-invalid-user",
                     }
                 merged = {**inherited_headers, **headers}
+                wire_body: dict[str, Any]
+                if request.body_encoding == "json_null":
+                    merged["content-type"] = "application/json"
+                    wire_body = {"content": b"null"}
+                else:
+                    wire_body = {"json": body if body_supplied else None}
                 outgoing = client.build_request(
                     method,
                     path,
                     params=query or None,
-                    json=body if body_supplied else None,
+                    **wire_body,
                     headers=merged or None,
                 )
                 request_info = _request_info(
@@ -316,6 +324,8 @@ class RestRunner:
                     attempted=True,
                     sensitive_path_values=self._sensitive_path_values(request),
                 )
+                if request.body_encoding:
+                    request_info["body_encoding"] = request.body_encoding
                 response = await client.send(outgoing)
                 # P-12：Django APPEND_SLASH 301 补偿（同 method 重发一次）
                 location = response.headers.get("location", "")
@@ -327,7 +337,7 @@ class RestRunner:
                             method,
                             redirect_path,
                             params=query or None,
-                            json=body if body_supplied else None,
+                            **wire_body,
                             headers=merged or None,
                         )
                         request_info = _request_info(
@@ -337,6 +347,8 @@ class RestRunner:
                             attempted=True,
                             sensitive_path_values=self._sensitive_path_values(request),
                         )
+                        if request.body_encoding:
+                            request_info["body_encoding"] = request.body_encoding
                         response = await client.send(outgoing)
                 # 部分 Django 部署由 Nginx 代理，POST 无尾斜杠不会收到 APPEND_SLASH
                 # 的 301，而是被前置层直接 405。只对非根路径做一次同路径斜杠补偿。
@@ -345,7 +357,7 @@ class RestRunner:
                         method,
                         f"{path}/",
                         params=query or None,
-                        json=body if body_supplied else None,
+                        **wire_body,
                         headers=merged or None,
                     )
                     request_info = _request_info(
@@ -355,6 +367,8 @@ class RestRunner:
                         attempted=True,
                         sensitive_path_values=self._sensitive_path_values(request),
                     )
+                    if request.body_encoding:
+                        request_info["body_encoding"] = request.body_encoding
                     response = await client.send(outgoing)
         except httpx.TimeoutException as exc:
             return InvokeResponse(
@@ -412,7 +426,9 @@ class RestRunner:
         preview_headers = dict(merged)
         if body_supplied:
             preview_headers.setdefault("content-type", "application/json")
-        return _request_info_values(
+        if request.body_encoding == "json_null":
+            preview_headers["content-type"] = "application/json"
+        info = _request_info_values(
             method=method,
             url=str(url),
             headers=preview_headers,
@@ -421,6 +437,9 @@ class RestRunner:
             attempted=False,
             sensitive_path_values=self._sensitive_path_values(request),
         )
+        if request.body_encoding:
+            info["body_encoding"] = request.body_encoding
+        return info
 
     def _sensitive_path_values(self, request: InvokeRequest) -> list[str]:
         param_defs = {
@@ -1535,6 +1554,7 @@ async def run_auto_execute(
         except FileNotFoundError:
             job_input = {}
         auto_record_fixtures = bool(job_input.get("auto_record_fixtures", False))
+        required_body_contract = job_input.get("required_body_contract")
         oracles_by_id = {
             str(item.get("oracle_id", "")): item for item in review.get("test_oracles") or []
             if isinstance(item, dict)
@@ -1638,9 +1658,29 @@ async def run_auto_execute(
                     interface, default_service_url, service_base_urls
                 )
                 canonical_oracle = oracles_by_id.get(str(case.get("oracle_id", "")), {})
+                active_body_contract = (
+                    required_body_contract if isinstance(required_body_contract, dict)
+                    and case.get("oracle_basis") == "spring_required_body"
+                    and if_id in (required_body_contract.get("interface_ids") or [])
+                    and required_body_contract.get("source") == "user_confirmed_environment"
+                    else None
+                )
+                effective_case = case
+                if active_body_contract:
+                    contract_assertions = [{"path": "returnCode", "op": "equals",
+                                            "value": active_body_contract["return_code"]}]
+                    if active_body_contract.get("body_is_null"):
+                        contract_assertions.append({"path": "body", "op": "equals", "value": None})
+                    effective_case = {**case, "expected": f"status={active_body_contract['http_status']}",
+                                      "assertions": contract_assertions,
+                                      "environment_contract_confirmed": True,
+                                      "expectation_source": "user_confirmed_environment"}
                 blockers = list(dict.fromkeys(
                     execution_blockers(canonical_oracle) + list(case.get("execution_blockers") or [])
                 ))
+                if active_body_contract:
+                    blockers = [reason for reason in blockers if reason !=
+                                "本接口处理行为已有源码依据，HTTP 响应映射尚未确认"]
                 case_control_fixtures = _matching_case_control_fixtures(case, control_fixture_configs)
                 required_kinds = set(case.get("oracle_control_kinds") or [])
                 required_kinds.update(canonical_oracle.get("control_kinds") or [])
@@ -1694,7 +1734,8 @@ async def run_auto_execute(
                         case, "X-EXEC-05：源码造数计划只支持 REST 接口"
                     ))
                     continue
-                prepared_case = {**case, "observe_unknown_contract": True} if observe_contract else case
+                prepared_case = ({**effective_case, "observe_unknown_contract": True}
+                                 if observe_contract else effective_case)
                 fixture_record: dict[str, Any] | None = None
                 fixture_ready = (
                     isinstance(plan, dict) and protocol == "rest"
@@ -2019,12 +2060,31 @@ async def run_auto_execute(
                 )
             if result["execution_state"] == "observed_unjudged":
                 result["skipped"] = False
+        unit_coverage: dict[str, Any] | None = None
+        if job_input.get("generate_unit_tests"):
+            try:
+                inventory = store.read_json(state.job_id, "code_inventory.json")
+            except FileNotFoundError:
+                inventory = {}
+            try:
+                unit_coverage = await run_controlled_unit_coverage(
+                    store, state.job_id, testcases, results, interfaces, review,
+                    inventory, llm, prompts_dir,
+                )
+            except Exception as exc:  # 单测附加分析不能吞掉已完成的接口结果
+                unit_coverage = {
+                    "status": "unavailable", "reason": f"隔离单元测试未完成（{type(exc).__name__}）",
+                    "cases_total": 0, "cases_passed": 0, "cases_failed": 0,
+                    "repositories": [],
+                }
         payload: dict[str, Any] = {
             "schema_version": "1.0",
             "job_id": state.job_id,
             "results": results,
             "summary": _summarize(results),
         }
+        if unit_coverage is not None:
+            payload["unit_test_coverage"] = unit_coverage
         if degraded_protocols:
             payload["degraded_protocols"] = list(degraded_protocols.values())
         if fixture_records:
@@ -2293,6 +2353,8 @@ async def _execute_case(
         **_case_trace_fields(case),
         "timestamp": _now_iso(),
     }
+    if case.get("expectation_source"):
+        base["expectation_source"] = case["expectation_source"]
     if case.get("oracle_status") == "unverified":
         base.update(
             {
@@ -2335,7 +2397,8 @@ async def _execute_case(
     raw_params = case.get("params")
     params: dict[str, Any] = dict(raw_params) if isinstance(raw_params, dict) else {}
     invoke_request = InvokeRequest(
-        interface=interface, params=params, auth_mode=resolved_auth_mode(case)
+        interface=interface, params=params, auth_mode=resolved_auth_mode(case),
+        body_encoding=case.get("body_encoding"),
     )
 
     # R-GEN-03 特例：不可加载脚本跳过执行并计数（不静默）
@@ -2399,6 +2462,17 @@ async def _execute_case(
         )
         return base
 
+    if (protocol == "rest" and isinstance(response.body, str)
+            and re.match(r"(?is)^\s*(?:<!doctype\s+html|<html\b)", response.body)):
+        base.update({
+            "passed": False, "failure_kind": "environment",
+            "failure_reason": "目标接口返回 HTML 页面；请核对仓库 service_base_url 与接口路径前缀",
+            "actual_status": response.status or 0,
+            "actual_body": _safe_actual_body(response.body),
+            "timeout": response.timed_out, "duration_ms": response.duration_ms,
+        })
+        return base
+
     # 断言判定（与 retest 同源）：状态码 + 结构化业务字段断言
     status = response.status or 0
     base["actual_status"] = status
@@ -2451,12 +2525,29 @@ async def _execute_case(
     is_pass, semantic_failures = _judge_assertion(
         str(case.get("expected", "")), status, response.body, case.get("assertions"), normalized_case.get("params")
     )
-    if case.get("oracle_basis") == "spring_required_body" and not is_pass:
-        # A framework default does not prove the gateway preserves its mapping.
+    dependency_contract = case.get("dependency_contract")
+    if isinstance(dependency_contract, dict) and not dependency_contract.get("deployment_verified"):
+        base["expectation_source"] = "local_dependency_bytecode"
+        if not is_pass:
+            base.update({
+                "passed": False, "failure_kind": None,
+                "failure_reason": (
+                    "实际响应与本地 Maven 依赖字节码契约不符；部署依赖版本摘要尚未核对，"
+                    "需先确认运行环境，暂不判定产品缺陷"
+                ),
+                "timeout": response.timed_out, "duration_ms": response.duration_ms,
+                "skipped": False, "skipped_reason": "部署依赖版本待确认",
+                "execution_state": "observed_unjudged",
+            })
+            return base
+    if (case.get("oracle_basis") == "spring_required_body" and not is_pass
+            and not case.get("environment_contract_confirmed")
+            and not isinstance(dependency_contract, dict)):
+        # The required body binding does not prove the gateway's HTTP mapping.
         # Retain the observed response without inventing a project contract.
         base.update({
             "passed": False, "failure_kind": None,
-            "failure_reason": f"框架默认响应与被测环境不同（HTTP {status}）；需确认项目/网关异常包装，尚未判定业务缺陷",
+            "failure_reason": f"必填请求体的部署响应契约待确认（实测 HTTP {status}）；尚未判定业务缺陷",
             "timeout": response.timed_out, "duration_ms": response.duration_ms,
             "skipped": False, "skipped_reason": "框架响应待确认", "execution_state": "observed_unjudged",
         })

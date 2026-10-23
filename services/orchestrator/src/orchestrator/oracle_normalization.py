@@ -55,18 +55,16 @@ def framework_body_design(interface: dict[str, Any], texts: dict[str, str]) -> d
     if binding is None:
         return None
     name, ref, quote = binding
-    # A project handler can override Spring's default 400. Preserve the boundary
-    # design even when that override has not yet been mapped to an HTTP contract.
-    override = any(re.search(r"@ExceptionHandler\s*\([^)]*(?:Exception\.class|HttpMessageNotReadableException)", source)
-                   for source in texts.values())
+    # @RequestBody proves a required input, but it cannot prove the deployed
+    # gateway's HTTP mapping. An upstream handler may translate the exception.
     return {
         "interface_id": interface["id"], "category": "boundary",
-        "scenario": "请求体为空或为 JSON null 时，框架拒绝必填请求体绑定",
+        "scenario": "必填请求体缺失时的响应契约待确认",
         "oracle_basis": "spring_required_body",
         "preconditions": [{"path": name, "op": "equals", "value": None}],
-        "state_conditions": [], "expected_status": "unresolved" if override else "status=400",
+        "state_conditions": [], "expected_status": "unresolved",
         "assertions": [],
-        "expected_behavior": {"description": "必填请求体缺失，在业务方法调用前拒绝请求；Spring 默认 HTTP 400，项目异常处理优先",
+        "expected_behavior": {"description": "请求体为必填；部署环境的 HTTP 状态和异常响应须由项目处理器或实测契约确认",
                               "evidence_ref": ref, "quote": quote},
         "evidence_refs": [ref],
         "evidence_quotes": [{"target": target, "evidence_ref": ref, "quote": quote}

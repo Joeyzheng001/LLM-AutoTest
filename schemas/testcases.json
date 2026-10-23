@@ -160,6 +160,10 @@
             "description": "F-GEN-02：参数名与结构仅来自 interfaces.json，出现清单外参数即打回",
             "additionalProperties": true
           },
+          "body_encoding": {
+            "enum": ["empty", "json_null"],
+            "description": "必填请求体边界用例的实际报文形式"
+          },
           "auth_mode": {
             "type": "string",
             "enum": [
@@ -314,6 +318,16 @@
               "spring_required_body",
               "integration_entry"
             ]
+          },
+          "dependency_contract": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["coordinate", "sha256", "deployment_verified"],
+            "properties": {
+              "coordinate": {"type": "string", "minLength": 1},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+              "deployment_verified": {"type": "boolean"}
+            }
           },
           "assertion_scope": {
             "type": "string",

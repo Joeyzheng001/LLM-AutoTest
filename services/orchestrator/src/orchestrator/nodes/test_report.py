@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from common.artifacts import ArtifactStore
 from common.design_coverage import oracle_request_bindings
@@ -35,7 +36,7 @@ from orchestrator.oracle_diagnostics import build_oracle_diagnostics
 
 NODE_NAME = "test_report"
 
-_JUDGE_NOTE = "执行通过率口径：环境失败、未执行和已请求待判定不计入分母；复用响应的判定计入通过或失败，不重复计数；仅状态码断言不等同业务通过。"
+_JUDGE_NOTE = "断言符合率口径：环境失败、未执行和已请求待判定不计入分母；复用响应的判定计入符合或失败，不重复计数；仅状态码断言不等同业务通过。"
 
 
 async def run_test_report(engine: Engine, state: JobState, store: ArtifactStore) -> Path:
@@ -57,8 +58,9 @@ async def run_test_report(engine: Engine, state: JobState, store: ArtifactStore)
         interfaces = _load_json(store, state.job_id, "interfaces.json")
         review = _load_optional_json(store, state.job_id, "review_mapping.json")
         testcases = _load_optional_json(store, state.job_id, "testcases.json")
+        job_input = _load_optional_json(store, state.job_id, "job_input.json")
 
-        report = _render_markdown(state.job_id, execution, interfaces, state, review, testcases)
+        report = _render_markdown(state.job_id, execution, interfaces, state, review, testcases, job_input)
         metrics = _build_metrics(state)
         store.write_raw(state.job_id, "test_report.md", report)
         store.write(state.job_id, "metrics.json", metrics)
@@ -103,6 +105,7 @@ def _render_markdown(
     state: JobState,
     review: dict[str, Any] | None = None,
     testcases: dict[str, Any] | None = None,
+    job_input: dict[str, Any] | None = None,
 ) -> str:
     """程序化渲染报告（数值不经 LLM，F-RPT-02）。"""
     results: list[dict[str, Any]] = list(execution.get("results", []))
@@ -114,10 +117,24 @@ def _render_markdown(
     }
 
     judged = summary.get("passed", 0) + summary.get("failed_assertion", 0)
+    direct_judged = [r for r in results if (r.get("request") or {}).get("attempted") is True
+                     and (r.get("passed") is True or r.get("failure_kind") == "assertion")]
+    direct_passed = sum(r.get("passed") is True for r in direct_judged)
     total = summary.get("total", 0)
     status_only_rows = [r for r in results if r.get("assertion_scope") == "status_only"]
     structure_rows = [r for r in results if r.get("assertion_scope") == "response_structure"]
-    business_passed = sum(r.get("passed") is True and r.get("assertion_scope") == "business" for r in results)
+    business_passed = sum(r.get("passed") is True and r.get("category") == "normal"
+                          and r.get("assertion_scope") == "business" for r in results)
+    weak_check_errors = [r for r in results if r.get("passed") is True
+                         and r.get("execution_state") != "reused_response"
+                         and r.get("assertion_scope") in {"status_only", "response_structure"}
+                         and _observed_business_errors(r.get("actual_body"))]
+    environment_contract_rows = [r for r in results
+                                 if r.get("expectation_source") == "user_confirmed_environment"
+                                 and (r.get("passed") is True or r.get("failure_kind") == "assertion")]
+    dependency_contract_rows = [r for r in results
+                                if r.get("expectation_source") == "local_dependency_bytecode"
+                                and r.get("passed") is True]
     unverified_rows = [r for r in results if r.get("assertion_scope") == "unverified"]
     lines: list[str] = [
         f"# 测试报告（{job_id}）",
@@ -130,32 +147,116 @@ def _render_markdown(
         "| 指标 | 数值 |",
         "| --- | --- |",
         f"| 总用例 | {total} |",
-        f"| 断言通过（含状态/结构检查） | {summary.get('passed', 0)} |",
-        f"| 其中业务预期通过 | {business_passed} |",
+        f"| 断言符合（含状态/结构检查与复用响应） | {summary.get('passed', 0)} |",
+        f"| 其中直接请求断言符合 | {direct_passed} |",
+        f"| 其中正常场景业务字段断言符合（含复用响应） | {business_passed} |",
+        f"| 按用户确认的环境响应契约判定 | {len(environment_contract_rows)} |",
+        f"| 按本地依赖字节码契约判定符合 | {len(dependency_contract_rows)} |",
         f"| 断言失败（计缺陷） | {summary.get('failed_assertion', 0)} |",
         f"| 环境失败（不计缺陷） | {summary.get('failed_environment', 0)} |",
         f"| 实际发送请求 | {summary.get('actual_requests', sum((r.get('request') or {}).get('attempted') is True for r in results))} |",
         f"| 已请求待判定 | {summary.get('observed_unjudged', 0)} |",
         f"| 复用实际响应核对 | {summary.get('reused_response', 0)} |",
         f"| 未执行 | {summary.get('not_executed', summary.get('skipped', 0))} |",
+        f"| 断言判读覆盖率 | {judged}/{total}（{judged / total:.1%}） |" if total else "| 断言判读覆盖率 | 0/0 |",
+        f"| 直接请求断言符合率 | {direct_passed}/{len(direct_judged)}（{direct_passed / len(direct_judged):.1%}） |"
+        if direct_judged else "| 直接请求断言符合率 | 不输出——无可判读的直接请求 |",
     ]
     if total > 0 and judged == 0:
-        lines.append("| 通过率 | 不输出——无可判读结果（X-RPT-02，全量环境失败/跳过） |")
+        lines.append("| 断言符合率（含复用） | 不输出——无可判读结果（X-RPT-02，全量环境失败/跳过） |")
     elif judged > 0:
         rate = summary.get("passed", 0) / judged
-        lines.append(f"| 通过率 | {rate:.1%}（{summary.get('passed', 0)}/{judged} 可判读） |")
-    lines += ["", "用例总数 = 断言通过 + 断言失败 + 环境失败 + 已请求待判定 + 未执行。"
+        lines.append(f"| 断言符合率（含复用） | {rate:.1%}（{summary.get('passed', 0)}/{judged} 可判读） |")
+    lines += ["", "用例总数 = 断言符合 + 断言失败 + 环境失败 + 已请求待判定 + 未执行。"
               "复用响应数量已包含在相应判定中，实际请求次数单独统计。", "", _JUDGE_NOTE, ""]
+    unit_coverage = execution.get("unit_test_coverage")
+    if isinstance(unit_coverage, dict):
+        lines += [
+            "### 隔离单元测试与 JaCoCo 行覆盖率", "",
+            "单元测试验证隔离源码副本中的内部逻辑；其通过数不计入接口请求通过数。",
+            f"候选用例：{unit_coverage.get('cases_total', 0)}；"
+            f"单测通过：{unit_coverage.get('cases_passed', 0)}；"
+            f"其余：{unit_coverage.get('cases_failed', 0)}。", "",
+            "| 用例 | 仓库 / 模块 | 目标提交 | 已覆盖行 / 可执行行 | 行覆盖率 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        if unit_coverage.get("reason"):
+            lines[-2:-2] = [f"单测说明：{unit_coverage['reason']}", ""]
+        for repo in unit_coverage.get("repositories") or []:
+            for module in repo.get("modules") or []:
+                coverage = module.get("line_coverage") or {}
+                covered = int(coverage.get("covered", 0))
+                missed = int(coverage.get("missed", 0))
+                denominator = covered + missed
+                rate = f"{covered / denominator:.1%}" if denominator else "无数据"
+                lines.append(
+                    f"| {module.get('case_id', '')} | {repo.get('repo', '')} / {module.get('module', '')} | "
+                    f"{str(repo.get('source_sha', ''))[:12]} | {covered}/{denominator} | {rate} |"
+                )
+        lines.append("")
+        if not any(repo.get("modules") for repo in unit_coverage.get("repositories") or []):
+            lines.append("本轮未产出可核验的 JaCoCo XML；不输出覆盖率百分比。")
+            lines.append("")
+        unit_rows = [item for repo in unit_coverage.get("repositories") or []
+                     for item in repo.get("cases") or []]
+        if unit_rows:
+            lines += ["| 接口用例 | 单测结果 | 说明 |", "| --- | --- | --- |"]
+            for item in unit_rows:
+                lines.append(
+                    f"| {item.get('case_id', '')} | {item.get('status', '')} | "
+                    f"{str(item.get('reason', ''))[:180].replace('|', '｜')} |"
+                )
+            lines.append("")
+    if any(r.get("expectation_source") == "local_dependency_bytecode" for r in results):
+        lines += [
+            "本地依赖字节码契约已核对 Maven 缓存 JAR 与自动配置导入链；"
+            "部署 JAR 摘要尚未核对。符合仅表示实际响应匹配该依赖契约，"
+            "不符先列为版本/环境待确认，不直接计产品缺陷。通用异常响应本身不能证明具体抛错点已命中。",
+            "",
+        ]
     lines += [
         f"未配置业务响应断言：{len(status_only_rows)} 条。此类用例即使显示通过，也只表示 HTTP 状态符合预期，尚未验证响应字段或业务结果。",
+        f"其中 {len(weak_check_errors)} 条状态或结构检查虽符合，但响应含明确的业务错误码；需补成功条件或按入口探针展示。",
         f"仅响应结构检查：{len(structure_rows)} 条。编号回显、字段存在性不能证明通道选择、结果组装等业务规则通过。",
         f"缺少源码确认预期、未发起请求：{len(unverified_rows)} 条。此类用例不计入通过率，也不会进入缺陷判定。",
         "",
     ]
+    if weak_check_errors:
+        lines += ["### 状态或结构检查符合，但响应含业务错误", "",
+                  "以下仅是响应诊断，不自动改写已有断言结论；需要回到 Code Review 核对执行器支持范围和成功条件。", "",
+                  "| 用例 | 接口 | 观察到的错误码 |", "| --- | --- | --- |"]
+        lines += [f"| {row.get('case_id', '')} | {row.get('interface_id', '')} | {', '.join(_observed_business_errors(row.get('actual_body')))} |"
+                  for row in weak_check_errors]
+        lines.append("")
+    if environment_contract_rows:
+        lines += ["### 用户确认的环境响应契约", "",
+                  "这些用例按当前任务配置的 HTTP 状态、returnCode 和 body 判定。该契约只证明响应符合当前环境约定；通用错误码本身不能定位拒绝发生在绑定阶段。", "",
+                  _results_table(environment_contract_rows), ""]
+    if job_input:
+        repo_urls = {
+            str(repo.get("name", "")): _safe_route_base(str(repo.get("service_base_url") or ""))
+            for repo in job_input.get("repos") or [] if isinstance(repo, dict)
+        }
+        default_url = _safe_route_base(str(job_input.get("rest_url") or ""))
+        route_rows = []
+        for interface in interfaces.get("interfaces") or []:
+            if interface.get("protocol") != "rest":
+                continue
+            repo = str((interface.get("code_location") or {}).get("repo", ""))
+            base = repo_urls.get(repo) or default_url
+            path = str((interface.get("signature") or {}).get("path", ""))
+            route_rows.append((str(interface.get("id", "")), repo, base + "/" + path.lstrip("/"),
+                               "仓库地址" if repo_urls.get(repo) else "任务地址回退"))
+        if route_rows:
+            lines += ["### 接口实际路由配置", "", "| 接口 | 仓库 | 目标 URL 模板 | 地址来源 |",
+                      "| --- | --- | --- | --- |"]
+            lines += [f"| {if_id} | {repo} | {url} | {source} |"
+                      for if_id, repo, url, source in route_rows]
+            lines.append("")
     framework_observations = [row for row in results if row.get("skipped_reason") == "框架响应待确认"]
     if framework_observations:
         lines += ["### 框架边界响应待确认", "",
-                  "以下请求已发送并保留实际响应；框架默认状态与部署环境的异常包装不同，暂不计为产品缺陷，也不按实际响应反写预期。", "",
+                  "以下请求已发送并保留实际响应；必填请求体的部署响应契约尚未确认，暂不计为产品缺陷，也不按实际响应反写预期。", "",
                   "| 用例 | 接口 | 参考预期 | 实际 HTTP |", "| --- | --- | --- | --- |"]
         lines += [f"| {row.get('case_id', '')} | {row.get('interface_id', '')} | {row.get('expected', '')} | {row.get('actual_status', '')} |" for row in framework_observations]
         lines.append("")
@@ -167,8 +268,8 @@ def _render_markdown(
     if reused:
         lines += ["### 复用真实响应的条件场景", "",
                   "仅在源码可映射的返回字段和前序路径条件均满足时，核对该场景原有断言；不新增请求，不反写预期，不代表内部调用已被跟踪。", "",
-                  "| 场景 | 响应来自 | 断言结果 |", "| --- | --- | --- |"]
-        lines += [f"| {row.get('case_id')} | {row.get('source_case_id')} | {'通过' if row.get('passed') else '失败'} |" for row in reused]
+                  "| 场景 | 响应来自 | 字段核对 |", "| --- | --- | --- |"]
+        lines += [f"| {row.get('case_id')} | {row.get('source_case_id')} | {'符合' if row.get('passed') else '不符合'} |" for row in reused]
         lines.append("")
     designed_cases = [case for case in (testcases or {}).get("cases", []) if isinstance(case, dict)]
     source_designs = [oracle for oracle in (review or {}).get("test_oracles", []) if isinstance(oracle, dict)]
@@ -177,9 +278,9 @@ def _render_markdown(
     if testcases is not None:
         lines += [
             "### 正常场景验证情况", "",
-            "用例设计、实际执行与通过分别统计；响应契约通过不等于已证明内部路径覆盖。", "",
-            "| 接口 | 正常用例设计 | 实际执行 | 业务预期通过 | 未执行 |",
-            "| --- | --- | --- | --- | --- |",
+            "直接请求、复用响应和业务字段断言分别统计；字段符合不代表内部调用已被跟踪。", "",
+            "| 接口 | 正常用例设计 | 直接请求 | 复用响应 | 直接请求业务断言符合 | 复用字段符合 | 未执行 |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
         ]
         normal_gaps: list[str] = []
         for interface in interfaces.get("interfaces", []):
@@ -187,18 +288,23 @@ def _render_markdown(
             normal = [case for case in designed_cases
                       if case.get("interface_id") == interface_id and case.get("category") == "normal"]
             normal_results = [result_by_case.get(str(case.get("id", "")), {}) for case in normal]
-            executed = [result for result in normal_results if result and (
-                (result.get("request") or {}).get("attempted") is True
-                or result.get("execution_state") == "reused_response"
-                or (not result.get("skipped_reason") and result.get("actual_status") is not None)
-            )]
-            passed = sum(result.get("passed") is True and result.get("assertion_scope") == "business" for result in executed)
-            lines.append(f"| {interface_id} | {len(normal)} | {len(executed)} | {passed} | {len(normal) - len(executed)} |")
-            if passed == 0:
+            direct = [result for result in normal_results if result and
+                      result.get("execution_state") != "reused_response" and
+                      ((result.get("request") or {}).get("attempted") is True
+                       or (not result.get("skipped_reason") and result.get("actual_status") is not None))]
+            reused_normal = [result for result in normal_results if result and
+                             result.get("execution_state") == "reused_response"]
+            direct_business = sum(result.get("passed") is True and result.get("assertion_scope") == "business"
+                                  for result in direct)
+            reused_matched = sum(result.get("passed") is True for result in reused_normal)
+            not_executed = len(normal) - len(direct) - len(reused_normal)
+            lines.append(f"| {interface_id} | {len(normal)} | {len(direct)} | {len(reused_normal)} | "
+                         f"{direct_business} | {reused_matched} | {not_executed} |")
+            if direct_business == 0:
                 normal_gaps.append(interface_id)
         if normal_gaps:
             lines += ["", "**正常业务验证未完成**：" + "、".join(normal_gaps)
-                      + " 没有通过的正常场景；整体执行通过率不能作为这些接口的业务验收结论。"]
+                      + " 没有直接请求且业务字段断言符合的正常场景；整体断言符合率不能作为这些接口的业务验收结论。"]
         stateful = [case for case in designed_cases
                     if case.get("state_conditions") or case.get("execution_blockers")]
         if stateful:
@@ -247,8 +353,9 @@ def _render_markdown(
     ]
     if source_designs:
         lines += ["### 源码场景与请求设计", "",
-                  f"源码场景 {len(source_designs)} 个，已绑定有效请求设计 {len(bound_oracles)} 个，"
-                  f"待补有效请求 {len(missing_request_ids)} 个。该统计不表示环境条件已满足或请求已经执行。", ""]
+                  f"最终准入的源码预期 {len(source_designs)} 个，已绑定请求设计 {len(bound_oracles)} 个，"
+                  f"待补请求设计 {len(missing_request_ids)} 个。该统计不表示环境条件已满足或请求已经执行；"
+                  "静态分支候选和被隔离的预期不在此分母内，需结合评审诊断核对。", ""]
         if missing_request_ids:
             lines += ["待补场景：" + "、".join(sorted(missing_request_ids)), ""]
     # Historical artifacts retain pre-recovery warnings. Report the final binding
@@ -280,6 +387,7 @@ def _render_markdown(
             "candidate_invalid": "本轮未形成有效预期",
             "control_required": "运行控制条件未满足",
             "execution_pending": "异常触发或数据条件未满足",
+            "environment_pending": "设计已保留，部署配置待验证",
             "response_evidence_missing": "响应预期尚未确认",
             "framework_boundary": "HTTP 框架边界",
             "resolved": "系统已处理",
@@ -387,14 +495,50 @@ def _render_markdown(
 
 def _result_verdict(result: dict[str, Any]) -> str:
     if result.get("execution_state") == "reused_response":
-        return f"复用 {result.get('source_case_id')}：{'通过' if result.get('passed') else '失败'}"
+        return f"复用 {result.get('source_case_id')}：响应字段{'符合' if result.get('passed') else '不符合'}"
     if result.get("execution_state") == "observed_unjudged" or (
         result.get("skipped_reason") and (result.get("request") or {}).get("attempted") is True
     ):
         return "已请求，" + str(result.get("skipped_reason") or "待判定")
     if result.get("skipped_reason") or result.get("skipped"):
         return "未执行"
-    return "通过" if result.get("passed") is True else "失败"
+    if result.get("passed") is True:
+        return {
+            "status_only": "HTTP 状态符合",
+            "response_structure": "结构/回显符合",
+            "business": "业务断言符合",
+        }.get(str(result.get("assertion_scope")), "断言符合")
+    return "失败"
+
+
+def _safe_route_base(value: str) -> str:
+    parsed = urlsplit(value)
+    host = parsed.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parsed.scheme, host, parsed.path.rstrip("/"), "", ""))
+
+
+def _observed_business_errors(payload: Any) -> list[str]:
+    """Show explicit error codes without treating them as an oracle assertion."""
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(payload, dict):
+        return []
+    errors: list[str] = []
+    for field, successes in (("returnCode", {"0", "0000", "200"}),
+                             ("resultCode", {"0", "0000", "200"})):
+        value = payload.get(field)
+        if value is not None and str(value) not in successes:
+            errors.append(f"{field}={value}")
+    for object_name, field in (("icmTrialObj", "errCode"), ("o32TrialObj", "ErrorCode")):
+        nested = payload.get(object_name)
+        if isinstance(nested, dict):
+            value = nested.get(field)
+            if value is not None and str(value) not in {"0", "0000"}:
+                errors.append(f"{object_name}.{field}={value}")
+    return errors
 
 
 def _results_table(rows: list[dict[str, Any]]) -> str:
@@ -429,6 +573,8 @@ def _failure_request_details(rows: list[dict[str, Any]]) -> list[str]:
             f"- 请求：{method} {url}",
             f"- 状态：{sent}",
         ]
+        if request.get("body_encoding"):
+            lines.append(f"- 请求体形式：{request['body_encoding']}")
         for key, label in (
             ("query_params", "查询参数"),
             ("body", "请求体"),

@@ -86,6 +86,26 @@ const llmVerificationOk = ref(false)
 const authSessionId = ref('')
 const savedOnly = ref(false)
 
+const dbReadOnlyEnabled = ref(false)
+const existingDbPassword = ref(false)
+const dbReadOnly = reactive({
+  databaseType: 'oracle' as 'mysql' | 'postgresql' | 'oracle' | 'sqlserver',
+  host: '',
+  port: 1521,
+  database: '',
+  schemaName: '',
+  username: '',
+  password: '',
+})
+function updateDbDefaultPort(): void {
+  dbReadOnly.port = {
+    oracle: 1521,
+    mysql: 3306,
+    postgresql: 5432,
+    sqlserver: 1433,
+  }[dbReadOnly.databaseType]
+}
+
 // 真实模型配置：随任务提交；浏览器只记住非敏感模型参数，API Key 由服务端 SecretStore 复用。
 const LLM_BROWSER_CONFIG_KEY = 'llm-autotest.llm-config.v1'
 const DRAFT_BROWSER_CONFIG_KEY = 'llm-autotest.task-draft.v1'
@@ -115,6 +135,7 @@ const e2e = reactive({
 const e2eExtra = ref<Partial<import('../api/types').E2eConfig>>({})
 const fixturesJson = ref('')
 const autoRecordFixtures = ref(false)
+const generateUnitTests = ref(false)
 const observeRuntimeContracts = ref(false)
 const fixturePlaceholder =
   '[{"name":"seed-user","phase":"setup","method":"POST","path":"/fixtures/users","body":{"id":1},"expected":"status=201","required":true}]'
@@ -202,6 +223,15 @@ function saveDraft(): void {
           responseHeaderPathsJson: auth.responseHeaderPathsJson,
         },
         authEnabled: authEnabled.value,
+        dbReadOnly: {
+          databaseType: dbReadOnly.databaseType,
+          host: dbReadOnly.host,
+          port: dbReadOnly.port,
+          database: dbReadOnly.database,
+          schemaName: dbReadOnly.schemaName,
+          username: dbReadOnly.username,
+        },
+        dbReadOnlyEnabled: dbReadOnlyEnabled.value,
         llm: {
           model: llm.model,
           baseUrl: llm.baseUrl,
@@ -213,6 +243,7 @@ function saveDraft(): void {
         e2eEnabled: e2eEnabled.value,
         fixturesJson: fixturesJson.value,
         autoRecordFixtures: autoRecordFixtures.value,
+        generateUnitTests: generateUnitTests.value,
         observeRuntimeContracts: observeRuntimeContracts.value,
         restInsecureTls: restInsecureTls.value,
         savedAt: new Date().toISOString(),
@@ -244,12 +275,16 @@ function restoreDraft(): void {
     }
     if (draft.auth && typeof draft.auth === 'object') Object.assign(auth, draft.auth)
     authEnabled.value = Boolean(draft.authEnabled)
+    if (draft.dbReadOnly && typeof draft.dbReadOnly === 'object')
+      Object.assign(dbReadOnly, draft.dbReadOnly)
+    dbReadOnlyEnabled.value = Boolean(draft.dbReadOnlyEnabled)
     if (draft.llm && typeof draft.llm === 'object') Object.assign(llm, draft.llm)
     llmEnabled.value = Boolean(draft.llmEnabled)
     if (draft.e2e && typeof draft.e2e === 'object') Object.assign(e2e, draft.e2e)
     e2eEnabled.value = Boolean(draft.e2eEnabled)
     if (typeof draft.fixturesJson === 'string') fixturesJson.value = draft.fixturesJson
     autoRecordFixtures.value = Boolean(draft.autoRecordFixtures)
+    generateUnitTests.value = Boolean(draft.generateUnitTests)
     observeRuntimeContracts.value = Boolean(draft.observeRuntimeContracts)
     restInsecureTls.value = Boolean(draft.restInsecureTls)
     draftSavedAt.value =
@@ -296,7 +331,7 @@ const activeStep = ref('documents')
 
 const configSteps = [
   { id: 'documents', label: '需求与仓库', hint: '文档版本、仓库地址' },
-  { id: 'environment', label: '被测系统', hint: 'REST 地址、登录、E2E 页面' },
+  { id: 'environment', label: '被测系统', hint: 'REST 地址、登录、只读数据库、E2E 页面' },
   { id: 'credentials', label: '模型配置', hint: '中转站与输出设置' },
   { id: 'confirm', label: '确认提交', hint: '校验并启动' },
 ] as const
@@ -544,6 +579,15 @@ const authValid = computed(
       authContractValid.value),
 )
 
+const dbReadOnlyValid = computed(() =>
+  !dbReadOnlyEnabled.value ||
+  (/^[A-Za-z0-9_.:-]+$/.test(dbReadOnly.host.trim()) &&
+    Number.isInteger(Number(dbReadOnly.port)) && Number(dbReadOnly.port) >= 1 &&
+    Number(dbReadOnly.port) <= 65535 && dbReadOnly.database.trim() !== '' &&
+    dbReadOnly.username.trim() !== '' &&
+    (dbReadOnly.password !== '' || (editingJobId.value !== '' && existingDbPassword.value))),
+)
+
 const llmValid = computed(
   () =>
     !llmEnabled.value ||
@@ -664,6 +708,7 @@ const formValid = computed(
     changeScopeValid.value &&
     restValid.value &&
     authValid.value &&
+    dbReadOnlyValid.value &&
     llmValid.value &&
     e2eValid.value &&
     fixturesValid.value,
@@ -679,6 +724,7 @@ const formInvalidReasons = computed(() => {
     reasons.push('每个仓库必须配置变更范围（基线分支或提交号），否则无法圈定本次改动的接口')
   if (!restValid.value) reasons.push('填写合法的 REST 服务地址')
   if (!authValid.value) reasons.push('补全鉴权地址、用户名和密码')
+  if (!dbReadOnlyValid.value) reasons.push('补全数据库只读连接和密码')
   if (!llmValid.value) {
     reasons.push('填写合法的 LLM 中转站 API Key、模型别名和 Base URL，或关闭本次模型配置')
   }
@@ -756,6 +802,17 @@ async function loadConfiguration(jobId: string): Promise<void> {
           ? JSON.stringify(config.auth.response_header_paths, null, 2)
           : '',
     })
+    dbReadOnlyEnabled.value = config.db_readonly !== null
+    existingDbPassword.value = config.db_readonly?.password_configured ?? false
+    Object.assign(dbReadOnly, {
+      databaseType: config.db_readonly?.database_type ?? 'oracle',
+      host: config.db_readonly?.host ?? '',
+      port: config.db_readonly?.port ?? 1521,
+      database: config.db_readonly?.database ?? '',
+      schemaName: config.db_readonly?.schema_name ?? '',
+      username: config.db_readonly?.username ?? '',
+      password: '',
+    })
     llmEnabled.value = config.llm !== null
     existingLlmKey.value = config.llm?.api_key_configured ?? false
     existingLlmKeyEncrypted.value = config.llm?.api_key_encrypted ?? null
@@ -777,6 +834,7 @@ async function loadConfiguration(jobId: string): Promise<void> {
     })
     fixturesJson.value = config.fixtures?.length ? JSON.stringify(config.fixtures, null, 2) : ''
     autoRecordFixtures.value = Boolean(config.auto_record_fixtures)
+    generateUnitTests.value = Boolean(config.generate_unit_tests)
     observeRuntimeContracts.value = Boolean(config.observe_runtime_contracts)
   } catch (err) {
     submitError.value =
@@ -869,6 +927,7 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
     rest_url: form.restUrl.trim(),
     rest_insecure_tls: restInsecureTls.value,
     auto_record_fixtures: autoRecordFixtures.value,
+    generate_unit_tests: generateUnitTests.value,
     observe_runtime_contracts: observeRuntimeContracts.value,
     resume: form.resume,
     // C-15：鉴权配置（可选；开启才随提交发送，凭据只落本机 job_input.json）
@@ -889,6 +948,17 @@ async function buildPayload(): Promise<{ payload: JobSubmitPayload; documentCoun
           ...(authSessionId.value ? { auth_session_id: authSessionId.value } : {}),
         }
       : {}),
+    ...(dbReadOnlyEnabled.value ? {
+      db_readonly: {
+        database_type: dbReadOnly.databaseType,
+        host: dbReadOnly.host.trim(),
+        port: Number(dbReadOnly.port),
+        database: dbReadOnly.database.trim(),
+        ...(dbReadOnly.schemaName.trim() ? { schema_name: dbReadOnly.schemaName.trim() } : {}),
+        username: dbReadOnly.username.trim(),
+        password: dbReadOnly.password,
+      },
+    } : {}),
     ...(llmEnabled.value
       ? {
           llm: {
@@ -924,6 +994,7 @@ async function handlePreflight(): Promise<void> {
   preflightResult.value = null
   try {
     const { payload } = await buildPayload()
+    if (editingJobId.value) payload.job_id = editingJobId.value
     preflightResult.value = await preflightJob(payload)
   } catch (err) {
     submitError.value = err instanceof Error ? `配置预检失败：${err.message}` : '配置预检失败'
@@ -951,8 +1022,10 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
       const payload: JobConfigurationUpdatePayload = {
         ...commonPayload,
         llm_enabled: llmEnabled.value,
+        db_readonly_enabled: dbReadOnlyEnabled.value,
         rest_insecure_tls: restInsecureTls.value,
         auto_record_fixtures: autoRecordFixtures.value,
+        generate_unit_tests: generateUnitTests.value,
         observe_runtime_contracts: observeRuntimeContracts.value,
         resume: form.resume,
         keep_existing_docs: documentCount === 0,
@@ -1217,6 +1290,60 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
             </p>
           </template>
           <p v-else class="field-help">关闭后，接口用例和 E2E 用例都按未登录状态访问。</p>
+        </div>
+
+        <div class="access-panel">
+          <h3 class="subsection-title">测试数据查询</h3>
+          <label class="switch-row">
+            <input v-model="dbReadOnlyEnabled" type="checkbox" />
+            <span>配置被测系统数据库的只读连接（可选）</span>
+          </label>
+          <template v-if="dbReadOnlyEnabled">
+            <p class="field-help">
+              用于后续查找有效测试数据和核对前置条件。请使用只有 SELECT 权限的测试环境账号；
+              当前保存连接信息，不会自动查询数据库或修改数据。
+            </p>
+            <div class="two-col">
+              <label class="field">
+                <span class="field-label">数据库类型</span>
+                <select v-model="dbReadOnly.databaseType" @change="updateDbDefaultPort">
+                  <option value="oracle">Oracle</option>
+                  <option value="mysql">MySQL</option>
+                  <option value="postgresql">PostgreSQL</option>
+                  <option value="sqlserver">SQL Server</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">主机</span>
+                <input v-model="dbReadOnly.host" class="mono" placeholder="db.test.internal" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span class="field-label">端口</span>
+                <input v-model.number="dbReadOnly.port" type="number" min="1" max="65535" />
+              </label>
+              <label class="field">
+                <span class="field-label">数据库名 / Oracle 服务名</span>
+                <input v-model="dbReadOnly.database" class="mono" placeholder="TESTDB" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span class="field-label">Schema（可选）</span>
+                <input v-model="dbReadOnly.schemaName" class="mono" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span class="field-label">只读用户名</span>
+                <input v-model="dbReadOnly.username" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span class="field-label">密码</span>
+                <input v-model="dbReadOnly.password" type="password" autocomplete="new-password"
+                  :placeholder="editingJobId && existingDbPassword ? '留空则保留原密码' : '••••••••'" />
+              </label>
+            </div>
+            <p v-if="!dbReadOnlyValid" class="field-error" role="status">
+              请填写主机、端口、数据库名、只读用户名和密码。
+            </p>
+            <p class="switch-note">密码加密保存在服务端，不写入浏览器草稿，也不会在配置页回显。</p>
+          </template>
         </div>
 
         <div class="access-panel e2e-panel">
@@ -1521,6 +1648,13 @@ async function handleSubmit(runAfterSave = true): Promise<void> {
         <p class="switch-note">
           仅在 Code Review 从源码确认新增、查询和删除链路时启用；每条用例独立造数、查回真实
           ID，结束后通过删除接口软删除。软删除仍保留数据库记录和操作日志。
+        </p>
+        <label class="switch-row">
+          <input v-model="generateUnitTests" type="checkbox" />
+          <span>为需 mock 或配置控制的 Java 用例生成单元测试并统计 JaCoCo 行覆盖率</span>
+        </label>
+        <p class="switch-note">
+          在任务的隔离源码副本中生成和运行，不修改被测项目；单测结果与接口执行结果分别统计。
         </p>
         <label class="switch-row">
           <input v-model="observeRuntimeContracts" type="checkbox" />

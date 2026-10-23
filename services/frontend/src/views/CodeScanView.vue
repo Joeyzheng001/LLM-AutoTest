@@ -4,6 +4,7 @@
 // 红线：兜底候选如实标注（D5）；候选与最终接口分列（静态定位 ≠ 语义还原）。
 import { computed, ref, watch } from 'vue'
 import JobPicker from '../components/JobPicker.vue'
+import { navigateTo } from '../api/navigation'
 import {
   getChangeSet,
   getCodeInventory,
@@ -300,6 +301,13 @@ function fieldVisible(field: InterfaceParamField): boolean {
                   >
                     调用链需复核
                   </span>
+                  <button
+                    class="logic-link"
+                    type="button"
+                    @click="navigateTo('review', _jobId, iface.id)"
+                  >
+                    查看接口逻辑 →
+                  </button>
                 </div>
               </td>
               <td>
@@ -637,5 +645,16 @@ function fieldVisible(field: InterfaceParamField): boolean {
 
 .field-required[data-required='false'] {
   color: var(--text-3);
+}
+
+.logic-link {
+  align-self: flex-start;
+  margin-top: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-strong);
+  font: inherit;
+  cursor: pointer;
 }
 </style>
